@@ -11,6 +11,7 @@ import {
   HeartHandshake,
   LayoutDashboard,
   Plug,
+  Search,
   Workflow,
 } from "lucide-react";
 import { ChannelAvatar } from "@/components/channel-avatar";
@@ -94,6 +95,12 @@ export function AppSidebar() {
               activeProcess={(location.search as { process?: UniversalProcess }).process}
             />
             <NavItem
+              icon={Search}
+              label="Pesquisa diária"
+              to={`/channel/${channel.id}/research`}
+              active={pathname === `/channel/${channel.id}/research`}
+            />
+            <NavItem
               icon={BookOpen}
               label="Biblioteca estratégica"
               to={`/channel/${channel.id}/library`}
@@ -130,6 +137,12 @@ export function AppSidebar() {
               label="Métodos de Criação"
               to={`/channel/${channel.id}/methods`}
               active={pathname === `/channel/${channel.id}/methods`}
+            />
+            <NavItem
+              icon={Search}
+              label="Pesquisa diária"
+              to={`/channel/${channel.id}/research`}
+              active={pathname === `/channel/${channel.id}/research`}
             />
             <NavItem
               icon={BookOpen}

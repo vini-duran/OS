@@ -540,6 +540,20 @@ function ExecutionResults({
                 </Badge>
               </summary>
               <div className="border-t border-border/60 p-3">
+                {blockExecution.usage?.totalUnits !== undefined && (
+                  <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                    <span>
+                      Uso: {blockExecution.usage.totalUnits.toLocaleString("pt-BR")} {blockExecution.usage.unit ?? "unidades"}
+                    </span>
+                    {blockExecution.usage.inputUnits !== undefined && (
+                      <span>Entrada: {blockExecution.usage.inputUnits.toLocaleString("pt-BR")}</span>
+                    )}
+                    {blockExecution.usage.outputUnits !== undefined && (
+                      <span>Saída: {blockExecution.usage.outputUnits.toLocaleString("pt-BR")}</span>
+                    )}
+                    {blockExecution.usage.model && <span>Modelo: {blockExecution.usage.model}</span>}
+                  </div>
+                )}
                 {selectedItem && collection ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     {collection.fields.map((field) => (

@@ -149,6 +149,76 @@ test("resolve uma entrega especÃ­fica de bloco de processo anterior", () => {
   );
 });
 
+test("resolve somente uma entrega explicitamente aprovada de processo anterior ainda incompleto", () => {
+  const sourceBlock: ActionBlock = {
+    id: "record-packaging",
+    type: "CRIAR",
+    operator: "Código",
+    outputs: [
+      {
+        id: "approved-concept",
+        label: "Conceito aprovado",
+        key: "approved_thumbnail_concept",
+        type: "textarea",
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const thumbnail = executionFor("thumbnail", sourceBlock);
+  thumbnail.status = "awaiting_output";
+  thumbnail.outputStatus = "awaiting_human";
+  thumbnail.blocks[0].values = { approved_thumbnail_concept: "Conceito aprovado" };
+  recordBlockDeliveries(thumbnail, sourceBlock, thumbnail.blocks[0].values, "completed");
+
+  const explicitInput = {
+    id: "approved-packaging",
+    label: "Packaging aprovado",
+    type: "textarea" as const,
+    source: "previous_process" as const,
+    sourceProcessType: "thumbnail" as const,
+    blockId: "record-packaging",
+    sourceKey: "approved_thumbnail_concept",
+  };
+  const targetBlock: ActionBlock = {
+    id: "create-script",
+    type: "CRIAR",
+    operator: "IA",
+    inputs: [explicitInput],
+    outputs: [],
+    parameters: [],
+    order: 0,
+  };
+  const script = executionFor("script", targetBlock);
+  const [resolved] = resolveBlockInputs({
+    block: targetBlock,
+    execution: script,
+    project,
+    projectExecutions: [thumbnail, script],
+    collections: [],
+    libraryItems: [],
+  });
+  assert.equal(resolved.resolved, true);
+  assert.equal(resolved.value, "Conceito aprovado");
+  assert.equal(resolved.sourceBlockId, "record-packaging");
+
+  const { blockId: _ignoredBlockId, ...implicitInput } = explicitInput;
+  const implicitBlock: ActionBlock = {
+    ...structuredClone(targetBlock),
+    inputs: [implicitInput],
+  };
+  const [notResolved] = resolveBlockInputs({
+    block: implicitBlock,
+    execution: script,
+    project,
+    projectExecutions: [thumbnail, script],
+    collections: [],
+    libraryItems: [],
+  });
+  assert.equal(notResolved.resolved, false);
+});
+
 test("invalida a revisÃ£o anterior e cria novos IDs em outra tentativa", () => {
   const block: ActionBlock = {
     id: "create-script",

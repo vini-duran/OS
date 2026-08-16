@@ -179,6 +179,60 @@ export type ProcessMethod = {
   blocks: ActionBlock[];
 };
 
+export type ChannelResearchQuery = {
+  id: string;
+  text: string;
+  referenceLane: "core_faceless" | "niche_bending" | "presentation_mode" | "unknown";
+};
+
+/** Channel-level monitoring configuration. It is deliberately outside the eight per-video processes. */
+export type ChannelResearchConfig = {
+  pluginId: string;
+  capabilityId: string;
+  cadence: "manual_daily";
+  language: string;
+  region: string;
+  minDurationSeconds: number;
+  maxResults: number;
+  maxCommentVideoSamples: number;
+  maxEstimatedQuotaUnits: number;
+  queries: ChannelResearchQuery[];
+};
+
+export type ChannelResearchRunStatus = "completed" | "failed" | "running";
+
+export type ChannelResearchBriefStatus = "draft" | "approved" | "rejected";
+
+export type ChannelResearchBrief = {
+  id: string;
+  channelId: string;
+  status: ChannelResearchBriefStatus;
+  createdAt: string;
+  updatedAt: string;
+  sourceRunIds: string[];
+  sourceVideoCount: number;
+  provider: "local_fallback";
+  usage: { provider: "local"; totalTokens: 0; fallbackReason: string };
+  summary: string;
+  evidence: string;
+  antiCopy: string;
+  approvedLibraryItemId?: string;
+};
+
+export type ChannelResearchRun = {
+  id: string;
+  channelId: string;
+  status: ChannelResearchRunStatus;
+  startedAt: string;
+  completedAt?: string;
+  planSnapshot: ChannelResearchConfig;
+  videos: Array<Record<string, RuntimeValue>>;
+  preflight?: string;
+  usage?: Record<string, unknown>;
+  logs?: string[];
+  error?: { code: string; message: string; retryable: boolean };
+};
+
 export type Channel = {
   id: string;
   youtubeChannelId?: string;
@@ -199,6 +253,8 @@ export type Channel = {
   status: "healthy" | "attention" | "paused";
   trend: number[];
   methods: Record<UniversalProcess, ProcessMethod>;
+  /** Optional channel-level, factual research monitor; never a per-video Method. */
+  research?: ChannelResearchConfig;
   createdAt: string;
 };
 
@@ -308,6 +364,16 @@ export type BlockExecution = {
   retryFeedback?: Record<string, RuntimeValue>;
   error?: string;
   logs?: string[];
+  usage?: {
+    provider?: string;
+    model?: string;
+    inputUnits?: number;
+    outputUnits?: number;
+    totalUnits?: number;
+    unit?: string;
+    estimatedCost?: number;
+    currency?: string;
+  };
   jobId?: string;
   traceId?: string;
   progress?: number;

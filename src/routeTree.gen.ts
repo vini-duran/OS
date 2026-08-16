@@ -19,6 +19,7 @@ import { Route as ProjectProjectIdRouteImport } from './routes/project.$projectI
 import { Route as ChannelChannelIdIndexRouteImport } from './routes/channel.$channelId.index'
 import { Route as ChannelChannelIdLibraryRouteImport } from './routes/channel.$channelId.library'
 import { Route as ChannelChannelIdMethodsRouteImport } from './routes/channel.$channelId.methods'
+import { Route as ChannelChannelIdResearchRouteImport } from './routes/channel.$channelId.research'
 import { Route as ProjectProjectIdIndexRouteImport } from './routes/project.$projectId.index'
 import { Route as ProjectProjectIdAssetsRouteImport } from './routes/project.$projectId.assets'
 import { Route as ProjectProjectIdEditRouteImport } from './routes/project.$projectId.edit'
@@ -79,6 +80,12 @@ const ChannelChannelIdMethodsRoute = ChannelChannelIdMethodsRouteImport.update({
   path: '/methods',
   getParentRoute: () => ChannelChannelIdRoute,
 } as any)
+const ChannelChannelIdResearchRoute =
+  ChannelChannelIdResearchRouteImport.update({
+    id: '/research',
+    path: '/research',
+    getParentRoute: () => ChannelChannelIdRoute,
+  } as any)
 const ProjectProjectIdIndexRoute = ProjectProjectIdIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -137,6 +144,7 @@ export interface FileRoutesByFullPath {
   '/project/$projectId': typeof ProjectProjectIdRouteWithChildren
   '/channel/$channelId/library': typeof ChannelChannelIdLibraryRoute
   '/channel/$channelId/methods': typeof ChannelChannelIdMethodsRoute
+  '/channel/$channelId/research': typeof ChannelChannelIdResearchRoute
   '/project/$projectId/assets': typeof ProjectProjectIdAssetsRoute
   '/project/$projectId/edit': typeof ProjectProjectIdEditRoute
   '/project/$projectId/narration': typeof ProjectProjectIdNarrationRoute
@@ -156,6 +164,7 @@ export interface FileRoutesByTo {
   '/plugins': typeof PluginsRoute
   '/channel/$channelId/library': typeof ChannelChannelIdLibraryRoute
   '/channel/$channelId/methods': typeof ChannelChannelIdMethodsRoute
+  '/channel/$channelId/research': typeof ChannelChannelIdResearchRoute
   '/project/$projectId/assets': typeof ProjectProjectIdAssetsRoute
   '/project/$projectId/edit': typeof ProjectProjectIdEditRoute
   '/project/$projectId/narration': typeof ProjectProjectIdNarrationRoute
@@ -178,6 +187,7 @@ export interface FileRoutesById {
   '/project/$projectId': typeof ProjectProjectIdRouteWithChildren
   '/channel/$channelId/library': typeof ChannelChannelIdLibraryRoute
   '/channel/$channelId/methods': typeof ChannelChannelIdMethodsRoute
+  '/channel/$channelId/research': typeof ChannelChannelIdResearchRoute
   '/project/$projectId/assets': typeof ProjectProjectIdAssetsRoute
   '/project/$projectId/edit': typeof ProjectProjectIdEditRoute
   '/project/$projectId/narration': typeof ProjectProjectIdNarrationRoute
@@ -201,6 +211,7 @@ export interface FileRouteTypes {
     | '/project/$projectId'
     | '/channel/$channelId/library'
     | '/channel/$channelId/methods'
+    | '/channel/$channelId/research'
     | '/project/$projectId/assets'
     | '/project/$projectId/edit'
     | '/project/$projectId/narration'
@@ -220,6 +231,7 @@ export interface FileRouteTypes {
     | '/plugins'
     | '/channel/$channelId/library'
     | '/channel/$channelId/methods'
+    | '/channel/$channelId/research'
     | '/project/$projectId/assets'
     | '/project/$projectId/edit'
     | '/project/$projectId/narration'
@@ -241,6 +253,7 @@ export interface FileRouteTypes {
     | '/project/$projectId'
     | '/channel/$channelId/library'
     | '/channel/$channelId/methods'
+    | '/channel/$channelId/research'
     | '/project/$projectId/assets'
     | '/project/$projectId/edit'
     | '/project/$projectId/narration'
@@ -335,6 +348,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChannelChannelIdMethodsRouteImport
       parentRoute: typeof ChannelChannelIdRoute
     }
+    '/channel/$channelId/research': {
+      id: '/channel/$channelId/research'
+      path: '/research'
+      fullPath: '/channel/$channelId/research'
+      preLoaderRoute: typeof ChannelChannelIdResearchRouteImport
+      parentRoute: typeof ChannelChannelIdRoute
+    }
     '/project/$projectId/': {
       id: '/project/$projectId/'
       path: '/'
@@ -404,12 +424,14 @@ declare module '@tanstack/react-router' {
 interface ChannelChannelIdRouteChildren {
   ChannelChannelIdLibraryRoute: typeof ChannelChannelIdLibraryRoute
   ChannelChannelIdMethodsRoute: typeof ChannelChannelIdMethodsRoute
+  ChannelChannelIdResearchRoute: typeof ChannelChannelIdResearchRoute
   ChannelChannelIdIndexRoute: typeof ChannelChannelIdIndexRoute
 }
 
 const ChannelChannelIdRouteChildren: ChannelChannelIdRouteChildren = {
   ChannelChannelIdLibraryRoute: ChannelChannelIdLibraryRoute,
   ChannelChannelIdMethodsRoute: ChannelChannelIdMethodsRoute,
+  ChannelChannelIdResearchRoute: ChannelChannelIdResearchRoute,
   ChannelChannelIdIndexRoute: ChannelChannelIdIndexRoute,
 }
 

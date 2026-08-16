@@ -18,6 +18,8 @@ import type {
   BlockExecution,
   Channel,
   ChannelLibraryItem,
+  ChannelResearchRun,
+  ChannelResearchBrief,
   HumanFieldType,
   ProcessExecution,
   Project,
@@ -32,7 +34,11 @@ import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
 } from "../src/lib/presentation";
-import type { PluginExecutionRequest, PluginFieldContract } from "../src/lib/plugin-contract";
+import type {
+  PluginExecutionRequest,
+  PluginExecutionResponse,
+  PluginFieldContract,
+} from "../src/lib/plugin-contract";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import {
   activeProjectDeliveries,
@@ -69,6 +75,13 @@ import {
 } from "./anthropic-connection";
 import { deletePluginSecret, getPluginSecret, setPluginSecret } from "./credential-vault";
 import { fetchYouTubeChannel } from "./youtube";
+import {
+  DAILY_RESEARCH_CAPABILITY_ID,
+  DAILY_RESEARCH_PLUGIN_ID,
+  dailyResearchInputContract,
+  dailyResearchOutputContract,
+  isDailyResearchConfig,
+} from "../src/lib/channel-research";
 
 const port = Number(process.env.CONTENTFLOW_API_PORT ?? 8787);
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
@@ -191,6 +204,19 @@ database.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS library_collections_channel_id ON library_collections(channel_id);
+  CREATE TABLE IF NOT EXISTS channel_research_runs (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS channel_research_runs_channel_id ON channel_research_runs(channel_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS channel_research_briefs (
+    id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS channel_research_briefs_channel_id ON channel_research_briefs(channel_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS app_preferences (
     id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
@@ -720,6 +746,7 @@ async function processPluginJob(
           job.partialArtifacts,
           pluginResponse.storedArtifacts,
         ),
+        usage: pluginResponse.usage ?? job.usage,
         error: undefined,
       });
       if (saved.status === "cancel_requested") return saved;
@@ -760,6 +787,7 @@ async function processPluginJob(
         blockExecution.status = "in_progress";
         blockExecution.progressMessage = saved.message;
         blockExecution.logs = pluginResponse.logs;
+        blockExecution.usage = pluginResponse.usage ?? job.usage;
         execution.status = "running";
         persistPluginExecution(execution, project);
         return saved;
@@ -802,6 +830,7 @@ async function processPluginJob(
           job.partialArtifacts,
           pluginResponse.storedArtifacts,
         ),
+        usage: pluginResponse.usage ?? job.usage,
         error: undefined,
         nextPollAt: new Date(8_640_000_000_000_000).toISOString(),
       },
@@ -809,6 +838,7 @@ async function processPluginJob(
         if (saved.status === "cancel_requested") return;
         finishPluginBlock(execution, block, blockExecution, values);
         blockExecution.logs = pluginResponse.logs;
+        blockExecution.usage = pluginResponse.usage ?? job.usage;
         blockExecution.progress = 1;
         blockExecution.progressMessage = undefined;
         persistPluginExecution(execution, project);
@@ -2070,6 +2100,353 @@ app.post("/api/execute-block", async (request, response) => {
     project: currentProject,
     values: job.partialValues,
   });
+});
+
+type StoredChannelResearchRun = ChannelResearchRun & { updatedAt: string };
+type StoredChannelResearchBrief = ChannelResearchBrief;
+
+function researchBriefsFor(channelId: string, limit = 12) {
+  return (
+    database
+      .prepare(
+        "SELECT payload FROM channel_research_briefs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(channelId, limit) as { payload: string }[]
+  ).map((row) => JSON.parse(row.payload) as StoredChannelResearchBrief);
+}
+function saveResearchBrief(brief: StoredChannelResearchBrief) {
+  database
+    .prepare(
+      `INSERT INTO channel_research_briefs (id, channel_id, status, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
+    )
+    .run(
+      brief.id,
+      brief.channelId,
+      brief.status,
+      JSON.stringify(brief),
+      brief.createdAt,
+      brief.updatedAt,
+    );
+}
+function localWeeklyBrief(
+  channelId: string,
+  runs: StoredChannelResearchRun[],
+): StoredChannelResearchBrief {
+  const completed = runs.filter((run) => run.status === "completed");
+  // Um brief representa a fotografia vigente. Não misturar snapshots antigos
+  // evita que uma classificação substituída ou uma tendência vencida volte a
+  // contaminar o Tema.
+  const latestRun = completed[0];
+  const observed = latestRun?.videos ?? [];
+  // O brief não pode elevar vídeos genéricos, médicos ou apenas adjacentes a
+  // evidência de tema. A pesquisa preserva esses itens no snapshot, mas o
+  // Tema recebe somente os sinais fortes e deduplicados.
+  const videos = [...new Map(
+    observed
+      .filter((video) => video.classification_status === "strong")
+      .map((video) => [String(video.video_id), video]),
+  ).values()];
+  const now = new Date().toISOString();
+  const top = [...videos]
+    .sort((a, b) => Number(b.view_count ?? 0) - Number(a.view_count ?? 0))
+    .slice(0, 5);
+  const queryCounts = new Map<string, number>();
+  for (const video of videos) {
+    const query = String(video.search_query ?? "");
+    if (query) queryCounts.set(query, (queryCounts.get(query) ?? 0) + 1);
+  }
+  const queries =
+    [...queryCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([query, count]) => `• ${query}: ${count} resultado(s)`)
+      .join("\n") || "Nenhuma consulta retornou vídeo elegível.";
+  const topEvidence =
+    top
+      .map(
+        (video) =>
+          `• ${String(video.title ?? "Sem título")} — ${Number(video.view_count ?? 0).toLocaleString("pt-BR")} views; ${Number(video.comment_count ?? 0).toLocaleString("pt-BR")} comentários; fonte: ${String(video.video_url ?? "YouTube")}`,
+      )
+      .join("\n") || "Sem vídeos elegíveis no período.";
+  return {
+    id: randomUUID(),
+    channelId,
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+    sourceRunIds: latestRun ? [latestRun.id] : [],
+    sourceVideoCount: videos.length,
+    provider: "local_fallback",
+    usage: {
+      provider: "local",
+      totalTokens: 0,
+      fallbackReason: "Síntese determinística: nenhuma chamada de IA foi feita.",
+    },
+    summary: `Brief factual local com ${videos.length} vídeo(s) de sinal forte, filtrados de ${observed.length} resultado(s) do snapshot mais recente. Consultas com mais resultados fortes:\n${queries}`,
+    evidence: `Observado (não inferido):\n${topEvidence}\n\nLimitações: views, comentários e inscritos são snapshots públicos; não provam idade, país, retenção, receita ou causalidade.`,
+    antiCopy:
+      "Use apenas dores, perguntas, padrões e mecanismos como inspiração. Não copiar títulos, thumbnails, personagens, roteiro, identidade visual ou promessa literal. Classificar faceless manualmente antes de usar como referência visual.",
+  };
+}
+
+function researchRunsFor(channelId: string, limit = 30) {
+  return (
+    database
+      .prepare(
+        "SELECT payload FROM channel_research_runs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(channelId, limit) as { payload: string }[]
+  ).map((row) => JSON.parse(row.payload) as StoredChannelResearchRun);
+}
+
+function saveResearchRun(run: StoredChannelResearchRun) {
+  database
+    .prepare(
+      `INSERT INTO channel_research_runs (id, channel_id, status, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
+    )
+    .run(run.id, run.channelId, run.status, JSON.stringify(run), run.startedAt, run.updatedAt);
+}
+
+function publicResearchRun(run: StoredChannelResearchRun) {
+  return run;
+}
+
+function researchError(response: PluginExecutionResponse) {
+  if (response.status !== "error") return undefined;
+  return { code: response.code, message: response.message, retryable: response.retryable };
+}
+
+app.get("/api/channels/:id/research/weekly/briefs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
+  response.json({ briefs: researchBriefsFor(channel.id) });
+});
+
+app.post("/api/channels/:id/research/weekly/briefs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
+  const runs = researchRunsFor(channel.id, 7);
+  if (!runs.some((run) => run.status === "completed"))
+    return response
+      .status(422)
+      .json({ error: "Execute ao menos um snapshot diário antes de gerar o brief semanal." });
+  const brief = localWeeklyBrief(channel.id, runs);
+  if (brief.sourceVideoCount < 2) {
+    return response.status(422).json({
+      error:
+        "A pesquisa ainda não encontrou ao menos dois sinais fortes para o PUC Spanish. Ajuste as consultas ou rode uma nova pesquisa; vídeos genéricos não serão promovidos ao Tema.",
+      eligibleVideoCount: brief.sourceVideoCount,
+    });
+  }
+  saveResearchBrief(brief);
+  response.status(201).json({ brief });
+});
+
+app.post("/api/channels/:id/research/weekly/briefs/:briefId/approve", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  const brief = database
+    .prepare("SELECT payload FROM channel_research_briefs WHERE id = ? AND channel_id = ?")
+    .get(request.params.briefId, request.params.id) as { payload: string } | undefined;
+  if (!channel || !brief)
+    return response.status(404).json({ error: "Canal ou brief não encontrado." });
+  const value = JSON.parse(brief.payload) as StoredChannelResearchBrief;
+  if (value.status !== "draft")
+    return response.status(409).json({ error: "Este brief já foi decidido." });
+  const now = new Date().toISOString();
+  const validUntil = new Date(Date.now() + 7 * 86400000).toISOString();
+  const item = {
+    id: `weekly-brief-${value.id}`,
+    channelId: channel.id,
+    collectionId: "spanish-weekly-research-briefs",
+    createdAt: now,
+    values: {
+      "weekly-research-title": "Brief semanal factual aprovado",
+      "weekly-research-period": `${value.sourceRunIds.length} snapshot(s) recentes`,
+      "weekly-research-status": "approved",
+      "weekly-research-summary": value.summary,
+      "weekly-research-evidence": value.evidence,
+      "weekly-research-anti-copy": value.antiCopy,
+      "weekly-research-source-count": value.sourceVideoCount,
+      "weekly-research-updated-at": now,
+      "weekly-research-valid-until": validUntil,
+    },
+  };
+  database
+    .prepare("INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
+    .run(item.id, item.channelId, JSON.stringify(item), now);
+  value.status = "approved";
+  value.updatedAt = now;
+  value.approvedLibraryItemId = item.id;
+  saveResearchBrief(value);
+  response.json({ brief: value, item });
+});
+
+app.get("/api/channels/:id/research/daily/runs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  response.json({ runs: researchRunsFor(channel.id).map(publicResearchRun) });
+});
+
+app.post("/api/channels/:id/research/daily/runs", async (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (!isDailyResearchConfig(channel.research)) {
+    response.status(422).json({
+      error: "Este canal não possui uma configuração diária de pesquisa válida.",
+    });
+    return;
+  }
+  const activeRun = database
+    .prepare(
+      "SELECT id FROM channel_research_runs WHERE channel_id = ? AND status = 'running' LIMIT 1",
+    )
+    .get(channel.id) as { id: string } | undefined;
+  if (activeRun) {
+    response
+      .status(409)
+      .json({ error: "Já existe uma pesquisa diária em execução para este canal." });
+    return;
+  }
+
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(channel.research.pluginId);
+  if (!plugin || !plugin.executable || !pluginConsentIsCurrent(plugin)) {
+    response.status(403).json({
+      error:
+        "Ative a versão atual do plugin de pesquisa e confirme suas permissões antes de executar.",
+    });
+    return;
+  }
+  const capability = plugin.manifest.capabilities.find(
+    (entry) => entry.id === channel.research?.capabilityId,
+  );
+  if (
+    !capability ||
+    capability.id !== DAILY_RESEARCH_CAPABILITY_ID ||
+    capability.operator !== "Código" ||
+    !capability.blockTypes.includes("BUSCAR") ||
+    plugin.id !== DAILY_RESEARCH_PLUGIN_ID
+  ) {
+    response.status(422).json({ error: "A capability diária de pesquisa não é compatível." });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const run: StoredChannelResearchRun = {
+    id: randomUUID(),
+    channelId: channel.id,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    planSnapshot: channel.research,
+    videos: [],
+  };
+  saveResearchRun(run);
+
+  const pluginSecrets: Record<string, string> = {};
+  for (const secretKey of plugin.manifest.secretKeys ?? []) {
+    const secret = await getPluginSecret(plugin.id, secretKey);
+    if (secret) pluginSecrets[secretKey] = secret;
+  }
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `daily-research:${run.id}`,
+    traceId: randomUUID(),
+    blockId: "daily-youtube-research",
+    capabilityId: capability.id,
+    attempt: 1,
+    invocation: { mode: "start" },
+    configuration: {
+      region: channel.research.region,
+      language: channel.research.language,
+      minDurationSeconds: channel.research.minDurationSeconds,
+      maxResults: channel.research.maxResults,
+      maxCommentVideoSamples: channel.research.maxCommentVideoSamples,
+      maxEstimatedQuotaUnits: channel.research.maxEstimatedQuotaUnits,
+      dryRun: false,
+    },
+    settings: {},
+    inputs: { consultas_es: channel.research.queries.map((query) => query.text) },
+    inputContract: dailyResearchInputContract(),
+    outputContract: dailyResearchOutputContract(),
+    context: {
+      locale: channel.language || "es",
+      timeZone: "America/Porto_Velho",
+      channel: {
+        id: channel.id,
+        name: channel.name,
+        language: channel.language,
+        niche: channel.niche,
+      },
+      project: { id: `channel-research:${channel.id}`, title: "Pesquisa diária do canal" },
+      // The plugin API v1 requires one universal process. This is an execution
+      // context only; the research result is persisted at channel level and is
+      // never promoted as an output of the Tema method.
+      processType: "theme",
+      block: {
+        type: "BUSCAR",
+        name: "Pesquisa diária factual no YouTube",
+        instructions:
+          "Colete somente dados públicos factuais. Não classifique faceless, não infira vendas, não gere tema e não publique brief.",
+      },
+      previousProcessOutputs: [],
+      previousBlockOutputs: [],
+      previousDeliveries: [],
+    },
+  };
+
+  try {
+    const pluginResponse = await executeRegisteredPlugin(
+      plugin,
+      pluginRequest,
+      capability.execution.defaultTimeoutMs ?? 60_000,
+      pluginSecrets,
+    );
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    run.usage = pluginResponse.usage;
+    run.logs = pluginResponse.logs;
+    if (pluginResponse.status === "success") {
+      run.status = "completed";
+      run.videos = Array.isArray(pluginResponse.values.videos)
+        ? (pluginResponse.values.videos as Array<Record<string, RuntimeValue>>)
+        : [];
+      run.preflight =
+        typeof pluginResponse.values.preflight === "string"
+          ? pluginResponse.values.preflight
+          : undefined;
+      saveResearchRun(run);
+      response.status(201).json({ run: publicResearchRun(run) });
+      return;
+    }
+    run.status = "failed";
+    run.error = researchError(pluginResponse) ?? {
+      code: "UNEXPECTED_PLUGIN_RESPONSE",
+      message: "A pesquisa não retornou um resultado final.",
+      retryable: false,
+    };
+    saveResearchRun(run);
+    response.status(422).json({ error: run.error.message, run: publicResearchRun(run) });
+  } catch (error) {
+    run.status = "failed";
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    run.error = {
+      code: "RESEARCH_EXECUTION_FAILED",
+      message: error instanceof Error ? error.message : "A execução da pesquisa falhou.",
+      retryable: true,
+    };
+    saveResearchRun(run);
+    response.status(422).json({ error: run.error.message, run: publicResearchRun(run) });
+  }
 });
 
 app.get("/api/youtube/channel", async (request, response) => {

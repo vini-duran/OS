@@ -49,6 +49,7 @@ async function startDesktop() {
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
+  const runtimeNodeName = process.platform === "win32" ? "node.exe" : "node";
   const dataRoot = path.join(app.getPath("userData"), "data");
   const examplesTarget = path.join(app.getPath("documents"), "ContentFlow OS", "Plugins");
   const examplesSource = app.isPackaged
@@ -80,7 +81,7 @@ async function startDesktop() {
   process.env.CONTENTFLOW_PLUGIN_WORKER_DIR = app.isPackaged
     ? path.join(runtimeRoot, "workers")
     : path.join(appRoot, "server");
-  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, "node.exe");
+  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, runtimeNodeName);
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
   process.env.CONTENTFLOW_EXAMPLES_DIR = examplesTarget;
   process.env.NODE_ENV = "production";
