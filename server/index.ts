@@ -2209,11 +2209,13 @@ function localWeeklyBrief(
   // O brief não pode elevar vídeos genéricos, médicos ou apenas adjacentes a
   // evidência de tema. A pesquisa preserva esses itens no snapshot, mas o
   // Tema recebe somente os sinais fortes e deduplicados.
-  const videos = [...new Map(
-    observed
-      .filter((video) => video.classification_status === "strong")
-      .map((video) => [String(video.video_id), video]),
-  ).values()];
+  const videos = [
+    ...new Map(
+      observed
+        .filter((video) => video.classification_status === "strong")
+        .map((video) => [String(video.video_id), video]),
+    ).values(),
+  ];
   const now = new Date().toISOString();
   const top = [...videos]
     .sort((a, b) => Number(b.view_count ?? 0) - Number(a.view_count ?? 0))

@@ -62,13 +62,15 @@ function parseOutput(text: string, type: string | undefined) {
     } catch {
       // A resposta em linhas continua sendo aceita para modelos sem saída estruturada.
     }
-    return text
-      .split("\n")
-      // Remove apenas marcadores reais. A expressão anterior apagava qualquer
-      // número no início do conteúdo (por exemplo, `7 días...` virava
-      // `días...`), alterando títulos e outras entregas legítimas.
-      .map((item) => item.replace(/^\s*(?:[-*•]\s+|\d+[.)]\s+)/, "").trim())
-      .filter(Boolean);
+    return (
+      text
+        .split("\n")
+        // Remove apenas marcadores reais. A expressão anterior apagava qualquer
+        // número no início do conteúdo (por exemplo, `7 días...` virava
+        // `días...`), alterando títulos e outras entregas legítimas.
+        .map((item) => item.replace(/^\s*(?:[-*•]\s+|\d+[.)]\s+)/, "").trim())
+        .filter(Boolean)
+    );
   }
   if (type === "records") {
     try {
@@ -88,8 +90,12 @@ function parseOutput(text: string, type: string | undefined) {
 
 function removeSingleListHeader(value: unknown, field: OutputField | undefined) {
   if (!Array.isArray(value) || !field) return value;
-  const headerAliases = [field.key, field.label]
-    .map((item) => item.trim().toLocaleLowerCase().replace(/[\s:_-]+/g, ""));
+  const headerAliases = [field.key, field.label].map((item) =>
+    item
+      .trim()
+      .toLocaleLowerCase()
+      .replace(/[\s:_-]+/g, ""),
+  );
   return value
     .map((item) => {
       if (typeof item !== "string") return item;
@@ -106,10 +112,10 @@ function removeSingleListHeader(value: unknown, field: OutputField | undefined) 
     .filter((item) => {
       if (typeof item !== "string") return true;
       const normalized = item
-      .trim()
-      .replace(/[:：]\s*$/, "")
-      .toLocaleLowerCase()
-      .replace(/[\s:_-]+/g, "");
+        .trim()
+        .replace(/[:：]\s*$/, "")
+        .toLocaleLowerCase()
+        .replace(/[\s:_-]+/g, "");
       return normalized.length > 0 && !headerAliases.includes(normalized);
     });
 }

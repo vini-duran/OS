@@ -17,7 +17,13 @@ test("desempacota uma lista no envelope JSON da saída única", async () => {
         configuration: { model: "gpt-5.6-terra", max_output_tokens: 256 },
         inputs: {},
         outputContract: [
-          { key: "theme_candidates", portKey: "result", label: "Temas", type: "list", required: true },
+          {
+            key: "theme_candidates",
+            portKey: "result",
+            label: "Temas",
+            type: "list",
+            required: true,
+          },
         ],
         context: {
           channel: { name: "Spanish", language: "ES", niche: "Projeto próprio" },
@@ -51,7 +57,13 @@ test("preserva número que pertence ao conteúdo de uma lista em linhas", async 
         configuration: { model: "gpt-5.6-terra", max_output_tokens: 256 },
         inputs: {},
         outputContract: [
-          { key: "title_candidates", portKey: "result", label: "Títulos", type: "list", required: true },
+          {
+            key: "title_candidates",
+            portKey: "result",
+            label: "Títulos",
+            type: "list",
+            required: true,
+          },
         ],
         context: {
           channel: { name: "Spanish", language: "ES", niche: "Projeto próprio" },

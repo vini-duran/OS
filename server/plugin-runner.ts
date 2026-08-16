@@ -176,16 +176,18 @@ export async function executeRegisteredPlugin(
         safeSegment(plugin.id),
       ),
   );
+  mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(workspaceDirectory, { recursive: true });
+  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
+  // No macOS, /var is a symlink to /private/var. Deriving the child from the
+  // canonical workspace keeps it inside Node's explicit filesystem permission.
   const outputDirectory = path.resolve(
-    workspaceDirectory,
+    realWorkspaceDirectory,
     ".contentflow-output",
     safeSegment(request.executionId),
     safeSegment(request.traceId),
   );
-  mkdirSync(uploadsDirectory, { recursive: true });
-  mkdirSync(workspaceDirectory, { recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
-  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const permissions = new Set(plugin.manifest.permissions);
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
