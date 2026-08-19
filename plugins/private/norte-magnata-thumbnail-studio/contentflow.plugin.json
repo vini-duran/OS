@@ -1,0 +1,105 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.thumbnail-studio",
+  "name": "Norte Magnata — Thumbnail Studio",
+  "version": "0.1.1",
+  "description": "Gera e valida uma thumbnail 16:9 do Norte Magnata, com artifact local e sem faixas laterais.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.0",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network", "filesystem:read", "filesystem:write", "process"],
+  "networkHosts": ["api.openai.com"],
+  "secretKeys": ["OPENAI_API_KEY"],
+  "deliveryTypes": ["image", "text"],
+  "capabilities": [
+    {
+      "id": "generate-16x9-thumbnail",
+      "operator": "Código",
+      "blockTypes": ["CRIAR"],
+      "processTypes": ["thumbnail"],
+      "inputPorts": [
+        { "key": "title", "label": "Título aprovado", "acceptedTypes": ["text", "textarea"], "required": true },
+        { "key": "theme", "label": "Dossiê de tema", "acceptedTypes": ["textarea", "text"], "required": true }
+      ],
+      "outputPorts": [
+        {
+          "key": "thumbnail",
+          "label": "Thumbnail 16:9",
+          "description": "PNG final sem faixa lateral adicionada pelo enquadramento.",
+          "producedTypes": ["image"],
+          "required": true,
+          "presentation": { "renderer": "image-gallery", "itemType": "image", "acceptedMimeTypes": ["image/png"] }
+        },
+        {
+          "key": "thumbnail_provenance",
+          "label": "Proveniência da thumbnail",
+          "producedTypes": ["textarea"],
+          "required": true,
+          "presentation": { "renderer": "text-long" }
+        }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 180000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": ["external_write", "local_artifact", "subprocess"],
+      "cost": { "model": "metered", "estimateSupported": false },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["OpenAI Images API"],
+        "retentionPolicyUrl": "https://platform.openai.com/docs/guides/your-data",
+        "trainingPolicyUrl": "https://platform.openai.com/docs/guides/your-data"
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "quality": { "type": "string", "enum": ["medium", "high"], "default": "high", "description": "Qualidade da imagem; cada execução é cobrada pela OpenAI." },
+          "visual_direction": { "type": "string", "maxLength": 1200, "default": "Filosofia prática, tensão humana, linguagem visual sóbria e cinematográfica. Uma pessoa adulta em conflito concreto com a própria inércia; contraste forte, cenário realista, foco em uma ação legível." },
+          "simulate": { "type": "boolean", "default": false, "description": "Apenas teste técnico: materializa uma imagem neutra 16:9 e não chama a OpenAI." }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thumbnail", "thumbnail_provenance"],
+        "properties": { "thumbnail": { "type": "object" }, "thumbnail_provenance": { "type": "string" } }
+      }
+    },
+    {
+      "id": "validate-thumbnail-vision",
+      "operator": "Código",
+      "blockTypes": ["VALIDAR"],
+      "processTypes": ["thumbnail"],
+      "inputPorts": [
+        { "key": "thumbnail", "label": "Thumbnail gerada", "acceptedTypes": ["image"], "required": true, "presentation": { "renderer": "image-gallery", "itemType": "image", "acceptedMimeTypes": ["image/png", "image/jpeg", "image/webp"] } },
+        { "key": "title", "label": "Título aprovado", "acceptedTypes": ["text", "textarea"], "required": true },
+        { "key": "theme", "label": "Dossiê de tema", "acceptedTypes": ["textarea", "text"], "required": true }
+      ],
+      "outputPorts": [
+        { "key": "decision", "label": "Decisão visual", "producedTypes": ["approval"], "required": true, "presentation": { "renderer": "decision" } },
+        { "key": "thumbnail_review", "label": "Revisão visual", "producedTypes": ["textarea"], "required": true, "presentation": { "renderer": "text-long" } }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 120000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": ["external_read"],
+      "cost": { "model": "metered", "estimateSupported": false },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["OpenAI Responses API"],
+        "retentionPolicyUrl": "https://platform.openai.com/docs/guides/your-data",
+        "trainingPolicyUrl": "https://platform.openai.com/docs/guides/your-data"
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "model": { "type": "string", "default": "gpt-5.6-terra" } }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "thumbnail_review"],
+        "properties": { "decision": { "type": "string", "enum": ["approved", "rejected"] }, "thumbnail_review": { "type": "string" } }
+      }
+    }
+  ]
+}

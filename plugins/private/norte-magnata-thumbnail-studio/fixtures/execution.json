@@ -1,0 +1,26 @@
+{
+  "executionId": "thumbnail-studio-fixture",
+  "traceId": "thumbnail-studio-fixture-trace",
+  "blockId": "thumbnail-studio-create",
+  "capabilityId": "generate-16x9-thumbnail",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": { "quality": "high", "simulate": true },
+  "inputs": {
+    "title": "Disciplina sem motivação",
+    "theme": "Ação deliberada mesmo quando a vontade oscila."
+  },
+  "inputContract": [],
+  "outputContract": [
+    { "portKey": "thumbnail", "key": "thumbnail", "label": "Thumbnail 16:9", "type": "image", "required": true },
+    { "portKey": "thumbnail_provenance", "key": "thumbnail_provenance", "label": "Proveniência", "type": "textarea", "required": true }
+  ],
+  "context": {
+    "channel": { "id": "norte-magnata", "name": "Norte Magnata", "language": "pt-BR", "niche": "Filosofia" },
+    "project": { "id": "thumbnail-fixture", "title": "Disciplina sem motivação" },
+    "processType": "thumbnail",
+    "block": { "type": "CRIAR", "name": "Gerar thumbnail", "instructions": "Teste técnico." },
+    "previousProcessOutputs": [],
+    "previousBlockOutputs": []
+  }
+}
