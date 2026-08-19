@@ -9,7 +9,7 @@ const cleanWrapper = (value) => text(value).replace(/^[\[({<]+/, "").replace(/[\
 const fail = (code, message, retryable = false) => ({ status: "error", code, message, retryable });
 const placeholder = (id, name, mimeType, size) => ({ id, name, mimeType, size, url: `artifact://${id}` });
 const localArtifact = (id, name, mimeType, size) => ({ id, name, mimeType, size, source: { kind: "path", path: name } });
-const remoteArtifact = (id, name, mimeType, size, url) => ({ id, name, mimeType, size, source: { kind: "url", url } });
+const remoteArtifact = (id, name, mimeType, _size, url) => ({ id, name, mimeType, source: { kind: "url", url } });
 
 function keyPool(value) {
   return text(value).replace(/^['"]|['"]$/g, "").split(/[;,\n]+/).map(cleanWrapper).filter(Boolean);
@@ -221,8 +221,15 @@ async function materialize(request, services) {
       records.push(assignment(scene, "sfx", `pontuação ${text(scene.sfx)}`, item.query, item.media, item.id));
     });
   } catch (error) { return fail("STOCK_SEARCH_FAILED", error instanceof Error ? error.message : "Falha na busca stock.", true); }
-  const counts = { broll: records.filter((item) => item.kind === "broll").length, overlayAssignments: records.filter((item) => item.kind === "overlay").length, sfxAssignments: records.filter((item) => item.kind === "sfx").length, uniqueFiles: artifacts.length };
-  return { status: "success", values: { stock_assets: records, stock_report: `${counts.broll} B-rolls; ${counts.overlayAssignments} overlays (${uniqueOverlayCount} arquivos); ${counts.sfxAssignments} SFX (${uniqueSfxCount} arquivos); ${counts.uniqueFiles} downloads com licença registrada.` }, artifacts };
+  const counts = {
+    broll: records.filter((item) => item.kind === "broll").length,
+    overlayAssignments: records.filter((item) => item.kind === "overlay").length,
+    sfxAssignments: records.filter((item) => item.kind === "sfx").length,
+    uniqueOverlayFiles: new Set(records.filter((item) => item.kind === "overlay").map((item) => item.provider_id)).size,
+    uniqueSfxFiles: new Set(records.filter((item) => item.kind === "sfx").map((item) => item.provider_id)).size,
+    uniqueFiles: artifacts.length
+  };
+  return { status: "success", values: { stock_assets: records, stock_report: `${counts.broll} B-rolls; ${counts.overlayAssignments} overlays (${counts.uniqueOverlayFiles} arquivos); ${counts.sfxAssignments} SFX (${counts.uniqueSfxFiles} arquivos); ${counts.uniqueFiles} downloads com licença registrada.` }, artifacts };
 }
 
 async function validateStock(request, services) {
@@ -240,10 +247,11 @@ async function validateStock(request, services) {
   const productionIds = new Set(records.map((item) => item.production_id));
   if (productionIds.size !== 1) problems.push("production_id divergente entre assets stock.");
   const counts = { assignments: records.length, unique_files: new Set(records.map((item) => item.file?.sha256)).size, broll: records.filter((item) => item.kind === "broll").length, overlays: records.filter((item) => item.kind === "overlay").length, sfx: records.filter((item) => item.kind === "sfx").length };
+  if (problems.length) return fail("STOCK_QA_FAILED", `Stock bloqueado por QA determinístico: ${[...new Set(problems)].slice(0, 30).join(" | ")}`);
   const manifest = { version: "norte_magnata_stock_v1", created_at: new Date().toISOString(), production_id: [...productionIds][0] || "", counts, items: records };
   const content = `${JSON.stringify(manifest, null, 2)}\n`, name = "manifesto-stock-validado.json", size = Buffer.byteLength(content);
   await writeFile(services.getOutputPath(name), content, "utf8");
-  return { status: "success", values: { decision: problems.length ? "rejected" : "approved", validated_stock_assets: records, stock_manifest: placeholder("stock-manifest", name, "application/json", size), stock_validation_report: problems.length ? `REPROVADO. ${[...new Set(problems)].slice(0, 30).join(" | ")}` : `APROVADO. ${counts.assignments} usos, ${counts.unique_files} arquivos únicos, todos com licença, origem e SHA-256.` }, artifacts: [localArtifact("stock-manifest", name, "application/json", size)] };
+  return { status: "success", values: { decision: "approved", validated_stock_assets: records, stock_manifest: placeholder("stock-manifest", name, "application/json", size), stock_validation_report: `APROVADO. ${counts.assignments} usos, ${counts.unique_files} arquivos únicos, todos com licença, origem e SHA-256.` }, artifacts: [localArtifact("stock-manifest", name, "application/json", size)] };
 }
 
 export async function execute(request, services) {

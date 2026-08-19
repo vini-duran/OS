@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.stock-library",
   "name": "Norte Magnata — Biblioteca Stock",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Pesquisa, materializa e valida B-roll, overlays e SFX com licença e hash.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",
@@ -19,7 +19,7 @@
       "id": "materialize-stock-assets",
       "operator": "Código",
       "blockTypes": ["BUSCAR"],
-      "processTypes": ["editing"],
+      "processTypes": ["assets", "editing"],
       "inputPorts": [{ "key": "assets", "label": "Mapa de cenas aprovado", "acceptedTypes": ["records"], "required": true }],
       "outputPorts": [
         { "key": "stock_assets", "label": "Stock materializado", "producedTypes": ["records"], "required": true },
@@ -45,7 +45,7 @@
       "id": "validate-stock-assets",
       "operator": "Código",
       "blockTypes": ["VALIDAR"],
-      "processTypes": ["editing"],
+      "processTypes": ["assets", "editing"],
       "inputPorts": [{ "key": "stock_assets", "label": "Stock materializado", "acceptedTypes": ["records"], "required": true }],
       "outputPorts": [
         { "key": "decision", "label": "Decisão", "producedTypes": ["approval"], "required": true },

@@ -19,5 +19,8 @@ try {
   const validated = await execute({ invocation: { mode: "start" }, capabilityId: "validate-stock-assets", inputs: { stock_assets: stored } }, services);
   assert.equal(validated.status, "success");
   assert.equal(validated.values.decision, "approved");
+  const rejected = await execute({ invocation: { mode: "start" }, capabilityId: "validate-stock-assets", inputs: { stock_assets: [{ ...stored[0], file: { ...stored[0].file, sha256: "ausente" } }] } }, services);
+  assert.equal(rejected.status, "error");
+  assert.equal(rejected.code, "STOCK_QA_FAILED");
   console.log("norte-magnata-stock-library: ok");
 } finally { await rm(temp, { recursive: true, force: true }); }
