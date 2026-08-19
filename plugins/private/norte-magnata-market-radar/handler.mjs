@@ -1,5 +1,15 @@
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
 const MAX_QUERIES_PER_LANE = 12;
+const YOUTUBE_KEY_NAMES = [
+  "YOUTUBE_DATA_API_KEY",
+  "YOUTUBE_DATA_API_KEY_2",
+  "YOUTUBE_DATA_API_KEY_3",
+  "YOUTUBE_DATA_API_KEY_4",
+  "YOUTUBE_DATA_API_KEY_5",
+  "YOUTUBE_DATA_API_KEY_6",
+  "YOUTUBE_DATA_API_KEY_7",
+  "YOUTUBE_DATA_API_KEY_8",
+];
 
 const RECORD_FIELDS = [
   ["source", "Fonte", "text"],
@@ -74,10 +84,10 @@ function ensureOutputContract(request) {
   return undefined;
 }
 
-function parseApiError(payload) {
+function apiError(payload) {
   const reason = payload?.error?.errors?.[0]?.reason ?? payload?.error?.status ?? "";
   if (["quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
-    return { code: "RATE_LIMIT", retryable: true, message: "A quota temporária da YouTube Data API foi atingida." };
+    return { code: "RATE_LIMIT", retryable: true, message: "A quota temporária da YouTube Data API foi atingida.", quota: true };
   }
   if (["keyInvalid", "forbidden", "accessNotConfigured"].includes(reason)) {
     return { code: "AUTHENTICATION_FAILED", retryable: false, message: "A chave da YouTube Data API foi recusada ou não está habilitada." };
@@ -85,23 +95,47 @@ function parseApiError(payload) {
   return { code: "UPSTREAM_UNAVAILABLE", retryable: true, message: "A YouTube Data API não respondeu à pesquisa." };
 }
 
-async function youtubeJson(path, params, apiKey, signal) {
-  const url = new URL(`${YOUTUBE_API}${path}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-  url.searchParams.set("key", apiKey);
-  let response;
-  try {
-    response = await fetch(url, { signal });
-  } catch (error) {
-    if (error?.name === "AbortError") throw Object.assign(new Error("Coleta cancelada."), { code: "CANCELLED", retryable: false });
-    throw Object.assign(new Error("Não foi possível alcançar a YouTube Data API."), { code: "UPSTREAM_UNAVAILABLE", retryable: true });
+function makeYouTubeClient(keys, signal) {
+  let keyIndex = 0;
+  const exhausted = new Set();
+  const usage = { searchCalls: 0, detailsCalls: 0, rotations: 0 };
+
+  async function request(path, params) {
+    while (true) {
+      const url = new URL(`${YOUTUBE_API}${path}`);
+      for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+      url.searchParams.set("key", keys[keyIndex]);
+      if (path === "/search") usage.searchCalls += 1;
+      else usage.detailsCalls += 1;
+      let response;
+      try {
+        response = await fetch(url, { signal });
+      } catch (error) {
+        if (error?.name === "AbortError") throw Object.assign(new Error("Coleta cancelada."), { code: "CANCELLED", retryable: false });
+        throw Object.assign(new Error("Não foi possível alcançar a YouTube Data API."), { code: "UPSTREAM_UNAVAILABLE", retryable: true });
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) return payload;
+      const error = apiError(payload);
+      if (error.quota) {
+        exhausted.add(keyIndex);
+        const nextIndex = keys.findIndex((_, index) => !exhausted.has(index));
+        if (nextIndex >= 0) {
+          keyIndex = nextIndex;
+          usage.rotations += 1;
+          continue;
+        }
+        throw Object.assign(new Error("Todas as chaves YouTube configuradas sinalizaram quota esgotada."), { code: "RATE_LIMIT", retryable: true });
+      }
+      throw Object.assign(new Error(error.message), error);
+    }
   }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = parseApiError(payload);
-    throw Object.assign(new Error(error.message), error);
-  }
-  return payload;
+  return { request, usage };
+}
+
+async function configuredKeys(services) {
+  const values = await Promise.all(YOUTUBE_KEY_NAMES.map((name) => services.getSecret(name)));
+  return [...new Set(values.map((value) => text(value)).filter(Boolean))];
 }
 
 function normalizeVideo(item, query, lane, retrievedAt) {
@@ -165,12 +199,12 @@ export async function execute(request, services) {
     };
   }
 
-  const apiKey = await services.getSecret("YOUTUBE_DATA_API_KEY");
-  if (!text(apiKey)) {
+  const keys = await configuredKeys(services);
+  if (!keys.length) {
     return {
       status: "error",
       code: "MISSING_SECRET",
-      message: "Conecte YOUTUBE_DATA_API_KEY na Central de Plugins antes de iniciar a coleta.",
+      message: "Conecte ao menos uma chave YOUTUBE_DATA_API_KEY na Central de Plugins antes de iniciar a coleta.",
       retryable: false,
     };
   }
@@ -182,13 +216,14 @@ export async function execute(request, services) {
     ...bridgeQueries.map((query) => ({ query, lane: "niche_bending" })),
   ];
   const found = new Map();
+  const client = makeYouTubeClient(keys, services.signal);
 
   try {
     for (const plan of plannedQueries) {
       if (services.signal?.aborted) {
         return { status: "error", code: "CANCELLED", message: "Coleta cancelada.", retryable: false };
       }
-      const search = await youtubeJson(
+      const search = await client.request(
         "/search",
         {
           part: "snippet",
@@ -198,8 +233,6 @@ export async function execute(request, services) {
           publishedAfter,
           maxResults,
         },
-        apiKey,
-        services.signal,
       );
       for (const item of Array.isArray(search.items) ? search.items : []) {
         const id = text(item?.id?.videoId);
@@ -215,15 +248,24 @@ export async function execute(request, services) {
           market_snapshot: [],
           research_summary: `Coleta concluída em ${retrievedAt}. Nenhum vídeo público foi encontrado para ${plannedQueries.length} consulta(s) na janela de ${publishedWithinDays} dias.`,
         },
-        logs: [`youtube_search_calls=${plannedQueries.length}`, "youtube_video_details_calls=0"],
+        usage: {
+          provider: "YouTube Data API",
+          inputUnits: client.usage.searchCalls * 100,
+          totalUnits: client.usage.searchCalls * 100,
+          unit: "estimated quota units",
+        },
+        logs: [
+          `youtube_search_calls=${client.usage.searchCalls}`,
+          "youtube_video_details_calls=0",
+          `quota_rotations=${client.usage.rotations}`,
+          "records=0",
+        ],
       };
     }
 
-    const details = await youtubeJson(
+    const details = await client.request(
       "/videos",
       { part: "snippet,statistics,contentDetails", id: ids.join(","), maxResults: 50 },
-      apiKey,
-      services.signal,
     );
     const snapshot = (Array.isArray(details.items) ? details.items : [])
       .map((item) => {
@@ -245,7 +287,18 @@ export async function execute(request, services) {
           "Este snapshot é factual: não cria nem aprova tema, título, CTA ou roteiro.",
         ].join("\n"),
       },
-      logs: [`youtube_search_calls=${plannedQueries.length}`, "youtube_video_details_calls=1", `records=${snapshot.length}`],
+      usage: {
+        provider: "YouTube Data API",
+        inputUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls,
+        totalUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls,
+        unit: "estimated quota units",
+      },
+      logs: [
+        `youtube_search_calls=${client.usage.searchCalls}`,
+        `youtube_video_details_calls=${client.usage.detailsCalls}`,
+        `quota_rotations=${client.usage.rotations}`,
+        `records=${snapshot.length}`,
+      ],
     };
   } catch (error) {
     return {
