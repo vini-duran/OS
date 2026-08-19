@@ -1,0 +1,18 @@
+{
+  "$schema":"../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion":"1","id":"com.norte-magnata.narration","name":"Norte Magnata — Narração","version":"0.1.0",
+  "description":"Materializa voz em MP3 e SRT obtido da transcrição do próprio áudio.","author":"Norte Magnata","license":"LicenseRef-NorteMagnata-Private",
+  "runtime":{"kind":"node","version":">=26 <27","module":"esm"},"minCoreVersion":"0.3.0","entrypoint":"handler.mjs",
+  "permissions":["network","filesystem:read","filesystem:write","process"],"networkHosts":["api.openai.com"],"secretKeys":["OPENAI_API_KEY"],"deliveryTypes":["audio","text"],
+  "capabilities":[{"id":"generate-audio-and-real-srt","operator":"Código","blockTypes":["CRIAR"],"processTypes":["narration"],
+    "inputPorts":[{"key":"script","label":"Roteiro aprovado","acceptedTypes":["textarea"],"required":true}],
+    "outputPorts":[
+      {"key":"audio","label":"Narração MP3","producedTypes":["audio"],"required":true,"presentation":{"renderer":"audio-player","itemType":"audio","acceptedMimeTypes":["audio/mpeg"]}},
+      {"key":"srt","label":"SRT real","producedTypes":["file"],"required":true,"presentation":{"renderer":"file-list","itemType":"file","acceptedMimeTypes":["application/x-subrip","text/plain"]}},
+      {"key":"narration_report","label":"Relatório da narração","producedTypes":["textarea"],"required":true,"presentation":{"renderer":"text-long"}}
+    ],"execution":{"mode":"immediate","defaultTimeoutMs":240000,"supportsCancellation":true,"maxConcurrency":1},"sideEffects":["external_write","external_read","local_artifact","subprocess"],"cost":{"model":"metered","estimateSupported":false},
+    "dataPolicy":{"sendsDataToThirdParties":true,"providers":["OpenAI Audio API"],"retentionPolicyUrl":"https://platform.openai.com/docs/guides/your-data","trainingPolicyUrl":"https://platform.openai.com/docs/guides/your-data"},
+    "blockConfigSchema":{"type":"object","additionalProperties":false,"properties":{"voice":{"type":"string","enum":["onyx","echo","fable","alloy","nova","shimmer"],"default":"onyx"},"speed":{"type":"number","minimum":0.75,"maximum":1.15,"default":0.94},"simulate":{"type":"boolean","default":false}}},
+    "outputSchema":{"type":"object","required":["audio","srt","narration_report"],"properties":{"audio":{"type":"object"},"srt":{"type":"object"},"narration_report":{"type":"string"}}}
+  }]
+}
