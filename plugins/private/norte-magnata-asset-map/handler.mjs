@@ -2,6 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 
 const API = "https://api.openai.com/v1/responses";
 const NONE = new Set(["", "none", "nenhum", "—", "-"]);
+const IMAGE_RESTRICTIONS = "Full-bleed cinematic 16:9, scene fills the entire canvas, no readable text, no logos, no brands, no white or off-white border, no mat, no frame, no inset illustration, no blank card, no vertical side bars.";
+const IMAGE_RISK_GUARDRAILS = "No pseudo-text, no duplicated objects or limbs, no cropped or disconnected limbs. Any visible screen or paper must be featureless or turned away unless its content will be added later as a validated overlay.";
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const fail = (code, message, retryable = false) => ({ status: "error", code, message, retryable });
@@ -150,7 +152,6 @@ function applySlots(blocks, config) {
 function fallbackScene(base, index) {
   const media = base.midia_principal_exigida;
   const hiro = index % 3 === 0 ? "Tutor" : "ausente";
-  const restriction = "Full-bleed cinematic 16:9, scene fills the entire canvas, no readable text, no logos, no brands, no white or off-white border, no mat, no frame, no inset illustration, no blank card, no vertical side bars.";
   return {
     ...base,
     funcao_narrativa: index === 0 ? "hook" : "mecanismo",
@@ -159,7 +160,7 @@ function fallbackScene(base, index) {
     estado_hiro: hiro,
     acao_visual: hiro === "ausente" ? "Um objeto concreto muda de posição e revela a consequência da fala." : "[Hiro] executa uma ação física pequena e verificável ligada à fala.",
     composicao: "Plano médio com profundidade, assunto fora do centro e cenário preenchendo todo o quadro.",
-    prompt_imagem: `${hiro === "ausente" ? "" : "Use [Hiro] as the exact recurring character. "}Dark noir graphic novel, petroleum blue and charcoal palette. ${restriction}`,
+    prompt_imagem: `${hiro === "ausente" ? "" : "Use [Hiro] as the exact recurring character. "}Dark noir graphic novel, petroleum blue and charcoal palette. ${IMAGE_RESTRICTIONS} ${IMAGE_RISK_GUARDRAILS}`,
     prompt_video: media === "video_gerado" ? "Start with visible resistance; then the subject performs one dominant physical action; a material object changes; end on the clear consequence. Continuous motion, no loop, no text, no logo." : "nenhum",
     movimento: media === "imagem_animada" ? "push_in com parallax discreto" : "movimento material nativo do vídeo",
     mudanca_interna: base.duracao_seg > 5 ? "A ação muda o objeto e o enquadramento revela a consequência antes do corte." : "revelação curta no final",
@@ -187,6 +188,10 @@ Regras:
 - imagem_animada exige movimento contínuo. Acima de 5s descreva mudança interna; acima de 10s descreva duas mudanças ou corte interno.
 - Se Hiro aparecer, estado_hiro não pode ser ausente, acao_visual e prompt_imagem devem conter [Hiro] e uma ação física.
 - Todo prompt de imagem precisa conter literalmente: Full-bleed cinematic 16:9; no readable text; no logos; no brands; no white or off-white border; no mat; no frame; no inset illustration; no blank card; no vertical side bars.
+- Evite defeitos observados na prova real: no pseudo-text; no duplicated objects or limbs; no cropped or disconnected limbs. Tela ou papel visível deve ficar sem símbolos ou virado para longe, pois texto/interface só entra depois como overlay validado.
+- Declare quantidade exata dos objetos narrativamente importantes. Não acrescente celular, caneca, papel ou notebook como decoração. Não repita a combinação mesa + notebook + caneca em cenas consecutivas.
+- Em cada janela de cinco cenas, varie pelo menos três entre: local, escala do plano, ângulo de câmera, ação e objeto dominante. A variação deve servir à progressão causal, não ser aleatória.
+- Quando a mídia exigida for video_gerado, prompt_imagem é o quadro inicial limpo da ação descrita em prompt_video: anatomia clara, espaço para o movimento e nenhum resultado final já consumado.
 - usar_overlay=false, usar_sfx=false ou usar_texto=false obriga o campo correspondente a "nenhum". Texto permitido tem 1 a 5 palavras e não é legenda.
 - Máximo de três camadas totais por cena. SFX baixo e pontual. Não há música.
 - Transições 0,36s a 0,72s; não repetir a mesma três vezes. Variar câmera/movimento entre cenas consecutivas.
@@ -241,9 +246,10 @@ function mergeScenes(block, proposed) {
     if (!base.usar_texto) result.texto_tela = "nenhum";
     if (result.midia_principal !== "video_gerado") result.prompt_video = "nenhum";
     if (result.midia_principal !== "broll_video") { result.broll_consulta = "nenhum"; result.broll_funcao = "nenhum"; }
-    const requiredImageRestrictions = "Full-bleed cinematic 16:9, scene fills the entire canvas, no readable text, no logos, no brands, no white or off-white border, no mat, no frame, no inset illustration, no blank card, no vertical side bars.";
     const normalizedPrompt = text(result.prompt_imagem).toLowerCase();
-    if (["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars"].some((token) => !normalizedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${requiredImageRestrictions}`.trim();
+    if (["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars"].some((token) => !normalizedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${IMAGE_RESTRICTIONS}`.trim();
+    const guardedPrompt = text(result.prompt_imagem).toLowerCase();
+    if (["no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs"].some((token) => !guardedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${IMAGE_RISK_GUARDRAILS}`.trim();
     if (text(result.estado_hiro).toLowerCase() !== "ausente") {
       if (!text(result.prompt_imagem).includes("[Hiro]")) result.prompt_imagem = `Use [Hiro] as the exact recurring character. ${result.prompt_imagem}`;
       if (!text(result.acao_visual).includes("[Hiro]")) result.acao_visual = `[Hiro] ${text(result.acao_visual)}`.trim();
@@ -289,7 +295,7 @@ function validate(assets, targets) {
     if (index && Math.abs(seconds(scene.inicio) - seconds(ordered[index - 1].fim)) > .25) problems.push(`${id}: buraco ou sobreposição temporal.`);
     if (duration > 5 && NONE.has(text(scene.mudanca_interna).toLowerCase())) problems.push(`${id}: cena longa sem mudança interna.`);
     const imagePrompt = text(scene.prompt_imagem).toLowerCase();
-    for (const token of ["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars"]) if (!imagePrompt.includes(token)) problems.push(`${id}: prompt não bloqueia ${token}.`);
+    for (const token of ["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars", "no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs"]) if (!imagePrompt.includes(token)) problems.push(`${id}: prompt não bloqueia ${token}.`);
     if (scene.midia_principal === "video_gerado" && (text(scene.prompt_video).length < 100 || NONE.has(text(scene.prompt_video).toLowerCase()))) problems.push(`${id}: vídeo sem progressão temporal executável.`);
     if (scene.midia_principal === "broll_video" && (NONE.has(text(scene.broll_consulta).toLowerCase()) || NONE.has(text(scene.broll_funcao).toLowerCase()))) problems.push(`${id}: B-roll sem consulta/função.`);
     if (text(scene.estado_hiro).toLowerCase() !== "ausente" && (!text(scene.prompt_imagem).includes("[Hiro]") || !text(scene.acao_visual).includes("[Hiro]"))) problems.push(`${id}: Hiro sem identidade/ação explícita.`);

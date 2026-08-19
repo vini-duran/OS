@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.asset-map",
   "name": "Norte Magnata — Mapa de Assets",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Converte o SRT real em um mapa de cenas executável e aplica QA determinístico antes da geração de mídia.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",

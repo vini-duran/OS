@@ -20,6 +20,12 @@ try {
   const created = await execute({ invocation: { mode: "start" }, capabilityId: "plan-scene-map", configuration: { block_count: 8, scenes_per_minute: 12, generated_videos: 30, broll_videos: 11, overlay_scenes: 18, sfx_scenes: 14, text_scenes: 20, simulate: true }, inputs: { srt: { url: "/api/files/test.srt" } } }, services);
   assert.equal(created.status, "success", JSON.stringify(created));
   assert.equal(created.values.assets.filter((scene) => scene.midia_principal === "video_gerado").length, 30);
+  for (const scene of created.values.assets) {
+    const prompt = scene.prompt_imagem.toLowerCase();
+    assert.match(prompt, /no pseudo-text/);
+    assert.match(prompt, /no duplicated objects or limbs/);
+    assert.match(prompt, /no cropped or disconnected limbs/);
+  }
   const storedMap = JSON.parse(await readFile(path.join(output, "mapa-assets-norte-magnata.json"), "utf8"));
   const validated = await execute({ invocation: { mode: "start" }, capabilityId: "validate-scene-map", inputs: { assets: created.values.assets, asset_map: { url: "/api/files/map.json" } } }, { ...services, resolveInputFile: async () => path.join(output, "mapa-assets-norte-magnata.json") });
   assert.equal(validated.status, "success");

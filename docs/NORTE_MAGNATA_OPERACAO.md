@@ -40,8 +40,8 @@ Uma etapa não deve iniciar mídia, renderização ou publicação da etapa segu
 | Thumbnail | concluída | PNG 1536×864, aprovado sem faixas laterais |
 | Roteiro | concluído | 1.057 palavras, aprovado; alvo de 7–9 minutos |
 | Narração | concluída | MP3 de 8min12s e SRT real com 112 entradas |
-| Assets | concluídos até mídia externa | mapa com 98 cenas + 43 usos stock aprovados |
-| Edição | próxima | geração das imagens e dos vídeos ainda não iniciada |
+| Assets | prova de imagem aprovada | mapa com 98 cenas + 43 usos stock; 10 imagens-base aprovadas em lotes curtos |
+| Edição | bloqueada corretamente | fila completa de imagens e vídeos ainda não iniciada |
 | Publicação | bloqueada | depende do master aprovado |
 
 Este quadro é um registro desta primeira produção; o App é a autoridade de estado em tempo real.
@@ -90,3 +90,13 @@ Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertence
 - O QA confirmou licença, origem, autor, `production_id`, MIME, tamanho e SHA-256. Uma conferência local adicional confirmou 25/25 hashes, 17/17 vídeos horizontais decodificáveis e 8/8 áudios decodificáveis.
 - A execução real revelou dois defeitos antes da aprovação: variável de contagem fora do escopo e divergência entre tamanho declarado pela API e o download. Ambos bloquearam a etapa. As versões 0.1.3 e 0.1.4 corrigiram somente o plugin stock; narração e mapa não foram refeitos.
 - Estado após a validação: **Assets concluído**, **Edição não iniciada**, **nenhuma renderização ativa**.
+
+## 8. Prova curta de imagens no Flow
+
+- O ContentFlow prepara o lote; a automação anterior funciona apenas como adaptador temporário para o Flow, download e organização. A operação continua identificada pelo mesmo `production_id` e hash do mapa.
+- O perfil local pode ser fixado por `MAGNATA_FLOW_CHROME_PROFILE`. Nesta máquina a prova usou `Profile 16`; esse valor não deve ser presumido em outra máquina.
+- Cada cena ocupa uma linha e é separada da próxima por uma linha vazia. O projeto atual do Flow é selecionado manualmente e não deve ser recarregado automaticamente durante a execução.
+- A primeira prova funcional revelou texto falso, repetição de objetos e uma mão desconectada. As regras foram incorporadas ao plugin do mapa; somente a cena reprovada foi refeita.
+- Resultado aprovado: B01_C01, B01_C04, B01_C05 e B01_C06 da rodada `smoke-005`, mais B01_C03 da rodada seletiva `smoke-006`. As cinco têm 1376×768, proporção 16:9, hashes preservados e nenhuma borda branca.
+- B01_C01, B01_C03, B01_C04 e B01_C06 são quadros iniciais para transformação posterior em vídeo. B01_C05 permanece imagem animada. Isso ainda não autoriza a fila completa nem a edição.
+- Relatório rastreável: `docs/NORTE_MAGNATA_FLOW_SMOKE_2026-08-19.md`.

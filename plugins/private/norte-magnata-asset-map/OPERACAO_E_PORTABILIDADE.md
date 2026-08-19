@@ -4,7 +4,9 @@ Plugin do processo **Assets**. Recebe o SRT real da narração, cria cortes can�
 
 Configuração do teste atual: oito blocos; doze cenas/minuto; trinta vídeos gerados; onze B-rolls em vídeo; dezoito overlays; quatorze SFX; vinte textos curtos; música desativada.
 
-O QA confere continuidade temporal, duração, movimento interno, vídeo com progressão, B-roll com função, prompts full-bleed sem quadros/margens brancas, Hiro em ação, antirrepetição, texto curto e transições não repetidas três vezes.
+O QA confere continuidade temporal, duração, movimento interno, vídeo com progressão, B-roll com função, prompts full-bleed sem quadros/margens brancas, Hiro em ação, antirrepetição, texto curto e transições não repetidas três vezes. Desde a versão 0.1.3, o contrato também bloqueia pseudo-texto, objetos ou membros duplicados e membros cortados/desconectados. Tela e papel ficam sem símbolos ou virados para longe; interface e texto são adicionados depois como overlay validado.
+
+Para cenas destinadas a vídeo gerado, a imagem é tratada como quadro inicial: anatomia clara, espaço para a ação e correspondência direta com a progressão descrita no prompt de vídeo. Uma prova curta de cinco cenas é obrigatória antes de liberar uma fila completa.
 
 Para transportar, copie esta pasta com o repositório, vincule-a na Central de Plugins e conecte `OPENAI_API_KEY` ao plugin `com.norte-magnata.asset-map`. Teste antes de produção:
 
