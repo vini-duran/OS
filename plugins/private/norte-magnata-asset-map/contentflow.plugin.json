@@ -1,0 +1,82 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.asset-map",
+  "name": "Norte Magnata — Mapa de Assets",
+  "version": "0.1.2",
+  "description": "Converte o SRT real em um mapa de cenas executável e aplica QA determinístico antes da geração de mídia.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.0",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network", "filesystem:read", "filesystem:write"],
+  "networkHosts": ["api.openai.com"],
+  "secretKeys": ["OPENAI_API_KEY"],
+  "deliveryTypes": ["text"],
+  "capabilities": [
+    {
+      "id": "plan-scene-map",
+      "operator": "IA",
+      "blockTypes": ["CRIAR"],
+      "processTypes": ["assets"],
+      "inputPorts": [
+        { "key": "srt", "label": "SRT real", "acceptedTypes": ["file"], "required": true },
+        { "key": "script", "label": "Roteiro aprovado", "acceptedTypes": ["textarea"], "required": false },
+        { "key": "script_outline", "label": "Beats narrativos", "acceptedTypes": ["records"], "required": false }
+      ],
+      "outputPorts": [
+        { "key": "assets", "label": "Cenas planejadas", "producedTypes": ["records"], "required": true },
+        { "key": "asset_map", "label": "Mapa canônico JSON", "producedTypes": ["file"], "required": true },
+        { "key": "asset_report", "label": "Relatório do mapa", "producedTypes": ["textarea"], "required": true }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 720000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": ["external_read", "external_write", "local_artifact"],
+      "cost": { "model": "metered", "estimateSupported": false },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["OpenAI Responses API"],
+        "retentionPolicyUrl": "https://platform.openai.com/docs/guides/your-data",
+        "trainingPolicyUrl": "https://platform.openai.com/docs/guides/your-data"
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model": { "type": "string", "default": "gpt-5.6-terra" },
+          "reasoning_effort": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" },
+          "block_count": { "type": "integer", "minimum": 6, "maximum": 10, "default": 8 },
+          "scenes_per_minute": { "type": "number", "minimum": 9, "maximum": 15, "default": 12 },
+          "generated_videos": { "type": "integer", "minimum": 8, "maximum": 40, "default": 30 },
+          "broll_videos": { "type": "integer", "minimum": 4, "maximum": 20, "default": 11 },
+          "overlay_scenes": { "type": "integer", "minimum": 4, "maximum": 30, "default": 18 },
+          "sfx_scenes": { "type": "integer", "minimum": 4, "maximum": 30, "default": 14 },
+          "text_scenes": { "type": "integer", "minimum": 4, "maximum": 30, "default": 20 },
+          "simulate": { "type": "boolean", "default": false }
+        }
+      },
+      "outputSchema": { "type": "object", "required": ["assets", "asset_map", "asset_report"] }
+    },
+    {
+      "id": "validate-scene-map",
+      "operator": "Código",
+      "blockTypes": ["VALIDAR"],
+      "processTypes": ["assets"],
+      "inputPorts": [
+        { "key": "assets", "label": "Cenas planejadas", "acceptedTypes": ["records"], "required": true },
+        { "key": "asset_map", "label": "Mapa canônico JSON", "acceptedTypes": ["file"], "required": false }
+      ],
+      "outputPorts": [
+        { "key": "decision", "label": "Decisão", "producedTypes": ["approval"], "required": true },
+        { "key": "validation_report", "label": "Relatório de QA", "producedTypes": ["textarea"], "required": true },
+        { "key": "asset_metrics", "label": "Métricas", "producedTypes": ["textarea"], "required": true }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 30000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": [],
+      "cost": { "model": "free", "estimateSupported": false },
+      "dataPolicy": { "sendsDataToThirdParties": false },
+      "blockConfigSchema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "outputSchema": { "type": "object", "required": ["decision", "validation_report", "asset_metrics"] }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "executionId": "asset-map-fixture",
+  "traceId": "asset-map-trace",
+  "blockId": "asset-map-create",
+  "capabilityId": "plan-scene-map",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": { "block_count": 6, "scenes_per_minute": 12, "generated_videos": 8, "broll_videos": 4, "overlay_scenes": 4, "sfx_scenes": 4, "text_scenes": 4, "simulate": true },
+  "settings": {},
+  "inputs": { "srt": { "id": "fixture-srt", "name": "input.txt", "mimeType": "text/plain", "size": 244, "url": "/api/files/fixture-input.txt" } },
+  "inputContract": [{ "portKey": "srt", "label": "SRT real", "key": "srt", "type": "file", "required": true }],
+  "outputContract": [
+    { "portKey": "assets", "label": "Cenas planejadas", "key": "assets", "type": "records", "required": true },
+    { "portKey": "asset_map", "label": "Mapa canônico JSON", "key": "asset_map", "type": "file", "required": true },
+    { "portKey": "asset_report", "label": "Relatório do mapa", "key": "asset_report", "type": "textarea", "required": true }
+  ],
+  "context": { "locale": "pt-BR", "timeZone": "America/Porto_Velho", "channel": { "id": "fixture-channel", "name": "Norte Magnata", "language": "pt-BR", "niche": "Filosofia" }, "project": { "id": "fixture-project", "title": "Teste" }, "processType": "assets", "block": { "type": "CRIAR", "name": "Criar mapa", "instructions": "Planejar sem gerar mídia." }, "previousProcessOutputs": [], "previousBlockOutputs": [] }
+}
