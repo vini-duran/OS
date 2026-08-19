@@ -51,8 +51,12 @@ Identidade preservada:
 | 034 | lote curado com 5 cenas | todas rejeitadas por rosto alterado, peça no marco errado, marcador extra, páginas claras e símbolos/câmera no celular |
 | 035 | cinco cenas refeitas após contrato 0.1.8 | C03, C04 e C05 aprovadas; C02 perdeu uma mão e C06 ainda mostrou a câmera |
 | 036 | somente C02 e C06 refeitas | 2/2 aprovadas com duas mãos conectadas e estojo totalmente fechado |
+| 037 | lote curado com 5 cenas | C10, C11 e C12 aprovadas; C07 criou segunda silhueta e C09 alterou Hiro e acrescentou detalhes indevidos |
+| 038 | somente C07 e C09 refeitas | 2/2 aprovadas; mão canônica, fundo limpo e cadeia causal sem pseudo-texto |
+| 039 | lote curado com 5 cenas | C01, C03 e C04 aprovadas; B06_C13 criou janela clara dominante e B07_C02 omitiu uma das seis peças futuras |
+| 040 | somente B06_C13 e B07_C02 refeitas | 2/2 aprovadas; fresta de luz restrita e sete peças exatamente contáveis |
 
-Total remoto consumido: 111 imagens. As recuperações seletivas economizaram 42 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 125 imagens. As recuperações seletivas economizaram 48 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -88,6 +92,10 @@ Décimo primeiro conjunto aprovado nas rodadas `smoke-030` a `smoke-033`: B05_C1
 
 Décimo segundo conjunto aprovado nas rodadas `smoke-034` a `smoke-036`: B06_C02, B06_C03, B06_C04, B06_C05 e B06_C06. O acumulado passa a 60 imagens-base: 24 quadros iniciais de vídeo e 36 imagens animadas. O rosto alterado originou o guardrail 0.1.8; páginas claras, marcadores extras e câmera visível foram removidos antes da aprovação.
 
+Décimo terceiro conjunto aprovado nas rodadas `smoke-037` e `smoke-038`: B06_C07, B06_C09, B06_C10, B06_C11 e B06_C12. O acumulado passa a 65 imagens-base: 26 quadros iniciais de vídeo e 39 imagens animadas. A segunda figura, a mudança de identidade e os detalhes indevidos foram rejeitados; somente C07 e C09 foram refeitas.
+
+Décimo quarto conjunto aprovado nas rodadas `smoke-039` e `smoke-040`: B06_C13, B07_C01, B07_C02, B07_C03 e B07_C04. O acumulado passa a 70 imagens-base: 27 quadros iniciais de vídeo e 43 imagens animadas. A janela clara e a contagem narrativa incompleta foram rejeitadas; as correções preservaram uma única composição escura e sete peças contáveis.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
@@ -115,4 +123,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 27 imagens-base — 21 imagens animadas e 6 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 17 imagens-base — 14 imagens animadas e 3 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.

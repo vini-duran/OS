@@ -97,6 +97,6 @@ Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertence
 - O perfil local pode ser fixado por `MAGNATA_FLOW_CHROME_PROFILE`. Nesta máquina a prova usou `Profile 16`; esse valor não deve ser presumido em outra máquina.
 - Cada cena ocupa uma linha e é separada da próxima por uma linha vazia. O projeto atual do Flow é selecionado manualmente e não deve ser recarregado automaticamente durante a execução.
 - A primeira prova funcional revelou texto falso, repetição de objetos e uma mão desconectada. As regras foram incorporadas ao plugin do mapa; somente a cena reprovada foi refeita.
-- Resultado acumulado: 60 imagens-base aprovadas, sendo 24 quadros iniciais para vídeo e 36 imagens animadas. Todas têm 1376×768, proporção 16:9 e hashes preservados; falhas visuais são refeitas somente nas cenas afetadas.
-- Restam 27 imagens-base: 6 quadros iniciais para vídeo e 21 imagens animadas. Isso ainda não autoriza a geração dos vídeos nem a edição.
+- Resultado acumulado: 70 imagens-base aprovadas, sendo 27 quadros iniciais para vídeo e 43 imagens animadas. Todas têm 1376×768, proporção 16:9 e hashes preservados; falhas visuais são refeitas somente nas cenas afetadas.
+- Restam 17 imagens-base: 3 quadros iniciais para vídeo e 14 imagens animadas. Isso ainda não autoriza a geração dos vídeos nem a edição.
 - Relatório rastreável: `docs/NORTE_MAGNATA_FLOW_SMOKE_2026-08-19.md`.
