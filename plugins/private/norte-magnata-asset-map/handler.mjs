@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 const API = "https://api.openai.com/v1/responses";
 const NONE = new Set(["", "none", "nenhum", "—", "-"]);
 const IMAGE_RESTRICTIONS = "Full-bleed cinematic 16:9, scene fills the entire canvas, no readable text, no logos, no brands, no white or off-white border, no mat, no frame, no inset illustration, no blank card, no vertical side bars.";
-const IMAGE_RISK_GUARDRAILS = "No pseudo-text, no duplicated objects or limbs, no cropped or disconnected limbs. Any visible screen or paper must be featureless or turned away unless its content will be added later as a validated overlay. Abstract smoke, mist, shadow or light must not form extra faces, people or creatures unless explicitly requested. One single continuous composition, no split screen, no diptych, no triptych, no collage, no comic panels or internal vertical bars. No frame-spanning horizontal or vertical graphic bands, stripes or blank zones.";
+const IMAGE_RISK_GUARDRAILS = "No pseudo-text, no duplicated objects or limbs, no cropped or disconnected limbs. Any visible screen or paper must be featureless or turned away unless its content will be added later as a validated overlay. Abstract smoke, mist, shadow or light must not form extra faces, people or creatures unless explicitly requested. One single continuous composition, no split screen, no diptych, no triptych, no collage, no comic panels or internal vertical bars. No frame-spanning horizontal or vertical graphic bands, stripes or blank zones. Keep the whole canvas within the dark noir palette; no predominantly white or off-white background.";
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const fail = (code, message, retryable = false) => ({ status: "error", code, message, retryable });
@@ -252,7 +252,7 @@ function mergeScenes(block, proposed) {
     const normalizedPrompt = text(result.prompt_imagem).toLowerCase();
     if (["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars"].some((token) => !normalizedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${IMAGE_RESTRICTIONS}`.trim();
     const guardedPrompt = text(result.prompt_imagem).toLowerCase();
-    if (["no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning"].some((token) => !guardedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${IMAGE_RISK_GUARDRAILS}`.trim();
+    if (["no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning", "no predominantly white"].some((token) => !guardedPrompt.includes(token))) result.prompt_imagem = `${text(result.prompt_imagem)} ${IMAGE_RISK_GUARDRAILS}`.trim();
     if (text(result.estado_hiro).toLowerCase() !== "ausente") {
       if (!text(result.prompt_imagem).includes("[Hiro]")) result.prompt_imagem = `Use [Hiro] as the exact recurring character. ${result.prompt_imagem}`;
       if (!text(result.acao_visual).includes("[Hiro]")) result.acao_visual = `[Hiro] ${text(result.acao_visual)}`.trim();
@@ -298,7 +298,7 @@ function validate(assets, targets) {
     if (index && Math.abs(seconds(scene.inicio) - seconds(ordered[index - 1].fim)) > .25) problems.push(`${id}: buraco ou sobreposição temporal.`);
     if (duration > 5 && NONE.has(text(scene.mudanca_interna).toLowerCase())) problems.push(`${id}: cena longa sem mudança interna.`);
     const imagePrompt = text(scene.prompt_imagem).toLowerCase();
-    for (const token of ["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars", "no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning"]) if (!imagePrompt.includes(token)) problems.push(`${id}: prompt não bloqueia ${token}.`);
+    for (const token of ["full-bleed cinematic 16:9", "no readable text", "no logos", "no brands", "no white or off-white border", "no vertical side bars", "no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning", "no predominantly white"]) if (!imagePrompt.includes(token)) problems.push(`${id}: prompt não bloqueia ${token}.`);
     if (scene.midia_principal === "video_gerado" && (text(scene.prompt_video).length < 100 || NONE.has(text(scene.prompt_video).toLowerCase()))) problems.push(`${id}: vídeo sem progressão temporal executável.`);
     if (scene.midia_principal === "broll_video" && (NONE.has(text(scene.broll_consulta).toLowerCase()) || NONE.has(text(scene.broll_funcao).toLowerCase()))) problems.push(`${id}: B-roll sem consulta/função.`);
     if (text(scene.estado_hiro).toLowerCase() !== "ausente" && (!text(scene.prompt_imagem).includes("[Hiro]") || !text(scene.acao_visual).includes("[Hiro]"))) problems.push(`${id}: Hiro sem identidade/ação explícita.`);

@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const IMAGE_RISK_GUARDRAILS = "No pseudo-text, no duplicated objects or limbs, no cropped or disconnected limbs. Any visible screen or paper must be featureless or turned away unless its content will be added later as a validated overlay. Abstract smoke, mist, shadow or light must not form extra faces, people or creatures unless explicitly requested. One single continuous composition, no split screen, no diptych, no triptych, no collage, no comic panels or internal vertical bars. No frame-spanning horizontal or vertical graphic bands, stripes or blank zones.";
+const IMAGE_RISK_GUARDRAILS = "No pseudo-text, no duplicated objects or limbs, no cropped or disconnected limbs. Any visible screen or paper must be featureless or turned away unless its content will be added later as a validated overlay. Abstract smoke, mist, shadow or light must not form extra faces, people or creatures unless explicitly requested. One single continuous composition, no split screen, no diptych, no triptych, no collage, no comic panels or internal vertical bars. No frame-spanning horizontal or vertical graphic bands, stripes or blank zones. Keep the whole canvas within the dark noir palette; no predominantly white or off-white background.";
 
 function guardImagePrompt(value) {
   const prompt = String(value || "").replace(/\s+/g, " ").trim();
   const normalized = prompt.toLowerCase();
-  return ["no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning"]
+  return ["no pseudo-text", "no duplicated objects or limbs", "no cropped or disconnected limbs", "must not form extra faces", "no triptych", "no frame-spanning", "no predominantly white"]
     .some((token) => !normalized.includes(token))
     ? `${prompt} ${IMAGE_RISK_GUARDRAILS}`
     : prompt;
