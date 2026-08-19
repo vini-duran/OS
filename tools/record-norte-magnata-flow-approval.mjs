@@ -94,7 +94,7 @@ for (const key of ["dimensoes", "proporcao", "hash_sidecar", "arquivos_unicos"])
   const label = { dimensoes: "em 1376x768", proporcao: "em 16:9", hash_sidecar: "correspondentes", arquivos_unicos: "únicos" }[key];
   approval.qa[key] = `${approval.cenas.length}/${approval.cenas.length} ${label}`;
 }
-approval.qa.borda_branca = `0/${approval.cenas.length}; confirmação visual obrigatória por lote`;
+approval.qa.borda_branca = `${approval.cenas.length}/${approval.cenas.length} com confirmação visual registrada por lote; este script não mede bordas ou áreas claras automaticamente`;
 
 const summary = {
   dry_run: args["dry-run"] === true,

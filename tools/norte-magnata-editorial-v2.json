@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "contract_id": "norte_magnata_editorial_v2",
+  "production_id": "NM-CF-9AB9B6D01B7EFB72",
+  "mapa_conteudo_sha256": "9ab9b6d01b7efb72ceedb21dccef6fd7cffef62b454dabc8c3c8dfeb9d3c1125",
+  "authority": "SRT real da narração e mapa aprovado; não altera texto nem tempos",
+  "full_queue_only": true,
+  "generated_video_target": 42,
+  "moving_timeline_minimum_ratio": 0.6,
+  "music": "disabled",
+  "universal_finish": {
+    "still_motion": "pêndulo discreto como base, com direção e amplitude variadas; crop, pan ou parallax substituem quando a composição não aceita oscilação",
+    "finish_layers": [
+      "noise_1_baixa_opacidade",
+      "noise_2_baixa_opacidade",
+      "particulas_finas",
+      "grao_fino",
+      "fragmentacao_suave"
+    ],
+    "rule": "usar uma camada de acabamento por vez e variar; ela pode ser quase imperceptível, mas nunca encobrir o assunto",
+    "forbidden": [
+      "fumaca_decorativa",
+      "tela_preta_morta",
+      "barras_laterais_mortas",
+      "crop_destrutivo_de_video",
+      "mais_de_tres_camadas_por_cena"
+    ]
+  },
+  "long_scene_policy": {
+    "hard_duration_cutoff": false,
+    "rule": "duração não reprova sozinha; a cena precisa sustentar atenção por ação, mudança interna, corte, reenquadramento, texto estrutural ou vídeo",
+    "over_five_seconds": "exigir justificativa e desenvolvimento perceptível",
+    "over_ten_seconds": "exigir ao menos duas mudanças materiais ou corte interno",
+    "chapter_card": "tela escura pode durar quando texto de 1 a 5 palavras aparece por digitação, crescimento ou revelação e marca uma virada real"
+  },
+  "aspect_ratio_policy": {
+    "vertical_in_landscape": "preservar o vídeo vertical no centro e desenhar as laterais com textura, partículas, fragmentação ou extensão desfocada coerente",
+    "forbidden": "laterais pretas ou brancas mortas e expansão destrutiva do vídeo principal"
+  },
+  "light_area_review": [
+    { "scene_id": "B02_C12", "resolution": "vídeo; o papel recebe o primeiro traço e nunca funciona como cartão vazio" },
+    { "scene_id": "B05_C02", "resolution": "vídeo; escrita, sublinhado e virada de página ocupam progressivamente a área clara" },
+    { "scene_id": "B05_C05", "resolution": "vídeo; marca de conclusão, afastamento dos papéis e fechamento do caderno" }
+  ],
+  "hook_contract": {
+    "range": "00:00:00,000-00:00:50,320",
+    "story": "documento aberto -> resistência física -> desculpa aparentemente razoável -> café e mensagens -> uma hora perdida -> culpa -> descoberta de que a falta de vontade virou ordem",
+    "rule": "cada plano deve causar o seguinte; não usar clipes independentes nem introdução abstrata",
+    "required_accents": [
+      "parada física dos dedos no primeiro segundo",
+      "20 MIN como prova objetiva, não legenda",
+      "rota visual da tarefa para a fuga",
+      "passagem de uma hora por mudança de luz e estado dos objetos",
+      "impacto visual no retorno à tarefa",
+      "virada final mostrando a escolha, não demonizando café ou descanso"
+    ]
+  },
+  "chapter_devices": [
+    { "scene_id": "B04_C14", "text": "PRÁTICA 1", "duration_max_seconds": 1.1, "reveal": "digitação curta e corte para a folha única" },
+    { "scene_id": "B05_C07", "text": "PRÁTICA 2", "duration_max_seconds": 1.1, "reveal": "crescimento seco e corte motivado para a regra fixa" },
+    { "scene_id": "B06_C04", "text": "PRÁTICA 3", "duration_max_seconds": 1.1, "reveal": "aparecimento em duas batidas e abertura do caderno" }
+  ],
+  "promote_to_generated_video": [
+    {
+      "scene_id": "B02_C12",
+      "reason": "virada de 6,68s com ação corporal e primeiro gesto",
+      "prompt_video_v2": "Começo: Hiro reconhece o cansaço com a mão no peito diante da cadeira vazia. Progressão: ele respira, senta, abre uma única folha e segura o lápis. Final: o lápis deixa um traço curto e a luz da mesa se estabiliza. Um movimento contínuo, sem loop e sem texto legível."
+    },
+    {
+      "scene_id": "B03_C13",
+      "reason": "fechamento de 7,039s depende de delimitar e executar uma escolha",
+      "prompt_video_v2": "Começo: ferramenta cercada por opções dispersas sobre a mesa. Progressão: as mãos de Hiro traçam um círculo de giz apenas ao redor da ferramenta; o restante perde luz. Final: Hiro pega a ferramenta e inicia o primeiro gesto fora do círculo. Sem loop e sem símbolos legíveis."
+    },
+    {
+      "scene_id": "B04_C14",
+      "reason": "abertura estrutural da primeira prática e transformação material da pilha",
+      "prompt_video_v2": "Começo: após cartão escuro PRÁTICA 1, mostrar uma pilha alta de papéis. Progressão: Hiro afasta a pilha para a sombra, centraliza uma única folha, senta e faz o primeiro traço. Final: folha iniciada sob luz estável e pilha fora de foco. Sem loop."
+    },
+    {
+      "scene_id": "B05_C02",
+      "reason": "6,48s e grande área de papel exigem ação visível em vez de quadro branco",
+      "prompt_video_v2": "Começo: folha e livro ainda sem marca diante das mãos de Hiro. Progressão: ele resolve uma unidade com o lápis, sublinha o resultado e vira a página. Final: duas páginas trabalhadas ficam visíveis sem texto legível. Evitar papel branco imóvel; sem loop."
+    },
+    {
+      "scene_id": "B05_C05",
+      "reason": "8,72s, maior imagem do mapa, precisa de progressão e encerramento",
+      "prompt_video_v2": "Começo: Hiro observa uma única unidade registrada no caderno. Progressão: faz uma marca simples de conclusão, afasta papéis antigos e respira sem comemoração. Final: fecha o caderno e deixa a mesa limpa. A folha nunca permanece vazia ou imóvel."
+    },
+    {
+      "scene_id": "B05_C09",
+      "reason": "contraste de 6,079s melhora com surgimento e remoção material dos reflexos",
+      "prompt_video_v2": "Começo: Hiro encara um espelho escuro. Progressão: três reflexos distorcidos surgem como possibilidades conflitantes; ele levanta a mão e cobre a superfície. Final: os reflexos desaparecem e a câmera recua para o gesto concreto à mesa. Sem glitch e sem loop."
+    },
+    {
+      "scene_id": "B06_C04",
+      "reason": "abertura da terceira prática precisa de dispositivo de capítulo e ação",
+      "prompt_video_v2": "Começo: após cartão escuro PRÁTICA 3, mostrar a mesa noturna dispersa. Progressão: Hiro abre um caderno pequeno, alinha a caneta e traça a divisão do registro. Final: apenas a área factual permanece iluminada. Sem texto legível e sem loop."
+    },
+    {
+      "scene_id": "B06_C09",
+      "reason": "8,28s de mecanismo causal com quatro revelações sucessivas",
+      "prompt_video_v2": "Começo: diorama escuro com cama, celular, tênis e relógio separados. Progressão: a luz de Hiro revela cada objeto e fios discretos aparecem entre eles, um por vez. Final: a sequência causal completa fica visível e um elo inicial pulsa. Sem loop."
+    },
+    {
+      "scene_id": "B06_C10",
+      "reason": "virada de 6,359s contém redirecionamento físico animável",
+      "prompt_video_v2": "Começo: fio conecta cama e celular. Progressão: Hiro solta o elo junto à cama, puxa o fio pela lateral e o leva até um suporte fora do quarto. Final: o celular fica fixado fora do alcance e a rota anterior permanece interrompida."
+    },
+    {
+      "scene_id": "B07_C11",
+      "reason": "consequência de 5,72s depende da tensão e ruptura da confiança",
+      "prompt_video_v2": "Começo: Hiro segura um fio luminoso contínuo entre as mãos. Progressão: tenta tensioná-lo; pequenos pontos de luz apagam em sequência e as fibras cedem. Final: o fio rompe no centro e as duas pontas ficam apagadas. Sem reversão e sem loop."
+    },
+    {
+      "scene_id": "B08_C08",
+      "reason": "contraste de 6,56s precisa transformar multiplicidade em uma tarefa",
+      "prompt_video_v2": "Começo: vários objetos ocupam a mesa. Progressão: Hiro empurra cada grupo para fora do centro e puxa somente um envelope fechado para diante de si. Final: o envelope domina uma área limpa e as mãos param ao redor dele. Sem loop."
+    },
+    {
+      "scene_id": "B08_C11",
+      "reason": "fechamento de 5,32s pede continuidade de execução até o estado final",
+      "prompt_video_v2": "Começo: Hiro escreve enquanto luz fria e partículas finas atravessam o fundo. Progressão: a atmosfera se desloca para fora da janela, mas a mão mantém o ritmo. Final: a folha acumula marcas não legíveis e Hiro continua agindo. Sem fumaça decorativa e sem loop."
+    }
+  ],
+  "additional_editorial_overlays": [
+    { "scene_id": "B01_C01", "overlay": "pulso de foco curto sobre os dedos suspensos" },
+    { "scene_id": "B01_C03", "overlay": "rota translúcida tarefa-fuga" },
+    { "scene_id": "B01_C06", "overlay": "sombra de ponteiro atravessando o quadro uma vez" },
+    { "scene_id": "B04_C14", "overlay": "spotlight estreito estabilizando na folha única" },
+    { "scene_id": "B05_C05", "overlay": "marca de conclusão materializada no gesto" },
+    { "scene_id": "B06_C09", "overlay": "fios causais revelados em sequência" },
+    { "scene_id": "B07_C11", "overlay": "fibras e pontos de luz acompanhando a ruptura" },
+    { "scene_id": "B08_C08", "overlay": "vinheta direcional fechando sobre a única tarefa" }
+  ],
+  "additional_sfx": [
+    { "scene_id": "B01_C01", "cue": "tecla interrompida e pulso subgrave curto" },
+    { "scene_id": "B01_C02", "cue": "clique seco de cronômetro" },
+    { "scene_id": "B01_C03", "cue": "deslocamento tonal curto da rota" },
+    { "scene_id": "B01_C04", "cue": "cadeira baixa e duas notificações abafadas" },
+    { "scene_id": "B01_C07", "cue": "impacto grave baixo no retorno" },
+    { "scene_id": "B04_C14", "cue": "três teclas e impacto curto de capítulo" },
+    { "scene_id": "B05_C05", "cue": "risco de conclusão e fechamento de caderno" },
+    { "scene_id": "B05_C07", "cue": "impacto seco de capítulo" },
+    { "scene_id": "B06_C04", "cue": "duas batidas discretas de capítulo" },
+    { "scene_id": "B06_C09", "cue": "quatro ticks baixos, um por elo" },
+    { "scene_id": "B07_C11", "cue": "fibra tensionando e ruptura abafada" },
+    { "scene_id": "B08_C11", "cue": "lápis contínuo terminando em pulso baixo" }
+  ],
+  "content_tone_future_productions": {
+    "position": "direto, incisivo e orientado à liberdade; não neutralizar um assunto apenas por ser tabu",
+    "evidence_rule": "separar documento, dado ou citação de inferência e opinião; apresentar a prova e permitir que o público conclua",
+    "bible": "pode ser referência principal quando pertinente, com passagem e contexto verificáveis",
+    "politics_and_institutions": "podem ser criticadas sem alinhamento partidário; não fabricar fatos nem atribuir crime sem evidência",
+    "current_production": "o áudio e o SRT já aprovados não serão reescritos nesta revisão; a força será elevada pela edição"
+  }
+}

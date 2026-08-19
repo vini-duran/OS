@@ -322,7 +322,7 @@ async function createMap(request, services) {
   const config = {
     blocks: clamp(Number(configuration.block_count || 8), 6, 10),
     scenesPerMinute: clamp(Number(configuration.scenes_per_minute || 12), 9, 15),
-    generatedVideos: clamp(Number(configuration.generated_videos || 30), 8, 40),
+    generatedVideos: clamp(Number(configuration.generated_videos || 42), 8, 50),
     brollVideos: clamp(Number(configuration.broll_videos || 11), 4, 20),
     overlayScenes: clamp(Number(configuration.overlay_scenes || 18), 4, 30),
     sfxScenes: clamp(Number(configuration.sfx_scenes || 14), 4, 30),

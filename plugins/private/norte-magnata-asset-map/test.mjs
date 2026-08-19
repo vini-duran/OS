@@ -36,6 +36,9 @@ try {
   assert.equal(validated.status, "success");
   assert.equal(validated.values.decision, "approved");
   assert.equal(storedMap.music, "disabled");
+  const defaults = await execute({ invocation: { mode: "start" }, capabilityId: "plan-scene-map", configuration: { simulate: true }, inputs: { srt: { url: "/api/files/test.srt" } } }, services);
+  assert.equal(defaults.status, "success", JSON.stringify(defaults));
+  assert.equal(defaults.values.assets.filter((scene) => scene.midia_principal === "video_gerado").length, 42);
   console.log("norte-magnata-asset-map: ok");
 } finally {
   await rm(temp, { recursive: true, force: true });

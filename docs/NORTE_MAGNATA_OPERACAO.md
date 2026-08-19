@@ -99,4 +99,8 @@ Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertence
 - A primeira prova funcional revelou texto falso, repetição de objetos e uma mão desconectada. As regras foram incorporadas ao plugin do mapa; somente a cena reprovada foi refeita.
 - Resultado final: 87/87 imagens-base aprovadas, sendo 30 quadros iniciais para vídeo e 57 imagens animadas. Todas têm 1376×768, proporção 16:9, hash preservado e arquivo único; não há ID ausente nem inesperado.
 - O portão de imagens-base está concluído. Isso não iniciou os 30 vídeos nem autoriza a Edição automaticamente; antes, os prompts de movimento devem respeitar as bases aprovadas e passar por dry-run.
+
+## Revisão editorial V2 — 2026-08-19
+
+O mapa foi reavaliado antes de gerar vídeos. A V2 promove 12 imagens para vídeo, levando o alvo de 30 para 42 vídeos gerados, mantém 11 B-rolls, eleva overlays e SFX para 26 cada e cobre 60,36% da timeline com vídeo. O preflight integral das 98 cenas está aprovado, mas a geração continua não iniciada. Detalhes e comando reproduzível: `docs/NORTE_MAGNATA_EDITORIAL_V2_2026-08-19.md`.
 - Relatório rastreável: `docs/NORTE_MAGNATA_FLOW_SMOKE_2026-08-19.md`.
