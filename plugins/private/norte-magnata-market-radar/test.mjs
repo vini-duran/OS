@@ -6,11 +6,12 @@ const fixtureUrl = new URL("./fixtures/execution.json", import.meta.url);
 const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
 const services = (secrets = ["test-key-1", "test-key-2"]) => ({
   signal: new AbortController().signal,
-  getSecret: async (name) => (name === "YOUTUBE_DATA_API_KEY" ? secrets[0] : name === "YOUTUBE_DATA_API_KEY_2" ? secrets[1] : ""),
+  getSecret: async (name) => (name === "YOUTUBE_DATA_API_KEYS" ? secrets.join("\n") : ""),
 });
 
 const originalFetch = globalThis.fetch;
-const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+const json = (value, status = 200) =>
+  new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 try {
   const realFixture = { ...fixture, configuration: { ...fixture.configuration, simulate: false } };
@@ -30,17 +31,27 @@ try {
         items: [
           {
             id: "video-1",
-            snippet: { channelId: "channel-1", channelTitle: "Canal referência", title: "Título observado", publishedAt: "2026-08-10T12:00:00.000Z" },
+            snippet: {
+              channelId: "channel-1",
+              channelTitle: "Canal referência",
+              title: "Título observado",
+              publishedAt: "2026-08-10T12:00:00.000Z",
+            },
             statistics: { viewCount: "10000", likeCount: "300", commentCount: "80" },
-            contentDetails: { duration: "PT6M12S" }
+            contentDetails: { duration: "PT6M12S" },
           },
           {
             id: "video-curto",
-            snippet: { channelId: "channel-2", channelTitle: "Canal curto", title: "Curto", publishedAt: "2026-08-10T12:00:00.000Z" },
+            snippet: {
+              channelId: "channel-2",
+              channelTitle: "Canal curto",
+              title: "Curto",
+              publishedAt: "2026-08-10T12:00:00.000Z",
+            },
             statistics: { viewCount: "999", likeCount: "1", commentCount: "1" },
-            contentDetails: { duration: "PT1M" }
-          }
-        ]
+            contentDetails: { duration: "PT1M" },
+          },
+        ],
       });
     }
     throw new Error(`Rota inesperada: ${parsed.pathname}`);

@@ -21,7 +21,7 @@ A configuração inicial tem quatro consultas centrais, até oito resultados por
 
 ## Credencial e dados enviados
 
-Conecte de uma a oito chaves na Central de Plugins: `YOUTUBE_DATA_API_KEY`, `YOUTUBE_DATA_API_KEY_2` até `YOUTUBE_DATA_API_KEY_8`. Elas ficam no cofre local, nunca no Método, histórico, logs ou repositório.
+Conecte uma lista em `YOUTUBE_DATA_API_KEYS`: cole de uma a oito chaves, uma por linha. A lista inteira fica em um único item do cofre local, nunca no Método, histórico, logs ou repositório.
 
 A coleta começa pela primeira chave conectada. Somente uma resposta explícita de quota/rate limit da YouTube Data API marca aquela chave como indisponível naquela execução e avança para a próxima. Erros de autenticação, configuração, rede ou conteúdo não trocam chave. O resumo de execução informa chamadas estimadas e quantas rotações por quota ocorreram, sem expor qual chave foi usada.
 
