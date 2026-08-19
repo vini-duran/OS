@@ -1,15 +1,6 @@
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
 const MAX_QUERIES_PER_LANE = 12;
-const YOUTUBE_KEY_NAMES = [
-  "YOUTUBE_DATA_API_KEY",
-  "YOUTUBE_DATA_API_KEY_2",
-  "YOUTUBE_DATA_API_KEY_3",
-  "YOUTUBE_DATA_API_KEY_4",
-  "YOUTUBE_DATA_API_KEY_5",
-  "YOUTUBE_DATA_API_KEY_6",
-  "YOUTUBE_DATA_API_KEY_7",
-  "YOUTUBE_DATA_API_KEY_8",
-];
+const YOUTUBE_KEY_SECRET = "YOUTUBE_DATA_API_KEYS";
 
 const RECORD_FIELDS = [
   ["source", "Fonte", "text"],
@@ -39,10 +30,14 @@ function integer(value, fallback) {
 }
 
 function queries(value) {
-  return [...new Set(text(value).split(/\r?\n/).map((item) => item.trim()).filter(Boolean))].slice(
-    0,
-    MAX_QUERIES_PER_LANE,
-  );
+  return [
+    ...new Set(
+      text(value)
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, MAX_QUERIES_PER_LANE);
 }
 
 function durationSeconds(isoDuration) {
@@ -87,12 +82,25 @@ function ensureOutputContract(request) {
 function apiError(payload) {
   const reason = payload?.error?.errors?.[0]?.reason ?? payload?.error?.status ?? "";
   if (["quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
-    return { code: "RATE_LIMIT", retryable: true, message: "A quota temporária da YouTube Data API foi atingida.", quota: true };
+    return {
+      code: "RATE_LIMIT",
+      retryable: true,
+      message: "A quota temporária da YouTube Data API foi atingida.",
+      quota: true,
+    };
   }
   if (["keyInvalid", "forbidden", "accessNotConfigured"].includes(reason)) {
-    return { code: "AUTHENTICATION_FAILED", retryable: false, message: "A chave da YouTube Data API foi recusada ou não está habilitada." };
+    return {
+      code: "AUTHENTICATION_FAILED",
+      retryable: false,
+      message: "A chave da YouTube Data API foi recusada ou não está habilitada.",
+    };
   }
-  return { code: "UPSTREAM_UNAVAILABLE", retryable: true, message: "A YouTube Data API não respondeu à pesquisa." };
+  return {
+    code: "UPSTREAM_UNAVAILABLE",
+    retryable: true,
+    message: "A YouTube Data API não respondeu à pesquisa.",
+  };
 }
 
 function makeYouTubeClient(keys, signal) {
@@ -111,8 +119,15 @@ function makeYouTubeClient(keys, signal) {
       try {
         response = await fetch(url, { signal });
       } catch (error) {
-        if (error?.name === "AbortError") throw Object.assign(new Error("Coleta cancelada."), { code: "CANCELLED", retryable: false });
-        throw Object.assign(new Error("Não foi possível alcançar a YouTube Data API."), { code: "UPSTREAM_UNAVAILABLE", retryable: true });
+        if (error?.name === "AbortError")
+          throw Object.assign(new Error("Coleta cancelada."), {
+            code: "CANCELLED",
+            retryable: false,
+          });
+        throw Object.assign(new Error("Não foi possível alcançar a YouTube Data API."), {
+          code: "UPSTREAM_UNAVAILABLE",
+          retryable: true,
+        });
       }
       const payload = await response.json().catch(() => ({}));
       if (response.ok) return payload;
@@ -125,7 +140,10 @@ function makeYouTubeClient(keys, signal) {
           usage.rotations += 1;
           continue;
         }
-        throw Object.assign(new Error("Todas as chaves YouTube configuradas sinalizaram quota esgotada."), { code: "RATE_LIMIT", retryable: true });
+        throw Object.assign(
+          new Error("Todas as chaves YouTube configuradas sinalizaram quota esgotada."),
+          { code: "RATE_LIMIT", retryable: true },
+        );
       }
       throw Object.assign(new Error(error.message), error);
     }
@@ -134,8 +152,15 @@ function makeYouTubeClient(keys, signal) {
 }
 
 async function configuredKeys(services) {
-  const values = await Promise.all(YOUTUBE_KEY_NAMES.map((name) => services.getSecret(name)));
-  return [...new Set(values.map((value) => text(value)).filter(Boolean))];
+  const value = await services.getSecret(YOUTUBE_KEY_SECRET);
+  return [
+    ...new Set(
+      text(value)
+        .split(/[\r\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 function normalizeVideo(item, query, lane, retrievedAt) {
@@ -178,22 +203,27 @@ export async function execute(request, services) {
 
   const coreQueries = queries(request.configuration?.core_queries);
   const bridgeQueries = queries(request.configuration?.niche_bending_queries);
-  if (!coreQueries.length) return invalidConfiguration("Informe ao menos uma consulta central em core_queries.");
+  if (!coreQueries.length)
+    return invalidConfiguration("Informe ao menos uma consulta central em core_queries.");
 
   const publishedWithinDays = integer(request.configuration?.published_within_days, 60);
   const maxResults = integer(request.configuration?.max_results_per_query, 8);
   const minimumDuration = integer(request.configuration?.min_duration_seconds, 180);
   const simulate = request.configuration?.simulate === true;
-  if (publishedWithinDays < 1 || publishedWithinDays > 365) return invalidConfiguration("published_within_days deve estar entre 1 e 365.");
-  if (maxResults < 1 || maxResults > 20) return invalidConfiguration("max_results_per_query deve estar entre 1 e 20.");
-  if (minimumDuration < 30 || minimumDuration > 7200) return invalidConfiguration("min_duration_seconds deve estar entre 30 e 7200.");
+  if (publishedWithinDays < 1 || publishedWithinDays > 365)
+    return invalidConfiguration("published_within_days deve estar entre 1 e 365.");
+  if (maxResults < 1 || maxResults > 20)
+    return invalidConfiguration("max_results_per_query deve estar entre 1 e 20.");
+  if (minimumDuration < 30 || minimumDuration > 7200)
+    return invalidConfiguration("min_duration_seconds deve estar entre 30 e 7200.");
 
   if (simulate) {
     return {
       status: "success",
       values: {
         market_snapshot: [],
-        research_summary: "Simulação concluída: contrato e parâmetros validados; nenhuma consulta externa foi feita e nenhum dado de mercado foi produzido.",
+        research_summary:
+          "Simulação concluída: contrato e parâmetros validados; nenhuma consulta externa foi feita e nenhum dado de mercado foi produzido.",
       },
       logs: ["simulation=true", "youtube_search_calls=0", "youtube_video_details_calls=0"],
     };
@@ -204,7 +234,8 @@ export async function execute(request, services) {
     return {
       status: "error",
       code: "MISSING_SECRET",
-      message: "Conecte ao menos uma chave YOUTUBE_DATA_API_KEY na Central de Plugins antes de iniciar a coleta.",
+      message:
+        "Conecte ao menos uma chave em YOUTUBE_DATA_API_KEYS na Central de Plugins antes de iniciar a coleta.",
       retryable: false,
     };
   }
@@ -221,19 +252,21 @@ export async function execute(request, services) {
   try {
     for (const plan of plannedQueries) {
       if (services.signal?.aborted) {
-        return { status: "error", code: "CANCELLED", message: "Coleta cancelada.", retryable: false };
+        return {
+          status: "error",
+          code: "CANCELLED",
+          message: "Coleta cancelada.",
+          retryable: false,
+        };
       }
-      const search = await client.request(
-        "/search",
-        {
-          part: "snippet",
-          q: plan.query,
-          type: "video",
-          order: "viewCount",
-          publishedAfter,
-          maxResults,
-        },
-      );
+      const search = await client.request("/search", {
+        part: "snippet",
+        q: plan.query,
+        type: "video",
+        order: "viewCount",
+        publishedAfter,
+        maxResults,
+      });
       for (const item of Array.isArray(search.items) ? search.items : []) {
         const id = text(item?.id?.videoId);
         if (id && !found.has(id)) found.set(id, plan);
@@ -263,17 +296,21 @@ export async function execute(request, services) {
       };
     }
 
-    const details = await client.request(
-      "/videos",
-      { part: "snippet,statistics,contentDetails", id: ids.join(","), maxResults: 50 },
-    );
+    const details = await client.request("/videos", {
+      part: "snippet,statistics,contentDetails",
+      id: ids.join(","),
+      maxResults: 50,
+    });
     const snapshot = (Array.isArray(details.items) ? details.items : [])
       .map((item) => {
         const plan = found.get(text(item.id));
         return plan ? normalizeVideo(item, plan.query, plan.lane, retrievedAt) : undefined;
       })
       .filter((item) => item && item.duration_seconds >= minimumDuration)
-      .sort((left, right) => right.views_per_day - left.views_per_day || right.view_count - left.view_count);
+      .sort(
+        (left, right) =>
+          right.views_per_day - left.views_per_day || right.view_count - left.view_count,
+      );
 
     return {
       status: "success",

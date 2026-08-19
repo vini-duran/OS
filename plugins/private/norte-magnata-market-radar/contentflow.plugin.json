@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.market-radar",
   "name": "Norte Magnata — Radar de Mercado",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Coleta um snapshot factual do YouTube para pesquisa de tema do Norte Magnata, sem criar ou aprovar temas.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",
@@ -12,16 +12,7 @@
   "entrypoint": "handler.mjs",
   "permissions": ["network"],
   "networkHosts": ["www.googleapis.com"],
-  "secretKeys": [
-    "YOUTUBE_DATA_API_KEY",
-    "YOUTUBE_DATA_API_KEY_2",
-    "YOUTUBE_DATA_API_KEY_3",
-    "YOUTUBE_DATA_API_KEY_4",
-    "YOUTUBE_DATA_API_KEY_5",
-    "YOUTUBE_DATA_API_KEY_6",
-    "YOUTUBE_DATA_API_KEY_7",
-    "YOUTUBE_DATA_API_KEY_8"
-  ],
+  "secretKeys": ["YOUTUBE_DATA_API_KEYS"],
   "deliveryTypes": ["processing"],
   "capabilities": [
     {
