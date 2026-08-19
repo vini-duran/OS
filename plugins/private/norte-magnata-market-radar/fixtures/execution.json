@@ -1,0 +1,33 @@
+{
+  "executionId": "norte-magnata-radar-fixture",
+  "traceId": "norte-magnata-radar-trace",
+  "blockId": "theme-market-radar",
+  "capabilityId": "collect-youtube-market-snapshot",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": {
+    "core_queries": "disciplina masculina autocontrole\nhábitos foco produtividade",
+    "niche_bending_queries": "",
+    "published_within_days": 60,
+    "max_results_per_query": 8,
+    "min_duration_seconds": 180,
+    "simulate": true
+  },
+  "settings": {},
+  "inputs": {},
+  "inputContract": [],
+  "outputContract": [
+    { "portKey": "market_snapshot", "key": "market_snapshot", "label": "Snapshot de mercado", "type": "records", "required": true },
+    { "portKey": "research_summary", "key": "research_summary", "label": "Resumo da coleta", "type": "textarea", "required": true }
+  ],
+  "context": {
+    "locale": "pt-BR",
+    "timeZone": "America/Porto_Velho",
+    "channel": { "id": "norte-magnata", "name": "Norte Magnata", "language": "pt-BR", "niche": "desenvolvimento masculino" },
+    "project": { "id": "radar-de-mercado", "title": "Radar de Mercado" },
+    "processType": "theme",
+    "block": { "type": "BUSCAR", "name": "Coletar snapshot de mercado", "instructions": "Coleta factual." },
+    "previousProcessOutputs": [],
+    "previousBlockOutputs": []
+  }
+}
