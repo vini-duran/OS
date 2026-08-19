@@ -55,8 +55,10 @@ Identidade preservada:
 | 038 | somente C07 e C09 refeitas | 2/2 aprovadas; mão canônica, fundo limpo e cadeia causal sem pseudo-texto |
 | 039 | lote curado com 5 cenas | C01, C03 e C04 aprovadas; B06_C13 criou janela clara dominante e B07_C02 omitiu uma das seis peças futuras |
 | 040 | somente B06_C13 e B07_C02 refeitas | 2/2 aprovadas; fresta de luz restrita e sete peças exatamente contáveis |
+| 041 | lote curado com 5 cenas | C05, C06, C07 e C09 aprovadas; C10 expôs detalhe de câmera/interface no telefone |
+| 042 | somente C10 refeita | aprovada com estojo selado, pasta fechada e estado inicial limpo |
 
-Total remoto consumido: 125 imagens. As recuperações seletivas economizaram 48 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 131 imagens. As recuperações seletivas economizaram 52 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -96,6 +98,8 @@ Décimo terceiro conjunto aprovado nas rodadas `smoke-037` e `smoke-038`: B06_C0
 
 Décimo quarto conjunto aprovado nas rodadas `smoke-039` e `smoke-040`: B06_C13, B07_C01, B07_C02, B07_C03 e B07_C04. O acumulado passa a 70 imagens-base: 27 quadros iniciais de vídeo e 43 imagens animadas. A janela clara e a contagem narrativa incompleta foram rejeitadas; as correções preservaram uma única composição escura e sete peças contáveis.
 
+Décimo quinto conjunto aprovado nas rodadas `smoke-041` e `smoke-042`: B07_C05, B07_C06, B07_C07, B07_C09 e B07_C10. O acumulado passa a 75 imagens-base: 28 quadros iniciais de vídeo e 47 imagens animadas. O detalhe visível do telefone foi rejeitado; o quadro inicial corrigido usa estojo selado e reserva a desorganização para a progressão do vídeo.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
@@ -123,4 +127,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 17 imagens-base — 14 imagens animadas e 3 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 12 imagens-base — 10 imagens animadas e 2 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
