@@ -57,8 +57,11 @@ Identidade preservada:
 | 040 | somente B06_C13 e B07_C02 refeitas | 2/2 aprovadas; fresta de luz restrita e sete peças exatamente contáveis |
 | 041 | lote curado com 5 cenas | C05, C06, C07 e C09 aprovadas; C10 expôs detalhe de câmera/interface no telefone |
 | 042 | somente C10 refeita | aprovada com estojo selado, pasta fechada e estado inicial limpo |
+| 043 | lote curado com 5 cenas | C11 e C12 aprovadas; B08_C01 criou segunda silhueta, C02 abriu faixa clara e C03 começou aberto |
+| 044 | somente B08_C01, C02 e C03 refeitas | C01 e C02 aprovadas; C03 criou terceiro braço e mão |
+| 045 | somente B08_C03 refeita | aprovada com dois braços, duas mãos e folhas totalmente fechadas |
 
-Total remoto consumido: 131 imagens. As recuperações seletivas economizaram 52 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 140 imagens. As recuperações seletivas economizaram 56 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -100,6 +103,8 @@ Décimo quarto conjunto aprovado nas rodadas `smoke-039` e `smoke-040`: B06_C13,
 
 Décimo quinto conjunto aprovado nas rodadas `smoke-041` e `smoke-042`: B07_C05, B07_C06, B07_C07, B07_C09 e B07_C10. O acumulado passa a 75 imagens-base: 28 quadros iniciais de vídeo e 47 imagens animadas. O detalhe visível do telefone foi rejeitado; o quadro inicial corrigido usa estojo selado e reserva a desorganização para a progressão do vídeo.
 
+Décimo sexto conjunto aprovado nas rodadas `smoke-043` a `smoke-045`: B07_C11, B07_C12, B08_C01, B08_C02 e B08_C03. O acumulado passa a 80 imagens-base: 29 quadros iniciais de vídeo e 51 imagens animadas. Segunda silhueta, faixa clara, estado inicial aberto e membro extra foram rejeitados; a recuperação final preserva sombra plana, abertura escura e anatomia correta.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
@@ -127,4 +132,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 12 imagens-base — 10 imagens animadas e 2 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 7 imagens-base — 6 imagens animadas e 1 quadro inicial de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
