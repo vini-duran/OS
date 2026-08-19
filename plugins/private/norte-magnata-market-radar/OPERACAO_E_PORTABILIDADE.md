@@ -66,7 +66,8 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 - Janela: 60 dias; duração mínima: 180 segundos.
 - Vídeos únicos encontrados: 23; registros aprovados pelo filtro: 6.
 - Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave.
-- Resultado: coleta concluída; o projeto aguarda a unidade editorial seguinte, pois o Radar não cria um Tema final.
+- Resultado técnico: coleta concluída; o projeto aguarda a unidade editorial seguinte, pois o Radar não cria um Tema final.
+- Revisão editorial: **não usar este primeiro snapshot para criar dossiês**. Os resultados misturaram referências genéricas e em espanhol/inglês; a próxima rodada deve ajustar consultas, idioma e critérios de aderência antes de seguir.
 
 ## Teste antes de mover
 
