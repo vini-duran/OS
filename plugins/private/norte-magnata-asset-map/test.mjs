@@ -25,6 +25,9 @@ try {
     assert.match(prompt, /no pseudo-text/);
     assert.match(prompt, /no duplicated objects or limbs/);
     assert.match(prompt, /no cropped or disconnected limbs/);
+    assert.match(prompt, /must not form extra faces/);
+    assert.match(prompt, /no triptych/);
+    assert.match(prompt, /no frame-spanning/);
   }
   const storedMap = JSON.parse(await readFile(path.join(output, "mapa-assets-norte-magnata.json"), "utf8"));
   const validated = await execute({ invocation: { mode: "start" }, capabilityId: "validate-scene-map", inputs: { assets: created.values.assets, asset_map: { url: "/api/files/map.json" } } }, { ...services, resolveInputFile: async () => path.join(output, "mapa-assets-norte-magnata.json") });

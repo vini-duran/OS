@@ -26,8 +26,18 @@ Identidade preservada:
 | 009 | somente C10 refeita | aprovada com estilo gráfico e teclado físico executável |
 | 010 | terceiro lote com 5 cenas | 5/5 aprovadas; nenhum reparo necessário |
 | 011 | lote universal sem overrides novos | 5/5 aprovadas; contrato automático validado |
+| 012 | lote universal com 5 cenas | quatro aprovadas; C06 rejeitada por rostos extras na fumaça |
+| 013 | somente C06 refeita | aprovada; guardrail de atmosfera incorporado ao mapa 0.1.4 |
+| 014 | lote universal com 5 cenas | três aprovadas; C12 com símbolos/espelho duplicado e C13 em tríptico |
+| 015 | C12 e C13 refeitas | C12 aprovada; C13 sem barras, mas fotorealista |
+| 016 | somente C13 refeita | aprovada; composição contínua e identidade gráfica preservada |
+| 017 | lote universal com 5 cenas | três aprovadas; C03 rejeitada por três mãos e C05 por faixas gráficas atravessando o quadro |
+| 018 | somente C03 e C05 refeitas | 2/2 aprovadas; anatomia, composição contínua e tela cheia preservadas |
+| 019 | lote curado com 5 cenas | C09 e C11 aprovadas; C08 rejeitada por elemento branco semelhante a placa, C10 por símbolo falso na caixa e C12 por pseudo-texto na parede |
+| 020 | somente C08, C10 e C12 refeitas | C08 e C10 aprovadas; C12 rejeitada por marcas novas no rosto de Hiro |
+| 021 | somente C12 refeita | aprovada com rosto canônico limpo, anatomia clara e parede sem pseudo-texto |
 
-Total remoto consumido: 39 imagens. As recuperações seletivas economizaram nove gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 69 imagens. As recuperações seletivas economizaram 27 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -47,13 +57,21 @@ Terceiro conjunto aprovado integralmente na rodada `smoke-010`: B02_C04, B02_C06
 
 Quarto conjunto aprovado integralmente na rodada `smoke-011`, usando os prompts do mapa e apenas os guardrails automáticos: B02_C10, B02_C11, B02_C12, B03_C02 e B03_C03. O acumulado passa a 20 imagens-base: 13 quadros iniciais de vídeo e sete imagens animadas.
 
+Quinto conjunto aprovado nas rodadas `smoke-012` e `smoke-013`: B03_C04, B03_C05, B03_C06, B03_C07 e B03_C08. O acumulado passa a 25 imagens-base: 14 quadros iniciais de vídeo e 11 imagens animadas.
+
+Sexto conjunto aprovado nas rodadas `smoke-014`, `smoke-015` e `smoke-016`: B03_C09, B03_C10, B03_C12, B03_C13 e B04_C02. O acumulado passa a 30 imagens-base: 17 quadros iniciais de vídeo e 13 imagens animadas. A falha de tríptico originou o guardrail de composição única do mapa 0.1.5.
+
+Sétimo conjunto aprovado nas rodadas `smoke-017` e `smoke-018`: B04_C03, B04_C04, B04_C05, B04_C06 e B04_C07. O acumulado passa a 35 imagens-base: 18 quadros iniciais de vídeo e 17 imagens animadas. As falhas de anatomia e faixas gráficas foram recuperadas sem repetir as três cenas já aprovadas; o mapa 0.1.6 bloqueia faixas horizontais, verticais e zonas vazias que atravessem o quadro.
+
+Oitavo conjunto aprovado nas rodadas `smoke-019`, `smoke-020` e `smoke-021`: B04_C08, B04_C09, B04_C10, B04_C11 e B04_C12. O acumulado passa a 40 imagens-base: 19 quadros iniciais de vídeo e 21 imagens animadas. Placa branca, símbolo falso, pseudo-texto e mudança facial foram reprovados; as recuperações preservaram somente as versões limpas.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
 2. `norte-magnata-flow-smoke-overrides.json` registra os cinco prompts curados desta prova, sem segredo de API.
 3. O organizador aceita os IDs históricos `NM-*` e os IDs do ContentFlow `NM-CF-*`, preservando os 16 hexadecimais.
 4. O perfil do Chrome é configuração local por variável de ambiente, não caminho fixo do repositório.
-5. O mapa de Assets 0.1.3 passa a exigir bloqueios contra pseudo-texto, duplicação de objetos/membros e membros cortados/desconectados. Telas e papéis ficam sem símbolos ou virados para longe.
+5. O mapa de Assets 0.1.3 a 0.1.6 passa a exigir bloqueios contra pseudo-texto, duplicação de objetos/membros, membros cortados/desconectados, figuras formadas por atmosfera, composições em painéis e faixas gráficas que dividam o quadro. Telas e papéis ficam sem símbolos ou virados para longe.
 
 ## Repetição portátil
 
@@ -74,4 +92,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 67 imagens-base — 50 imagens animadas e 17 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 47 imagens-base — 36 imagens animadas e 11 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
