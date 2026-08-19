@@ -81,6 +81,44 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 - Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave, sem erro técnico.
 - Revisão: base factual utilizável para o próximo bloco de dossiê de Tema. Ela ainda não é uma decisão de tema e não deve ser publicada ou tratada como roteiro.
 
+## Método Tema configurado após o Radar
+
+O método do canal **Norte Magnata** agora tem três blocos lineares, cada qual com uma responsabilidade única:
+
+| Ordem | Bloco | Executor | Resultado |
+| --- | --- | --- | --- |
+| 1 | BUSCAR — Radar factual do YouTube | Código | `market_snapshot` e resumo rastreável. |
+| 2 | CRIAR — Dossiê de tema rastreável | OpenAI `gpt-5.6-terra` | `theme` e `theme_dossier`; não cria título, roteiro, thumbnail ou CTA. |
+| 3 | VALIDAR — Evidência e diferenciação | OpenAI `gpt-5.6-terra` | decisão e relatório contra evidências, especificidade, honestidade e não cópia. |
+
+Não há bloco `ESCOLHER` ainda porque esta primeira versão não seleciona item preexistente da Biblioteca Estratégica. Ele será incluído somente quando houver uma coleção editorial real para escolher; não deve ser inserido como etapa vazia.
+
+### Critério que merece revisão humana posterior
+
+O único ponto editorial que vale revisar nesta rodada é se a lente filosófica escolhida representa de fato o Norte Magnata. Não é necessário validar URLs, métricas ou formato técnico: isso já é rastreado no snapshot. Essa revisão não transforma o dossiê em título, roteiro ou autorização de publicação.
+
+### Limitação conhecida da versão 0.3.0 do App
+
+O motor do App executa plugins de `VALIDAR`, registra a decisão e conclui a cadeia. Na implementação atual, uma decisão automática `rejected` ainda **não reinicia automaticamente** o bloco `CRIAR` alvo, mesmo quando a configuração declara `retry_target`. A rodada abaixo foi aprovada, portanto não afetou o resultado; porém o limite de duas tentativas não pode ser prometido como funcional até que essa correção do núcleo seja implementada, testada e empacotada no App. Em uma reprovação futura, tratar o relatório como bloqueio editorial e não avançar para Título/Roteiro.
+
+## Quarta execução real — dossiê e validação encadeados
+
+- Data: `2026-08-19T02:04:52Z` a `2026-08-19T02:05:12Z`.
+- Radar: 24 vídeos únicos; 16 após duração; 8 aceitos; 4 chamadas `search.list`, 1 chamada `videos.list`, nenhuma rotação e nenhum erro técnico.
+- Tema criado: disciplina sem motivação, com lente de controle estoico, promessa honesta e contraponto contra moralização ou controle mental absoluto.
+- Evidências citadas no dossiê: `rFQ52rDgrBI`, `7e2PHiGv7cc`, `MqP8V8Hqscc`, `kmzcU_aKbFA` e `rn_xUuoSiQ4`.
+- Validação: **approved**. Verificou duas ou mais evidências identificáveis, mecanismo explícito, promessa sem garantia, ângulo visual inicial, diferenciação e ausência de cópia literal dos títulos observados.
+- Limite preservado: as métricas públicas não comprovam retenção, causalidade, intenção do público ou eficácia prática.
+
+## Recuperação do cofre no macOS
+
+Depois de uma atualização do App ad-hoc, o macOS pode manter uma entrada do Keychain associada ao binário anterior e bloquear a leitura do novo binário. A correção segura é recriar **somente** as entradas do serviço `ContentFlow OS` para:
+
+- `plugin:com.norte-magnata.market-radar:YOUTUBE_DATA_API_KEYS`
+- `plugin:official-openai-gpt:OPENAI_API_KEY`
+
+Antes disso, mantenha uma cópia privada das chaves fora do repositório. Nunca registre valores de credenciais em Git, logs, relatórios ou screenshots. Após recriar as duas entradas pelo App atual, não consulte repetidamente o status de segredo: isso pode disparar novos pedidos do Keychain.
+
 ## Teste antes de mover
 
 ```sh
