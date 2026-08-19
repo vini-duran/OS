@@ -1,0 +1,64 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.stock-library",
+  "name": "Norte Magnata — Biblioteca Stock",
+  "version": "0.1.0",
+  "description": "Pesquisa, materializa e valida B-roll, overlays e SFX com licença e hash.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.0",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network", "filesystem:write"],
+  "networkHosts": ["api.pexels.com", "videos.pexels.com", "pixabay.com", "cdn.pixabay.com", "api.openverse.org", "cdn.freesound.org", "freesound.org", "creativecommons.org"],
+  "secretKeys": ["PEXELS_API_KEYS", "PIXABAY_API_KEYS", "OPENVERSE_CLIENTS_JSON"],
+  "deliveryTypes": ["video", "audio", "text"],
+  "capabilities": [
+    {
+      "id": "materialize-stock-assets",
+      "operator": "Código",
+      "blockTypes": ["BUSCAR"],
+      "processTypes": ["editing"],
+      "inputPorts": [{ "key": "assets", "label": "Mapa de cenas aprovado", "acceptedTypes": ["records"], "required": true }],
+      "outputPorts": [
+        { "key": "stock_assets", "label": "Stock materializado", "producedTypes": ["records"], "required": true },
+        { "key": "stock_report", "label": "Relatório da busca", "producedTypes": ["textarea"], "required": true }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 120000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": ["external_read", "local_artifact"],
+      "cost": { "model": "free", "estimateSupported": false },
+      "dataPolicy": { "sendsDataToThirdParties": true, "providers": ["Pixabay", "Pexels", "Openverse"] },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "video_provider_order": { "type": "string", "enum": ["pixabay_first", "pexels_first"], "default": "pixabay_first" },
+          "overlay_unique_assets": { "type": "integer", "minimum": 3, "maximum": 12, "default": 6 },
+          "sfx_unique_assets": { "type": "integer", "minimum": 3, "maximum": 12, "default": 8 },
+          "simulate": { "type": "boolean", "default": false }
+        }
+      },
+      "outputSchema": { "type": "object", "required": ["stock_assets", "stock_report"] }
+    },
+    {
+      "id": "validate-stock-assets",
+      "operator": "Código",
+      "blockTypes": ["VALIDAR"],
+      "processTypes": ["editing"],
+      "inputPorts": [{ "key": "stock_assets", "label": "Stock materializado", "acceptedTypes": ["records"], "required": true }],
+      "outputPorts": [
+        { "key": "decision", "label": "Decisão", "producedTypes": ["approval"], "required": true },
+        { "key": "validated_stock_assets", "label": "Stock validado", "producedTypes": ["records"], "required": true },
+        { "key": "stock_manifest", "label": "Manifesto de licença e hash", "producedTypes": ["file"], "required": true },
+        { "key": "stock_validation_report", "label": "Relatório de validação", "producedTypes": ["textarea"], "required": true }
+      ],
+      "execution": { "mode": "immediate", "defaultTimeoutMs": 30000, "supportsCancellation": true, "maxConcurrency": 1 },
+      "sideEffects": ["local_artifact"],
+      "cost": { "model": "free", "estimateSupported": false },
+      "dataPolicy": { "sendsDataToThirdParties": false },
+      "blockConfigSchema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "outputSchema": { "type": "object", "required": ["decision", "validated_stock_assets", "stock_manifest", "stock_validation_report"] }
+    }
+  ]
+}

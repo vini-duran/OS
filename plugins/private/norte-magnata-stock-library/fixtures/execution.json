@@ -1,0 +1,14 @@
+{
+  "executionId": "stock-fixture",
+  "traceId": "stock-trace",
+  "blockId": "stock-search",
+  "capabilityId": "materialize-stock-assets",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": { "simulate": true },
+  "settings": {},
+  "inputs": { "assets": [{ "id_cena": "B01_C01", "midia_principal": "broll_video", "broll_consulta": "focused work", "broll_funcao": "evidência", "overlay": "nenhum", "sfx": "nenhum" }, { "id_cena": "B01_C02", "midia_principal": "imagem_animada", "overlay": "poeira_sutil", "sfx": "nenhum" }, { "id_cena": "B01_C03", "midia_principal": "imagem_animada", "overlay": "nenhum", "sfx": "whoosh_curto" }] },
+  "inputContract": [{ "portKey": "assets", "label": "Mapa de cenas", "key": "assets", "type": "records", "required": true }],
+  "outputContract": [{ "portKey": "stock_assets", "label": "Stock materializado", "key": "stock_assets", "type": "records", "required": true }, { "portKey": "stock_report", "label": "Relatório", "key": "stock_report", "type": "textarea", "required": true }],
+  "context": { "locale": "pt-BR", "timeZone": "America/Porto_Velho", "channel": { "id": "fixture", "name": "Norte Magnata", "language": "pt-BR", "niche": "Filosofia" }, "project": { "id": "fixture", "title": "Teste" }, "processType": "editing", "block": { "type": "BUSCAR", "name": "Stock", "instructions": "Materializar stock." }, "previousProcessOutputs": [], "previousBlockOutputs": [] }
+}
