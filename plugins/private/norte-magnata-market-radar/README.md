@@ -6,6 +6,8 @@ Plugin privado do ContentFlow OS para a pesquisa factual que antecede a criaçã
 
 Ele consulta a YouTube Data API, remove vídeos abaixo da duração mínima, elimina IDs duplicados e devolve um snapshot por vídeo. Cada registro preserva URL, ID, canal, consulta de origem, janela da coleta e métricas públicas observadas.
 
+A busca inicial usa `regionCode=BR` e `relevanceLanguage=pt`. Como a própria API pode devolver outros idiomas, o filtro local descarta idioma explicitamente incompatível, baixa velocidade, falta de termos da consulta e formatos excluídos configurados no bloco.
+
 Ele não cria temas, não aprova candidatos, não gera título/thumbnail/roteiro, não coleta comentários, não publica e não inicia nenhum outro método.
 
 ## Configuração no bloco

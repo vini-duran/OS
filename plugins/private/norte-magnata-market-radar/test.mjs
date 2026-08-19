@@ -14,7 +14,19 @@ const json = (value, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 try {
-  const realFixture = { ...fixture, configuration: { ...fixture.configuration, simulate: false } };
+  const realFixture = {
+    ...fixture,
+    configuration: {
+      ...fixture.configuration,
+      core_queries: "disciplina foco",
+      simulate: false,
+      region_code: "BR",
+      preferred_language: "pt",
+      minimum_views_per_day: 30,
+      minimum_query_term_matches: 1,
+      excluded_title_terms: "podcast",
+    },
+  };
   const missingSecret = await execute(realFixture, services([]));
   assert.equal(missingSecret.status, "error");
   assert.equal(missingSecret.code, "MISSING_SECRET");
@@ -34,8 +46,9 @@ try {
             snippet: {
               channelId: "channel-1",
               channelTitle: "Canal referência",
-              title: "Título observado",
+              title: "Disciplina e foco",
               publishedAt: "2026-08-10T12:00:00.000Z",
+              defaultAudioLanguage: "pt-BR",
             },
             statistics: { viewCount: "10000", likeCount: "300", commentCount: "80" },
             contentDetails: { duration: "PT6M12S" },
@@ -61,7 +74,7 @@ try {
   assert.equal(response.values.market_snapshot.length, 1);
   assert.equal(response.values.market_snapshot[0].video_id, "video-1");
   assert.equal(response.values.market_snapshot[0].duration_seconds, 372);
-  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 2);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 1);
   assert.equal(requests.filter((item) => item.pathname.endsWith("/videos")).length, 1);
 
   let quotaCalls = 0;
