@@ -5,8 +5,8 @@
   "mapa_conteudo_sha256": "9ab9b6d01b7efb72ceedb21dccef6fd7cffef62b454dabc8c3c8dfeb9d3c1125",
   "authority": "SRT real da narração e mapa aprovado; não altera texto nem tempos",
   "full_queue_only": true,
-  "generated_video_target": 42,
-  "moving_timeline_minimum_ratio": 0.6,
+  "generated_video_target": 50,
+  "moving_timeline_minimum_ratio": 0.68,
   "music": "disabled",
   "universal_finish": {
     "still_motion": "pêndulo discreto como base, com direção e amplitude variadas; crop, pan ou parallax substituem quando a composição não aceita oscilação",
@@ -120,6 +120,46 @@
       "scene_id": "B08_C11",
       "reason": "fechamento de 5,32s pede continuidade de execução até o estado final",
       "prompt_video_v2": "Começo: Hiro escreve enquanto luz fria e partículas finas atravessam o fundo. Progressão: a atmosfera se desloca para fora da janela, mas a mão mantém o ritmo. Final: a folha acumula marcas não legíveis e Hiro continua agindo. Sem fumaça decorativa e sem loop."
+    },
+    {
+      "scene_id": "B02_C03",
+      "reason": "imagem longa de esforço precisa materializar abandono e consequência",
+      "prompt_video_v2": "Começo: Hiro sustenta o halter e as folhas ainda organizadas. Progressão: o braço perde força, o halter desce com controle e as folhas deslizam para lados diferentes. Final: os dois objetos ficam abandonados e Hiro permanece entre eles, sem loop."
+    },
+    {
+      "scene_id": "B03_C03",
+      "reason": "contraste abstrato de 5,121s ganha leitura com transformação contínua",
+      "prompt_video_v2": "Começo: duas massas de fumaça já existentes ocupam lados opostos. Progressão: a primeira ganha contorno e densidade enquanto a segunda se desfaz em partículas finas. Final: apenas a forma delimitada permanece legível, sem criar novos símbolos e sem loop."
+    },
+    {
+      "scene_id": "B07_C06",
+      "reason": "o contraste de 5,919s precisa perder os extremos e revelar um centro verificável",
+      "prompt_video_v2": "Começo: dois extremos visuais densos comprimem o quadro. Progressão: as camadas laterais perdem força e recuam enquanto o espaço central ganha definição. Final: resta um centro sóbrio e verificável diante de Hiro. Sem glitch, novos símbolos ou loop."
+    },
+    {
+      "scene_id": "B05_C13",
+      "reason": "organização material em 5,28s sustenta uma microsequência completa",
+      "prompt_video_v2": "Começo: a mesa está tomada por objetos dispersos. Progressão: Hiro cria três grupos, afasta excessos e libera o centro em gestos contínuos. Final: uma área funcional permanece aberta diante dele. Sem velocidade artificial e sem loop."
+    },
+    {
+      "scene_id": "B06_C06",
+      "reason": "comparação factual precisa mostrar os dois resultados se assentando",
+      "prompt_video_v2": "Começo: dois marcadores neutros pairam próximos ao centro. Progressão: um desliza para o lado do feito e outro para o lado do adiado, com pesos visuais equivalentes. Final: ambos permanecem assentados sem julgamento dramático, texto ou loop."
+    },
+    {
+      "scene_id": "B07_C03",
+      "reason": "reconhecimento de 5,641s exige saída perceptível da névoa",
+      "prompt_video_v2": "Começo: a silhueta de Hiro está parcialmente encoberta pela névoa existente. Progressão: ele dá um passo firme enquanto a luz lateral define o contorno do corpo. Final: Hiro permanece fora da névoa, ainda sóbrio e identificável. Sem fumaça nova e sem loop."
+    },
+    {
+      "scene_id": "B08_C01",
+      "reason": "a resistência inicial precisa crescer e interferir materialmente no gesto",
+      "prompt_video_v2": "Começo: a mão de Hiro se aproxima do interruptor enquanto a sombra ocupa pouco espaço. Progressão: a sombra se amplia, cobre o interruptor e interrompe o gesto por um instante. Final: a mão permanece consciente diante do obstáculo visível. Sem loop."
+    },
+    {
+      "scene_id": "B08_C04",
+      "reason": "ajuste corporal de 5,839s oferece transformação concreta sem excesso",
+      "prompt_video_v2": "Começo: cadeira desalinhada e corpo suspenso diante da mesa. Progressão: Hiro puxa a cadeira, ajusta a posição e apoia os pés de forma estável. Final: o corpo fica assentado e pronto para o primeiro gesto. Sem mudança de cenário e sem loop."
     }
   ],
   "additional_editorial_overlays": [

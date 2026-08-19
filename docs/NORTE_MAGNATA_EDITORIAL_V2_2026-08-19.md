@@ -38,15 +38,15 @@ O primeiro dry-run bloqueou duas instruções que não declaravam a progressão 
 
 | Métrica | Antes | V2 |
 |---|---:|---:|
-| Vídeos gerados | 30 | 42 |
+| Vídeos gerados | 30 | 50 |
 | B-rolls em vídeo | 11 | 11 |
-| Imagens animadas | 57 | 45 |
-| Timeline com vídeo | 43,92% | 60,36% |
+| Imagens animadas | 57 | 37 |
+| Timeline com vídeo | 43,92% | 69,22% |
 | Overlays editoriais | 18 | 26 |
 | SFX | 14 | 26 |
 | Cartões estruturais | 0 | 3 |
 
-As 12 conversões são: `B02_C12`, `B03_C13`, `B04_C14`, `B05_C02`, `B05_C05`, `B05_C09`, `B06_C04`, `B06_C09`, `B06_C10`, `B07_C11`, `B08_C08` e `B08_C11`.
+As 20 conversões incluem as 12 da primeira V2 e mais oito cenas longas com mudança material: `B02_C03`, `B03_C03`, `B05_C13`, `B06_C06`, `B07_C03`, `B07_C06`, `B08_C01` e `B08_C04`. O handoff final distribui 39 cenas ao Flow e 11 ao Dola; os 11 B-rolls permanecem separados. A fila Dola soma 95 segundos e cabe integralmente nos cinco perfis de 20 segundos.
 
 Treze imagens acima de cinco segundos permanecem como imagem porque já contêm mudança interna explícita. Elas não ficam paradas e não foram convertidas apenas para cumprir uma quota.
 
@@ -73,3 +73,18 @@ Comando reproduzível:
 ```
 
 O resultado aprovado declara `full_queue_ready: true` e `generation_started: false`. O preflight prepara a fila; ele não consome créditos nem inicia provedor.
+
+## Handoff dos provedores
+
+O adaptador `tools/prepare_norte_magnata_video_queue.py` lê mapa, manifesto aprovado e preflight. Ele valida os 50 hashes, reutiliza `00_compartilhado/duracoes_video.py`, cria links simbólicos para os arquivos aprovados e produz um único handoff. Não copia nem altera mídia e não chama API.
+
+```zsh
+python3 tools/prepare_norte_magnata_video_queue.py \
+  --map MAPA.json \
+  --approval MANIFESTO_APROVACAO.json \
+  --preflight PREFLIGHT.json \
+  --automation-root AUTOMATION_MAGNATA \
+  --output VIDEO_PROVIDER_HANDOFF.json
+```
+
+Para Dola, as 11 janelas/guias precisam permanecer abertas e não minimizadas durante geração e captura. O App prepara a capacidade integral antes de liberar a fila. O monitor observa os primeiros 5–10 minutos, registra falha por cena e limita repetição a três tentativas; erro persistente vira `needs_attention`, nunca loop infinito.

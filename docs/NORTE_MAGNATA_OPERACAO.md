@@ -70,9 +70,12 @@ Este quadro é um registro desta primeira produção; o App é a autoridade de e
 | Plugin de narração | `contentflow-os/plugins/private/norte-magnata-narration/` |
 | Plugin do mapa | `contentflow-os/plugins/private/norte-magnata-asset-map/` |
 | Plugin de mídia externa | `contentflow-os/plugins/private/norte-magnata-stock-library/` |
+| Monitor de geração e Edição | `contentflow-os/plugins/private/norte-magnata-production-monitor/` |
 | Repositório técnico anterior | `/Users/viniciusduran/Downloads/Automation_Magnata 2/` |
 
 Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertencem a arquivos `.md`, comandos, métodos exportados ou Git.
+
+O arquivo `.env.example` registra apenas os nomes e formatos necessários. O `.env` real é ignorado pelo Git. Para transferir a operação, copie os dois repositórios com o App fechado e reconecte as chaves pela Central de Plugins; não publique nem envie o `.env` real ao GitHub.
 
 ## 6. Regra de organização
 
@@ -102,5 +105,11 @@ Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertence
 
 ## Revisão editorial V2 — 2026-08-19
 
-O mapa foi reavaliado antes de gerar vídeos. A V2 promove 12 imagens para vídeo, levando o alvo de 30 para 42 vídeos gerados, mantém 11 B-rolls, eleva overlays e SFX para 26 cada e cobre 60,36% da timeline com vídeo. O preflight integral das 98 cenas está aprovado, mas a geração continua não iniciada. Detalhes e comando reproduzível: `docs/NORTE_MAGNATA_EDITORIAL_V2_2026-08-19.md`.
+O mapa foi reavaliado antes de gerar vídeos. A V2 promove 20 imagens para vídeo, levando o alvo de 30 para 50 vídeos gerados: 39 Flow e 11 Dola. Mantém 11 B-rolls, eleva overlays e SFX para 26 cada e cobre 69,22% da timeline com vídeo. A fila Dola soma 95 segundos, dentro dos cinco perfis de 20 segundos. O Dola só inicia após capacidade integral; suas janelas Chrome ficam abertas e não minimizadas durante geração/captura. Detalhes e comando reproduzível: `docs/NORTE_MAGNATA_EDITORIAL_V2_2026-08-19.md`.
 - Relatório rastreável: `docs/NORTE_MAGNATA_FLOW_SMOKE_2026-08-19.md`.
+
+## Monitor da produção no ContentFlow
+
+O método **Edição** do canal Norte Magnata possui um único bloco operacional: **Acompanhar geração e handoff**. Ele lê os estados existentes e mostra, separadamente, Flow, Dola, materialização/handoff e Edição/renderização. O bloco é somente leitura e não cobra API.
+
+O plugin `com.norte-magnata.production-monitor` está vinculado à raiz de `Automation_Magnata 2`. Em outra máquina, vincule a pasta do plugin, autorize somente `filesystem:read` e selecione a nova raiz da automação como workspace. A sessão Dola continua sendo validada ao vivo; um estado salvo como “pronto” não substitui 5/5 perfis autenticados e capacidade integral.

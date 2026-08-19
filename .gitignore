@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+__pycache__/
 data/
 dist
 dist-ssr
@@ -27,6 +28,9 @@ release/
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
