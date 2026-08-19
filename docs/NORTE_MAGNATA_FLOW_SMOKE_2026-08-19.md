@@ -48,8 +48,11 @@ Identidade preservada:
 | 031 | somente três cenas refeitas | C13 e B06_C01 aprovadas; C12 rejeitada por criar seis barras em vez de cinco |
 | 032 | somente C12 simplificada | rejeitada por perspectiva ambígua e braços aparentemente desconectados |
 | 033 | somente C12 em verdadeiro plano sobre o ombro | aprovada; tela limpa reservada para overlay determinístico de cinco barras |
+| 034 | lote curado com 5 cenas | todas rejeitadas por rosto alterado, peça no marco errado, marcador extra, páginas claras e símbolos/câmera no celular |
+| 035 | cinco cenas refeitas após contrato 0.1.8 | C03, C04 e C05 aprovadas; C02 perdeu uma mão e C06 ainda mostrou a câmera |
+| 036 | somente C02 e C06 refeitas | 2/2 aprovadas com duas mãos conectadas e estojo totalmente fechado |
 
-Total remoto consumido: 99 imagens. As recuperações seletivas economizaram 39 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 111 imagens. As recuperações seletivas economizaram 42 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -83,13 +86,15 @@ Décimo conjunto aprovado nas rodadas `smoke-026` a `smoke-029`: B05_C04, B05_C0
 
 Décimo primeiro conjunto aprovado nas rodadas `smoke-030` a `smoke-033`: B05_C10, B05_C11, B05_C12, B05_C13 e B06_C01. O acumulado passa a 55 imagens-base: 23 quadros iniciais de vídeo e 32 imagens animadas. A C12 passou a usar tela vazia e receberá cinco barras determinísticas na animação, evitando contagem incorreta e pseudo-interface.
 
+Décimo segundo conjunto aprovado nas rodadas `smoke-034` a `smoke-036`: B06_C02, B06_C03, B06_C04, B06_C05 e B06_C06. O acumulado passa a 60 imagens-base: 24 quadros iniciais de vídeo e 36 imagens animadas. O rosto alterado originou o guardrail 0.1.8; páginas claras, marcadores extras e câmera visível foram removidos antes da aprovação.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
 2. `norte-magnata-flow-smoke-overrides.json` registra os cinco prompts curados desta prova, sem segredo de API.
 3. O organizador aceita os IDs históricos `NM-*` e os IDs do ContentFlow `NM-CF-*`, preservando os 16 hexadecimais.
 4. O perfil do Chrome é configuração local por variável de ambiente, não caminho fixo do repositório.
-5. O mapa de Assets 0.1.3 a 0.1.7 passa a exigir bloqueios contra pseudo-texto, duplicação de objetos/membros, membros cortados/desconectados, figuras formadas por atmosfera, composições em painéis, faixas gráficas e fundos predominantemente brancos. Telas e papéis ficam sem símbolos ou virados para longe.
+5. O mapa de Assets 0.1.3 a 0.1.8 passa a exigir bloqueios contra pseudo-texto, duplicação de objetos/membros, membros cortados/desconectados, mudança facial do Hiro, figuras formadas por atmosfera, composições em painéis, faixas gráficas e fundos predominantemente brancos. Telas e papéis ficam sem símbolos ou virados para longe.
 
 ## Repetição portátil
 
@@ -110,4 +115,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 32 imagens-base — 25 imagens animadas e 7 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 27 imagens-base — 21 imagens animadas e 6 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.

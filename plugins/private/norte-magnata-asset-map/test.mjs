@@ -29,6 +29,7 @@ try {
     assert.match(prompt, /no triptych/);
     assert.match(prompt, /no frame-spanning/);
     assert.match(prompt, /no predominantly white/);
+    assert.match(prompt, /canonical clean unscarred face/);
   }
   const storedMap = JSON.parse(await readFile(path.join(output, "mapa-assets-norte-magnata.json"), "utf8"));
   const validated = await execute({ invocation: { mode: "start" }, capabilityId: "validate-scene-map", inputs: { assets: created.values.assets, asset_map: { url: "/api/files/map.json" } } }, { ...services, resolveInputFile: async () => path.join(output, "mapa-assets-norte-magnata.json") });
