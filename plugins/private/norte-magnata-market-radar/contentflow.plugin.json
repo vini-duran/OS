@@ -1,0 +1,108 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.market-radar",
+  "name": "Norte Magnata — Radar de Mercado",
+  "version": "0.1.0",
+  "description": "Coleta um snapshot factual do YouTube para pesquisa de tema do Norte Magnata, sem criar ou aprovar temas.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.0",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network"],
+  "networkHosts": ["www.googleapis.com"],
+  "secretKeys": ["YOUTUBE_DATA_API_KEY"],
+  "deliveryTypes": ["processing"],
+  "capabilities": [
+    {
+      "id": "collect-youtube-market-snapshot",
+      "operator": "Código",
+      "blockTypes": ["BUSCAR"],
+      "processTypes": ["theme"],
+      "inputPorts": [],
+      "outputPorts": [
+        {
+          "key": "market_snapshot",
+          "label": "Snapshot de mercado",
+          "description": "Vídeos públicos encontrados, com origem, métricas observadas e consulta que os encontrou.",
+          "producedTypes": ["records"],
+          "required": true,
+          "presentation": { "renderer": "table", "itemType": "record" }
+        },
+        {
+          "key": "research_summary",
+          "label": "Resumo da coleta",
+          "description": "Parâmetros, total de resultados e momento da coleta.",
+          "producedTypes": ["textarea"],
+          "required": true,
+          "presentation": { "renderer": "text-long" }
+        }
+      ],
+      "execution": {
+        "mode": "immediate",
+        "defaultTimeoutMs": 90000,
+        "supportsCancellation": true,
+        "maxConcurrency": 1
+      },
+      "sideEffects": ["external_read"],
+      "cost": { "model": "free", "estimateSupported": true },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["YouTube Data API"]
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "core_queries": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000,
+            "default": "disciplina masculina autocontrole\nhábitos foco produtividade\nmentalidade financeira responsabilidade\nautocontrole atenção recompensa",
+            "description": "Uma consulta central por linha. Essas consultas são configuráveis por canal."
+          },
+          "niche_bending_queries": {
+            "type": "string",
+            "maxLength": 3000,
+            "default": "",
+            "description": "Uma consulta de nicho adjacente por linha. Deixe vazio até a estratégia de niche-bending ser aprovada."
+          },
+          "published_within_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 60
+          },
+          "max_results_per_query": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 8
+          },
+          "min_duration_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 7200,
+            "default": 180
+          },
+          "simulate": {
+            "type": "boolean",
+            "default": false,
+            "description": "Valida o contrato sem consultar a API. Nunca produz dados de mercado."
+          }
+        },
+        "required": ["core_queries"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["market_snapshot", "research_summary"],
+        "properties": {
+          "market_snapshot": { "type": "array" },
+          "research_summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}
