@@ -40,7 +40,7 @@ Uma etapa não deve iniciar mídia, renderização ou publicação da etapa segu
 | Thumbnail | concluída | PNG 1536×864, aprovado sem faixas laterais |
 | Roteiro | concluído | 1.057 palavras, aprovado; alvo de 7–9 minutos |
 | Narração | concluída | MP3 de 8min12s e SRT real com 112 entradas |
-| Assets | prova de imagem aprovada | mapa com 98 cenas + 43 usos stock; 10 imagens-base aprovadas em lotes curtos |
+| Assets | geração em lotes controlados | mapa com 98 cenas + 43 usos stock; 20 imagens-base aprovadas |
 | Edição | bloqueada corretamente | fila completa de imagens e vídeos ainda não iniciada |
 | Publicação | bloqueada | depende do master aprovado |
 

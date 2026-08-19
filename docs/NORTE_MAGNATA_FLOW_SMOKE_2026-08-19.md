@@ -24,8 +24,10 @@ Identidade preservada:
 | 007 | segundo lote com 5 cenas | três aprovadas; C10 rejeitada por estilo/objeto e C02 por símbolos falsos |
 | 008 | somente C10 e C02 refeitas | C02 aprovada; C10 ainda veio sem teclas físicas |
 | 009 | somente C10 refeita | aprovada com estilo gráfico e teclado físico executável |
+| 010 | terceiro lote com 5 cenas | 5/5 aprovadas; nenhum reparo necessário |
+| 011 | lote universal sem overrides novos | 5/5 aprovadas; contrato automático validado |
 
-Total remoto consumido: 29 imagens (10 + 5 + 5 + 1 + 5 + 2 + 1). As recuperações seletivas economizaram nove gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 39 imagens. As recuperações seletivas economizaram nove gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -40,6 +42,10 @@ Total remoto consumido: 29 imagens (10 + 5 + 5 + 1 + 5 + 2 + 1). As recuperaçõ
 QA técnico do primeiro conjunto: 5/5 em 1376×768, 16:9, SHA-256 igual ao manifesto, arquivos únicos e sem borda branca. QA visual: Hiro consistente, sem texto falso, sem objeto duplicado, sem quadro branco e com anatomia compreensível.
 
 Segundo conjunto aprovado: B01_C07, B01_C08 e B02_C03 da rodada `smoke-007`, B02_C02 da rodada `smoke-008` e B01_C10 da rodada `smoke-009`. O acumulado é 10/10 imagens-base aprovadas: oito quadros iniciais de vídeo e duas imagens animadas.
+
+Terceiro conjunto aprovado integralmente na rodada `smoke-010`: B02_C04, B02_C06, B02_C07, B02_C08 e B02_C09. O acumulado passa a 15 imagens-base: 11 quadros iniciais de vídeo e quatro imagens animadas.
+
+Quarto conjunto aprovado integralmente na rodada `smoke-011`, usando os prompts do mapa e apenas os guardrails automáticos: B02_C10, B02_C11, B02_C12, B03_C02 e B03_C03. O acumulado passa a 20 imagens-base: 13 quadros iniciais de vídeo e sete imagens animadas.
 
 ## Correções permanentes
 
@@ -64,6 +70,8 @@ cd /caminho/contentflow-os
 
 Para refazer apenas uma cena, acrescente `--scenes B01_C03`. Em outra máquina, reconecte o plugin, carregue as duas extensões autorizadas no perfil escolhido e configure `MAGNATA_FLOW_CHROME_PROFILE` localmente. Não copie Keychain, chaves ou caminhos absolutos para o Git.
 
+Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitário `tools/record-norte-magnata-flow-approval.mjs`. Ele exige `--confirm-visual APROVADO`, confere identidade, hash e 1376×768 e aceita `--dry-run`. A escrita final usa arquivo temporário e renomeação atômica; não copia nem altera a mídia de origem.
+
 ## Portão atual
 
-A integração curta está aprovada. Restam 77 imagens-base — 55 imagens animadas e 22 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 67 imagens-base — 50 imagens animadas e 17 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
