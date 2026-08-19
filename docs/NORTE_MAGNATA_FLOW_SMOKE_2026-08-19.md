@@ -60,8 +60,14 @@ Identidade preservada:
 | 043 | lote curado com 5 cenas | C11 e C12 aprovadas; B08_C01 criou segunda silhueta, C02 abriu faixa clara e C03 começou aberto |
 | 044 | somente B08_C01, C02 e C03 refeitas | C01 e C02 aprovadas; C03 criou terceiro braço e mão |
 | 045 | somente B08_C03 refeita | aprovada com dois braços, duas mãos e folhas totalmente fechadas |
+| 046 | lote curado com 5 cenas | C04, C05, C06 e C08 aprovadas; C09 mostrou ampulheta já em andamento |
+| 047 | somente B08_C09 refeita | rejeitada porque a mão esquerda perdeu a faixa canônica |
+| 048 | somente B08_C09 refeita | aprovada com duas faixas, envelope selado e areia totalmente assentada |
+| 049 | duas cenas finais | C10 aprovada; C11 perdeu a faixa da mão que escreve |
+| 050 | somente B08_C11 refeita | rejeitada por traço semelhante à letra Z |
+| 051 | somente B08_C11 refeita | aprovada com folha vazia, duas faixas e névoa externa não figurativa |
 
-Total remoto consumido: 140 imagens. As recuperações seletivas economizaram 56 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 151 imagens. As recuperações seletivas economizaram 61 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -105,10 +111,14 @@ Décimo quinto conjunto aprovado nas rodadas `smoke-041` e `smoke-042`: B07_C05,
 
 Décimo sexto conjunto aprovado nas rodadas `smoke-043` a `smoke-045`: B07_C11, B07_C12, B08_C01, B08_C02 e B08_C03. O acumulado passa a 80 imagens-base: 29 quadros iniciais de vídeo e 51 imagens animadas. Segunda silhueta, faixa clara, estado inicial aberto e membro extra foram rejeitados; a recuperação final preserva sombra plana, abertura escura e anatomia correta.
 
+Décimo sétimo conjunto aprovado nas rodadas `smoke-046` a `smoke-048`: B08_C04, B08_C05, B08_C06, B08_C08 e B08_C09. O acumulado passa a 85 imagens-base: 30 quadros iniciais de vídeo e 55 imagens animadas. A ampulheta em andamento e a ausência de uma faixa canônica foram rejeitadas; o quadro de vídeo final começa com envelope selado e areia assentada.
+
+Conjunto final aprovado nas rodadas `smoke-049` a `smoke-051`: B08_C10 e B08_C11. O manifesto fecha em 87 imagens-base: 30 quadros iniciais de vídeo e 57 imagens animadas. A mão sem faixa e o pseudo-traço em forma de Z foram rejeitados; o fechamento usa folha vazia para animação determinística.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
-2. `norte-magnata-flow-smoke-overrides.json` registra os cinco prompts curados desta prova, sem segredo de API.
+2. `norte-magnata-flow-smoke-overrides.json` registra os prompts curados necessários desta produção, sem segredo de API.
 3. O organizador aceita os IDs históricos `NM-*` e os IDs do ContentFlow `NM-CF-*`, preservando os 16 hexadecimais.
 4. O perfil do Chrome é configuração local por variável de ambiente, não caminho fixo do repositório.
 5. O mapa de Assets 0.1.3 a 0.1.8 passa a exigir bloqueios contra pseudo-texto, duplicação de objetos/membros, membros cortados/desconectados, mudança facial do Hiro, figuras formadas por atmosfera, composições em painéis, faixas gráficas e fundos predominantemente brancos. Telas e papéis ficam sem símbolos ou virados para longe.
@@ -132,4 +142,6 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 7 imagens-base — 6 imagens animadas e 1 quadro inicial de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+O portão de imagens-base está concluído: 87/87 IDs do mapa, sendo 30/30 quadros iniciais de vídeo e 57/57 imagens animadas. A auditoria consolidada confirmou 87/87 arquivos em 1376×768, 87/87 hashes correspondentes, 87 hashes únicos e nenhuma cena ausente ou inesperada. A mídia externa também permanece aprovada: 11 B-rolls, 18 usos de overlay e 14 usos de SFX; 25/25 arquivos únicos com hash válido e licença registrada.
+
+Vídeos, edição e renderização continuam bloqueados neste relatório. Antes da geração dos 30 vídeos, os prompts de movimento devem ser reconciliados com as bases aprovadas — especialmente B07_C10, que usa estojo selado em vez de telefone exposto — e submetidos a dry-run de identidade, estado inicial e progressão material.

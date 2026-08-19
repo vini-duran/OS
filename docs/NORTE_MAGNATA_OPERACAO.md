@@ -40,8 +40,8 @@ Uma etapa não deve iniciar mídia, renderização ou publicação da etapa segu
 | Thumbnail | concluída | PNG 1536×864, aprovado sem faixas laterais |
 | Roteiro | concluído | 1.057 palavras, aprovado; alvo de 7–9 minutos |
 | Narração | concluída | MP3 de 8min12s e SRT real com 112 entradas |
-| Assets | geração em lotes controlados | mapa com 98 cenas + 43 usos stock; 60 imagens-base aprovadas |
-| Edição | bloqueada corretamente | fila completa de imagens e vídeos ainda não iniciada |
+| Assets | bases concluídas | mapa com 98 cenas + 43 usos stock; 87/87 imagens-base aprovadas |
+| Edição | bloqueada corretamente | 30 vídeos planejados ainda não gerados; edição não iniciada |
 | Publicação | bloqueada | depende do master aprovado |
 
 Este quadro é um registro desta primeira produção; o App é a autoridade de estado em tempo real.
@@ -89,14 +89,14 @@ Segredos de API ficam somente na Central de Plugins/Keychain. Eles não pertence
 - Pixabay forneceu os vídeos e Openverse forneceu os SFX. Pexels continua configurado como fallback, mas não foi necessário nesta rodada.
 - O QA confirmou licença, origem, autor, `production_id`, MIME, tamanho e SHA-256. Uma conferência local adicional confirmou 25/25 hashes, 17/17 vídeos horizontais decodificáveis e 8/8 áudios decodificáveis.
 - A execução real revelou dois defeitos antes da aprovação: variável de contagem fora do escopo e divergência entre tamanho declarado pela API e o download. Ambos bloquearam a etapa. As versões 0.1.3 e 0.1.4 corrigiram somente o plugin stock; narração e mapa não foram refeitos.
-- Estado da mídia externa: **busca e materialização concluídas**. As imagens-base do Flow continuam em produção; **Edição não iniciada** e **nenhuma renderização ativa**.
+- Estado da mídia externa: **busca e materialização concluídas**. As 87 imagens-base do Flow também estão aprovadas; **vídeos ainda não gerados**, **Edição não iniciada** e **nenhuma renderização ativa**.
 
-## 8. Prova curta de imagens no Flow
+## 8. Imagens-base no Flow
 
 - O ContentFlow prepara o lote; a automação anterior funciona apenas como adaptador temporário para o Flow, download e organização. A operação continua identificada pelo mesmo `production_id` e hash do mapa.
 - O perfil local pode ser fixado por `MAGNATA_FLOW_CHROME_PROFILE`. Nesta máquina a prova usou `Profile 16`; esse valor não deve ser presumido em outra máquina.
 - Cada cena ocupa uma linha e é separada da próxima por uma linha vazia. O projeto atual do Flow é selecionado manualmente e não deve ser recarregado automaticamente durante a execução.
 - A primeira prova funcional revelou texto falso, repetição de objetos e uma mão desconectada. As regras foram incorporadas ao plugin do mapa; somente a cena reprovada foi refeita.
-- Resultado acumulado: 80 imagens-base aprovadas, sendo 29 quadros iniciais para vídeo e 51 imagens animadas. Todas têm 1376×768, proporção 16:9 e hashes preservados; falhas visuais são refeitas somente nas cenas afetadas.
-- Restam 7 imagens-base: 1 quadro inicial para vídeo e 6 imagens animadas. Isso ainda não autoriza a geração dos vídeos nem a edição.
+- Resultado final: 87/87 imagens-base aprovadas, sendo 30 quadros iniciais para vídeo e 57 imagens animadas. Todas têm 1376×768, proporção 16:9, hash preservado e arquivo único; não há ID ausente nem inesperado.
+- O portão de imagens-base está concluído. Isso não iniciou os 30 vídeos nem autoriza a Edição automaticamente; antes, os prompts de movimento devem respeitar as bases aprovadas e passar por dry-run.
 - Relatório rastreável: `docs/NORTE_MAGNATA_FLOW_SMOKE_2026-08-19.md`.
