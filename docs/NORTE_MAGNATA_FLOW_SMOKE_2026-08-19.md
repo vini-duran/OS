@@ -44,8 +44,12 @@ Identidade preservada:
 | 027 | somente quatro cenas refeitas | C07 e C09 aprovadas; C04 duplicou o lápis e C06 voltou a alterar o rosto |
 | 028 | somente C04 e C06 refeitas | C06 aprovada com rosto fora de quadro; C04 saiu fotográfica |
 | 029 | somente C04 refeita | aprovada com hachura gráfica, um lápis e uma tira de papel |
+| 030 | lote curado com 5 cenas | C10 e C11 aprovadas; C12 com tela clara e marca facial, C13 com números na régua e B06_C01 com cicatriz/mão ambígua/faixa branca |
+| 031 | somente três cenas refeitas | C13 e B06_C01 aprovadas; C12 rejeitada por criar seis barras em vez de cinco |
+| 032 | somente C12 simplificada | rejeitada por perspectiva ambígua e braços aparentemente desconectados |
+| 033 | somente C12 em verdadeiro plano sobre o ombro | aprovada; tela limpa reservada para overlay determinístico de cinco barras |
 
-Total remoto consumido: 89 imagens. As recuperações seletivas economizaram 35 gerações em relação a repetir os lotes inteiros.
+Total remoto consumido: 99 imagens. As recuperações seletivas economizaram 39 gerações em relação a repetir os lotes inteiros.
 
 ## Conjunto aprovado
 
@@ -77,6 +81,8 @@ Nono conjunto aprovado nas rodadas `smoke-022` a `smoke-025`: B04_C13, B04_C14, 
 
 Décimo conjunto aprovado nas rodadas `smoke-026` a `smoke-029`: B05_C04, B05_C05, B05_C06, B05_C07 e B05_C09. O acumulado passa a 50 imagens-base: 22 quadros iniciais de vídeo e 28 imagens animadas. A falha de fundo branco originou o guardrail 0.1.7; duplicações, mudança facial e fotorealismo foram rejeitados antes do registro.
 
+Décimo primeiro conjunto aprovado nas rodadas `smoke-030` a `smoke-033`: B05_C10, B05_C11, B05_C12, B05_C13 e B06_C01. O acumulado passa a 55 imagens-base: 23 quadros iniciais de vídeo e 32 imagens animadas. A C12 passou a usar tela vazia e receberá cinco barras determinísticas na animação, evitando contagem incorreta e pseudo-interface.
+
 ## Correções permanentes
 
 1. `prepare-norte-magnata-flow-smoke.mjs` prepara entre uma e cinco cenas, aceita seleção por `--scenes` e recusa linhas fora do contrato.
@@ -104,4 +110,4 @@ Depois do QA técnico e visual, o registro no manifesto é feito pelo utilitári
 
 ## Portão atual
 
-A integração curta está aprovada. Restam 37 imagens-base — 29 imagens animadas e 8 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
+A integração curta está aprovada. Restam 32 imagens-base — 25 imagens animadas e 7 quadros iniciais de vídeo. O avanço permanece em lotes de no máximo cinco cenas, com recuperação somente das reprovadas. Vídeos, edição e renderização continuam bloqueados até as imagens-base correspondentes serem aprovadas.
