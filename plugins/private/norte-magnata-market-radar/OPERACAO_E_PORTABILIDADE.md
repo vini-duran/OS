@@ -45,11 +45,15 @@ O plugin usa a primeira chave disponível e só avança para a próxima se a You
 | Processo | Tema | O Radar produz evidência para o método de Tema. |
 | Bloco | BUSCAR / Código | Consulta uma fonte externa e aplica filtros determinísticos. |
 | Plugin | `com.norte-magnata.market-radar` | Capacidade `collect-youtube-market-snapshot`. |
-| Consultas centrais | 4 consultas configuráveis | Cobertura inicial, sem fixar a estratégia final do canal. |
+| Consultas centrais | 4 consultas em português configuráveis | Cobertura inicial orientada a disciplina, foco, procrastinação e impulso. |
 | Consultas niche-bending | vazias | Só serão incluídas após a estratégia própria ser aprovada. |
 | Janela | 60 dias | Mantém sinais recentes sem forçar tendência diária. |
 | Resultados por consulta | 8 | Limita a primeira coleta. |
 | Duração mínima | 180 s | Remove Shorts e referências curtas. |
+| Região / idioma | `BR` / `pt` | Prioriza resultados brasileiros e em português; o filtro local descarta idioma declarado incompatível. |
+| Velocidade mínima | 30 views/dia | Evita referências sem tração operacional. |
+| Aderência mínima | 1 termo da consulta | Evita resultado que só coincidiu superficialmente com a busca. |
+| Formatos excluídos | podcast, entrevista, pregação, palestra motivacional | Evita formatos que não servem como referência inicial do método. |
 | Simulação | desativada | A execução usa dados públicos reais. |
 
 ## Saídas esperadas
@@ -68,6 +72,14 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 - Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave.
 - Resultado técnico: coleta concluída; o projeto aguarda a unidade editorial seguinte, pois o Radar não cria um Tema final.
 - Revisão editorial: **não usar este primeiro snapshot para criar dossiês**. Os resultados misturaram referências genéricas e em espanhol/inglês; a próxima rodada deve ajustar consultas, idioma e critérios de aderência antes de seguir.
+
+## Segunda execução real — filtros corrigidos
+
+- Data: `2026-08-19T01:46:57.476Z`.
+- Consultas centrais: 4; região `BR`; idioma preferencial `pt`; niche-bending: 0.
+- Vídeos únicos encontrados: 24; após duração: 16; aprovados: 8.
+- Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave, sem erro técnico.
+- Revisão: base factual utilizável para o próximo bloco de dossiê de Tema. Ela ainda não é uma decisão de tema e não deve ser publicada ou tratada como roteiro.
 
 ## Teste antes de mover
 

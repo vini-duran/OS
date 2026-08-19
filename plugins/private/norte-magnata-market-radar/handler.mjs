@@ -16,6 +16,9 @@ const RECORD_FIELDS = [
   ["comment_count", "Comentários", "number"],
   ["views_per_day", "Views/dia", "number"],
   ["comments_per_1k_views", "Comentários por mil views", "number"],
+  ["content_language", "Idioma declarado", "text"],
+  ["language_status", "Aderência de idioma", "select", ["preferred", "unknown"]],
+  ["query_term_matches", "Termos da consulta no conteúdo", "number"],
   ["research_lane", "Linha de pesquisa", "select", ["core", "niche_bending"]],
   ["source_query", "Consulta de origem", "text"],
   ["retrieved_at", "Coletado em", "datetime"],
@@ -38,6 +41,33 @@ function queries(value) {
         .filter(Boolean),
     ),
   ].slice(0, MAX_QUERIES_PER_LANE);
+}
+
+function phrases(value) {
+  return [
+    ...new Set(
+      text(value)
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function normalizedWords(value) {
+  return new Set(
+    text(value)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(
+        (item) =>
+          item.length >= 4 &&
+          !["como", "para", "mesmo", "sem", "ter", "sua", "suas", "vicio"].includes(item),
+      ),
+  );
 }
 
 function durationSeconds(isoDuration) {
@@ -163,13 +193,25 @@ async function configuredKeys(services) {
   ];
 }
 
-function normalizeVideo(item, query, lane, retrievedAt) {
+function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
   const statistics = item.statistics ?? {};
   const snippet = item.snippet ?? {};
   const duration = durationSeconds(item.contentDetails?.duration);
   const views = number(statistics.viewCount);
   const comments = number(statistics.commentCount);
   const publishedAt = text(snippet.publishedAt) || retrievedAt;
+  const contentLanguage = text(
+    snippet.defaultAudioLanguage || snippet.defaultLanguage,
+  ).toLowerCase();
+  const languageStatus =
+    !contentLanguage || contentLanguage.startsWith(preferredLanguage)
+      ? contentLanguage
+        ? "preferred"
+        : "unknown"
+      : "mismatch";
+  const queryTerms = normalizedWords(query);
+  const contentTerms = normalizedWords(`${snippet.title ?? ""} ${snippet.description ?? ""}`);
+  const queryTermMatches = [...queryTerms].filter((term) => contentTerms.has(term)).length;
   const liveDays = Math.max(1, (Date.parse(retrievedAt) - Date.parse(publishedAt)) / 86_400_000);
   return {
     source: "youtube_data_api",
@@ -185,10 +227,27 @@ function normalizeVideo(item, query, lane, retrievedAt) {
     comment_count: comments,
     views_per_day: fixed(views / liveDays),
     comments_per_1k_views: fixed((comments / Math.max(views, 1)) * 1000),
+    content_language: contentLanguage || "unknown",
+    language_status: languageStatus,
+    query_term_matches: queryTermMatches,
     research_lane: lane,
     source_query: query,
     retrieved_at: retrievedAt,
   };
+}
+
+function acceptedByLocalFit(
+  item,
+  { minimumViewsPerDay, minimumQueryTermMatches, excludedTitleTerms },
+) {
+  if (item.language_status === "mismatch") return false;
+  if (item.views_per_day < minimumViewsPerDay) return false;
+  if (item.query_term_matches < minimumQueryTermMatches) return false;
+  const title = text(item.title)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return !excludedTitleTerms.some((phrase) => title.includes(phrase));
 }
 
 export async function execute(request, services) {
@@ -209,6 +268,18 @@ export async function execute(request, services) {
   const publishedWithinDays = integer(request.configuration?.published_within_days, 60);
   const maxResults = integer(request.configuration?.max_results_per_query, 8);
   const minimumDuration = integer(request.configuration?.min_duration_seconds, 180);
+  const regionCode = text(request.configuration?.region_code || "BR").toUpperCase();
+  const preferredLanguage = text(request.configuration?.preferred_language || "pt").toLowerCase();
+  const minimumViewsPerDay = Number.isFinite(request.configuration?.minimum_views_per_day)
+    ? number(request.configuration.minimum_views_per_day)
+    : 30;
+  const minimumQueryTermMatches = integer(request.configuration?.minimum_query_term_matches, 1);
+  const excludedTitleTerms = phrases(request.configuration?.excluded_title_terms).map((phrase) =>
+    phrase
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase(),
+  );
   const simulate = request.configuration?.simulate === true;
   if (publishedWithinDays < 1 || publishedWithinDays > 365)
     return invalidConfiguration("published_within_days deve estar entre 1 e 365.");
@@ -216,6 +287,12 @@ export async function execute(request, services) {
     return invalidConfiguration("max_results_per_query deve estar entre 1 e 20.");
   if (minimumDuration < 30 || minimumDuration > 7200)
     return invalidConfiguration("min_duration_seconds deve estar entre 30 e 7200.");
+  if (!/^[A-Z]{2}$/.test(regionCode))
+    return invalidConfiguration("region_code deve ter duas letras maiúsculas.");
+  if (!/^[a-z]{2}$/.test(preferredLanguage))
+    return invalidConfiguration("preferred_language deve ter duas letras minúsculas.");
+  if (minimumQueryTermMatches < 0 || minimumQueryTermMatches > 10)
+    return invalidConfiguration("minimum_query_term_matches deve estar entre 0 e 10.");
 
   if (simulate) {
     return {
@@ -265,6 +342,8 @@ export async function execute(request, services) {
         type: "video",
         order: "viewCount",
         publishedAfter,
+        regionCode,
+        relevanceLanguage: preferredLanguage,
         maxResults,
       });
       for (const item of Array.isArray(search.items) ? search.items : []) {
@@ -301,12 +380,22 @@ export async function execute(request, services) {
       id: ids.join(","),
       maxResults: 50,
     });
-    const snapshot = (Array.isArray(details.items) ? details.items : [])
+    const normalized = (Array.isArray(details.items) ? details.items : [])
       .map((item) => {
         const plan = found.get(text(item.id));
-        return plan ? normalizeVideo(item, plan.query, plan.lane, retrievedAt) : undefined;
+        return plan
+          ? normalizeVideo(item, plan.query, plan.lane, retrievedAt, preferredLanguage)
+          : undefined;
       })
-      .filter((item) => item && item.duration_seconds >= minimumDuration)
+      .filter((item) => item && item.duration_seconds >= minimumDuration);
+    const snapshot = normalized
+      .filter((item) =>
+        acceptedByLocalFit(item, {
+          minimumViewsPerDay,
+          minimumQueryTermMatches,
+          excludedTitleTerms,
+        }),
+      )
       .sort(
         (left, right) =>
           right.views_per_day - left.views_per_day || right.view_count - left.view_count,
@@ -319,8 +408,9 @@ export async function execute(request, services) {
         research_summary: [
           `Coleta concluída em ${retrievedAt}.`,
           `Consultas: ${plannedQueries.length}; chamadas de busca: ${plannedQueries.length}; chamada de detalhes: 1.`,
-          `Janela: ${publishedWithinDays} dias; duração mínima: ${minimumDuration}s.`,
-          `Vídeos únicos encontrados: ${ids.length}; aprovados no filtro local: ${snapshot.length}.`,
+          `Região: ${regionCode}; idioma preferencial: ${preferredLanguage}; janela: ${publishedWithinDays} dias.`,
+          `Duração mínima: ${minimumDuration}s; velocidade mínima: ${minimumViewsPerDay} views/dia; termos mínimos: ${minimumQueryTermMatches}.`,
+          `Vídeos únicos encontrados: ${ids.length}; após duração: ${normalized.length}; aprovados no filtro local: ${snapshot.length}.`,
           "Este snapshot é factual: não cria nem aprova tema, título, CTA ou roteiro.",
         ].join("\n"),
       },

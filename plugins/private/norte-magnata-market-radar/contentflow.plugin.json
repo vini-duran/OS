@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.market-radar",
   "name": "Norte Magnata — Radar de Mercado",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Coleta um snapshot factual do YouTube para pesquisa de tema do Norte Magnata, sem criar ou aprovar temas.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",
@@ -59,7 +59,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 3000,
-            "default": "disciplina masculina autocontrole\nhábitos foco produtividade\nmentalidade financeira responsabilidade\nautocontrole atenção recompensa",
+            "default": "como ter disciplina mesmo sem motivação\ncomo parar de procrastinar e ter foco\nhábitos que destroem sua disciplina\ncomo controlar impulso e vício no celular",
             "description": "Uma consulta central por linha. Essas consultas são configuráveis por canal."
           },
           "niche_bending_queries": {
@@ -85,6 +85,33 @@
             "minimum": 30,
             "maximum": 7200,
             "default": 180
+          },
+          "region_code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$",
+            "default": "BR"
+          },
+          "preferred_language": {
+            "type": "string",
+            "pattern": "^[a-z]{2}$",
+            "default": "pt"
+          },
+          "minimum_views_per_day": {
+            "type": "number",
+            "minimum": 0,
+            "default": 30
+          },
+          "minimum_query_term_matches": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 1
+          },
+          "excluded_title_terms": {
+            "type": "string",
+            "maxLength": 1000,
+            "default": "podcast\nentrevista\npregação\npalestra motivacional",
+            "description": "Uma expressão por linha. O filtro local rejeita títulos que contenham esses formatos."
           },
           "simulate": {
             "type": "boolean",
