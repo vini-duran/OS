@@ -4,9 +4,9 @@ import { execute } from "./handler.mjs";
 
 const fixtureUrl = new URL("./fixtures/execution.json", import.meta.url);
 const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
-const services = (secret = "test-key") => ({
+const services = (secrets = ["test-key-1", "test-key-2"]) => ({
   signal: new AbortController().signal,
-  getSecret: async () => secret,
+  getSecret: async (name) => (name === "YOUTUBE_DATA_API_KEY" ? secrets[0] : name === "YOUTUBE_DATA_API_KEY_2" ? secrets[1] : ""),
 });
 
 const originalFetch = globalThis.fetch;
@@ -14,7 +14,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), { stat
 
 try {
   const realFixture = { ...fixture, configuration: { ...fixture.configuration, simulate: false } };
-  const missingSecret = await execute(realFixture, services(""));
+  const missingSecret = await execute(realFixture, services([]));
   assert.equal(missingSecret.status, "error");
   assert.equal(missingSecret.code, "MISSING_SECRET");
 
@@ -53,13 +53,22 @@ try {
   assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 2);
   assert.equal(requests.filter((item) => item.pathname.endsWith("/videos")).length, 1);
 
-  globalThis.fetch = async () => json({ error: { errors: [{ reason: "quotaExceeded" }] } }, 403);
+  let quotaCalls = 0;
+  globalThis.fetch = async (url) => {
+    quotaCalls += 1;
+    const key = new URL(url).searchParams.get("key");
+    if (quotaCalls === 1) {
+      assert.equal(key, "test-key-1");
+      return json({ error: { errors: [{ reason: "quotaExceeded" }] } }, 403);
+    }
+    assert.equal(key, "test-key-2");
+    return json({ items: [] });
+  };
   const limited = await execute(realFixture, services());
-  assert.equal(limited.status, "error");
-  assert.equal(limited.code, "RATE_LIMIT");
-  assert.equal(limited.retryable, true);
+  assert.equal(limited.status, "success");
+  assert.match(limited.logs.join("\n"), /quota_rotations=1/);
 
-  const simulated = await execute(fixture, services(""));
+  const simulated = await execute(fixture, services([]));
   assert.equal(simulated.status, "success");
   assert.equal(simulated.values.market_snapshot.length, 0);
   assert.match(simulated.values.research_summary, /nenhuma consulta externa/i);
