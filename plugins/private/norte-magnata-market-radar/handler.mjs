@@ -1,5 +1,9 @@
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
-const MAX_QUERIES_PER_LANE = 12;
+const MAX_QUERIES_PER_LANE = 20;
+const MAX_RESULTS_PER_QUERY = 50;
+const MAX_CANDIDATES = 1_000;
+const MAX_DEEP_REVIEWS = 100;
+const MAX_CHANNEL_BENCHMARKS = 20;
 const YOUTUBE_KEY_SECRET = "YOUTUBE_DATA_API_KEYS";
 
 const RECORD_FIELDS = [
@@ -16,6 +20,16 @@ const RECORD_FIELDS = [
   ["comment_count", "Comentários", "number"],
   ["views_per_day", "Views/dia", "number"],
   ["comments_per_1k_views", "Comentários por mil views", "number"],
+  ["subscriber_count", "Inscritos do canal", "number"],
+  ["views_per_subscriber", "Views por inscrito", "number"],
+  ["channel_median_views_per_day", "Mediana do canal (views/dia)", "number"],
+  ["outperformance_vs_channel", "Desempenho vs. canal", "number"],
+  ["comment_signal_score", "Sinal nos comentários (0-1)", "number"],
+  ["comment_samples", "Amostras de comentários", "textarea"],
+  ["thumbnail_url", "Thumbnail observada", "url"],
+  ["hook_pattern", "Padrão de gancho observado", "text"],
+  ["market_score", "Nota de mercado (0-5)", "number"],
+  ["score_reason", "Justificativa da nota", "textarea"],
   ["content_language", "Idioma declarado", "text"],
   ["language_status", "Aderência de idioma", "select", ["preferred", "unknown"]],
   ["query_term_matches", "Termos da consulta no conteúdo", "number"],
@@ -85,6 +99,47 @@ function fixed(value, decimals = 2) {
   return Number(value.toFixed(decimals));
 }
 
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function chunks(values, size) {
+  const result = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
+}
+
+function hookPattern(title) {
+  return text(title)
+    .replace(/\d+/g, "[n]")
+    .replace(/[“”"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+}
+
+function commentSignal(comments) {
+  const value = comments.join(" ").toLowerCase();
+  if (!value) return 0;
+  const signals = ["eu", "minha", "meu", "preciso", "comecei", "vou", "ajudou", "funcionou", "verdade", "obrigado", "parte 2", "continua"];
+  return fixed(Math.min(1, signals.filter((signal) => value.includes(signal)).length / 5), 2);
+}
+
+function scoreCandidate(item) {
+  const velocity = Math.min(1.5, Math.log10(Math.max(1, item.views_per_day)) / 4 * 1.5);
+  const breakout = Math.min(1.5, Math.log10(Math.max(1, item.views_per_subscriber || 1)) / 2 * 0.75 + Math.min(0.75, (item.outperformance_vs_channel || 0) / 4));
+  const engagement = Math.min(1, item.comments_per_1k_views / 8);
+  const comments = Math.min(1, item.comment_signal_score || 0);
+  const score = Math.round(Math.max(0, Math.min(5, velocity + breakout + engagement + comments)) * 2) / 2;
+  return {
+    market_score: score,
+    score_reason: `Velocidade ${fixed(velocity, 1)}/1,5; desempenho relativo ${fixed(breakout, 1)}/1,5; engajamento ${fixed(engagement, 1)}/1; sinal em comentários ${fixed(comments, 1)}/1. Heurística factual, não mede retenção nem vendas.`,
+  };
+}
+
 function invalidConfiguration(message) {
   return { status: "error", code: "INVALID_CONFIGURATION", message, retryable: false };
 }
@@ -111,6 +166,13 @@ function ensureOutputContract(request) {
 
 function apiError(payload) {
   const reason = payload?.error?.errors?.[0]?.reason ?? payload?.error?.status ?? "";
+  if (reason === "commentsDisabled") {
+    return {
+      code: "COMMENTS_DISABLED",
+      retryable: false,
+      message: "Os comentários deste vídeo estão desativados.",
+    };
+  }
   if (["quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
     return {
       code: "RATE_LIMIT",
@@ -136,7 +198,7 @@ function apiError(payload) {
 function makeYouTubeClient(keys, signal) {
   let keyIndex = 0;
   const exhausted = new Set();
-  const usage = { searchCalls: 0, detailsCalls: 0, rotations: 0 };
+  const usage = { searchCalls: 0, detailsCalls: 0, channelCalls: 0, commentCalls: 0, rotations: 0 };
 
   async function request(path, params) {
     while (true) {
@@ -144,6 +206,8 @@ function makeYouTubeClient(keys, signal) {
       for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
       url.searchParams.set("key", keys[keyIndex]);
       if (path === "/search") usage.searchCalls += 1;
+      else if (path === "/channels") usage.channelCalls += 1;
+      else if (path === "/commentThreads") usage.commentCalls += 1;
       else usage.detailsCalls += 1;
       let response;
       try {
@@ -227,6 +291,16 @@ function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
     comment_count: comments,
     views_per_day: fixed(views / liveDays),
     comments_per_1k_views: fixed((comments / Math.max(views, 1)) * 1000),
+    subscriber_count: 0,
+    views_per_subscriber: 0,
+    channel_median_views_per_day: 0,
+    outperformance_vs_channel: 0,
+    comment_signal_score: 0,
+    comment_samples: "",
+    thumbnail_url: text(snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url),
+    hook_pattern: hookPattern(snippet.title),
+    market_score: 0,
+    score_reason: "Ainda não classificado.",
     content_language: contentLanguage || "unknown",
     language_status: languageStatus,
     query_term_matches: queryTermMatches,
@@ -266,7 +340,11 @@ export async function execute(request, services) {
     return invalidConfiguration("Informe ao menos uma consulta central em core_queries.");
 
   const publishedWithinDays = integer(request.configuration?.published_within_days, 60);
-  const maxResults = integer(request.configuration?.max_results_per_query, 8);
+  const maxResults = integer(request.configuration?.max_results_per_query, MAX_RESULTS_PER_QUERY);
+  const candidateTarget = integer(request.configuration?.candidate_target, MAX_CANDIDATES);
+  const deepReviewLimit = integer(request.configuration?.deep_review_limit, MAX_DEEP_REVIEWS);
+  const topLimit = integer(request.configuration?.top_limit, 10);
+  const minimumBendingTop = integer(request.configuration?.minimum_niche_bending_top, 6);
   const minimumDuration = integer(request.configuration?.min_duration_seconds, 180);
   const regionCode = text(request.configuration?.region_code || "BR").toUpperCase();
   const preferredLanguage = text(request.configuration?.preferred_language || "pt").toLowerCase();
@@ -283,8 +361,16 @@ export async function execute(request, services) {
   const simulate = request.configuration?.simulate === true;
   if (publishedWithinDays < 1 || publishedWithinDays > 365)
     return invalidConfiguration("published_within_days deve estar entre 1 e 365.");
-  if (maxResults < 1 || maxResults > 20)
-    return invalidConfiguration("max_results_per_query deve estar entre 1 e 20.");
+  if (maxResults < 1 || maxResults > MAX_RESULTS_PER_QUERY)
+    return invalidConfiguration(`max_results_per_query deve estar entre 1 e ${MAX_RESULTS_PER_QUERY}.`);
+  if (candidateTarget < 50 || candidateTarget > MAX_CANDIDATES)
+    return invalidConfiguration(`candidate_target deve estar entre 50 e ${MAX_CANDIDATES}.`);
+  if (deepReviewLimit < 10 || deepReviewLimit > MAX_DEEP_REVIEWS)
+    return invalidConfiguration(`deep_review_limit deve estar entre 10 e ${MAX_DEEP_REVIEWS}.`);
+  if (topLimit < 1 || topLimit > 20)
+    return invalidConfiguration("top_limit deve estar entre 1 e 20.");
+  if (minimumBendingTop < 0 || minimumBendingTop > topLimit)
+    return invalidConfiguration("minimum_niche_bending_top deve estar entre 0 e top_limit.");
   if (minimumDuration < 30 || minimumDuration > 7200)
     return invalidConfiguration("min_duration_seconds deve estar entre 30 e 7200.");
   if (!/^[A-Z]{2}$/.test(regionCode))
@@ -350,6 +436,7 @@ export async function execute(request, services) {
         const id = text(item?.id?.videoId);
         if (id && !found.has(id)) found.set(id, plan);
       }
+      if (found.size >= candidateTarget) break;
     }
 
     const ids = [...found.keys()];
@@ -375,12 +462,16 @@ export async function execute(request, services) {
       };
     }
 
-    const details = await client.request("/videos", {
-      part: "snippet,statistics,contentDetails",
-      id: ids.join(","),
-      maxResults: 50,
-    });
-    const normalized = (Array.isArray(details.items) ? details.items : [])
+    const detailItems = [];
+    for (const group of chunks(ids, 50)) {
+      const details = await client.request("/videos", {
+        part: "snippet,statistics,contentDetails",
+        id: group.join(","),
+        maxResults: 50,
+      });
+      detailItems.push(...(Array.isArray(details.items) ? details.items : []));
+    }
+    const normalized = detailItems
       .map((item) => {
         const plan = found.get(text(item.id));
         return plan
@@ -388,7 +479,7 @@ export async function execute(request, services) {
           : undefined;
       })
       .filter((item) => item && item.duration_seconds >= minimumDuration);
-    const snapshot = normalized
+    const eligible = normalized
       .filter((item) =>
         acceptedByLocalFit(item, {
           minimumViewsPerDay,
@@ -396,10 +487,60 @@ export async function execute(request, services) {
           excludedTitleTerms,
         }),
       )
-      .sort(
-        (left, right) =>
-          right.views_per_day - left.views_per_day || right.view_count - left.view_count,
-      );
+      .sort((left, right) => right.views_per_day - left.views_per_day || right.view_count - left.view_count);
+
+    const channelIds = [...new Set(eligible.map((item) => item.channel_id).filter(Boolean))];
+    const channelSubscribers = new Map();
+    for (const group of chunks(channelIds, 50)) {
+      const channels = await client.request("/channels", { part: "statistics", id: group.join(","), maxResults: 50 });
+      for (const channel of Array.isArray(channels.items) ? channels.items : []) {
+        channelSubscribers.set(text(channel.id), number(channel.statistics?.subscriberCount));
+      }
+    }
+    for (const item of eligible) {
+      item.subscriber_count = channelSubscribers.get(item.channel_id) || 0;
+      item.views_per_subscriber = item.subscriber_count
+        ? fixed(item.view_count / item.subscriber_count)
+        : 0;
+    }
+
+    const deepReview = eligible
+      .slice()
+      .sort((left, right) => right.views_per_day - left.views_per_day || right.views_per_subscriber - left.views_per_subscriber)
+      .slice(0, deepReviewLimit);
+    for (const item of deepReview) {
+      let thread = { items: [] };
+      try {
+        thread = await client.request("/commentThreads", { part: "snippet", videoId: item.video_id, order: "relevance", maxResults: 10, textFormat: "plainText" });
+      } catch (error) {
+        if (error?.code !== "COMMENTS_DISABLED") throw error;
+      }
+      const samples = (Array.isArray(thread.items) ? thread.items : [])
+        .map((entry) => text(entry.snippet?.topLevelComment?.snippet?.textDisplay))
+        .filter(Boolean)
+        .slice(0, 3);
+      item.comment_samples = samples.join("\n---\n");
+      item.comment_signal_score = commentSignal(samples);
+    }
+
+    const benchmark = deepReview.slice(0, MAX_CHANNEL_BENCHMARKS);
+    for (const item of benchmark) {
+      const recent = await client.request("/search", { part: "snippet", channelId: item.channel_id, type: "video", order: "date", maxResults: 5 });
+      const recentIds = (Array.isArray(recent.items) ? recent.items : []).map((entry) => text(entry.id?.videoId)).filter(Boolean);
+      if (!recentIds.length) continue;
+      const videos = await client.request("/videos", { part: "snippet,statistics", id: recentIds.join(","), maxResults: 50 });
+      const performance = (Array.isArray(videos.items) ? videos.items : []).map((video) => {
+        const published = text(video.snippet?.publishedAt) || retrievedAt;
+        return number(video.statistics?.viewCount) / Math.max(1, (Date.parse(retrievedAt) - Date.parse(published)) / 86_400_000);
+      });
+      item.channel_median_views_per_day = fixed(median(performance));
+      item.outperformance_vs_channel = fixed(item.views_per_day / Math.max(1, item.channel_median_views_per_day));
+    }
+
+    for (const item of deepReview) Object.assign(item, scoreCandidate(item));
+    const ranked = deepReview.sort((left, right) => right.market_score - left.market_score || right.views_per_day - left.views_per_day);
+    const bending = ranked.filter((item) => item.research_lane === "niche_bending").slice(0, minimumBendingTop);
+    const snapshot = [...bending, ...ranked.filter((item) => !bending.includes(item))].slice(0, topLimit);
 
     return {
       status: "success",
@@ -407,22 +548,25 @@ export async function execute(request, services) {
         market_snapshot: snapshot,
         research_summary: [
           `Coleta concluída em ${retrievedAt}.`,
-          `Consultas: ${plannedQueries.length}; chamadas de busca: ${plannedQueries.length}; chamada de detalhes: 1.`,
+          `Consultas executadas: ${client.usage.searchCalls}; alvo de candidatos: ${candidateTarget}; máximo por consulta: ${maxResults}.`,
           `Região: ${regionCode}; idioma preferencial: ${preferredLanguage}; janela: ${publishedWithinDays} dias.`,
           `Duração mínima: ${minimumDuration}s; velocidade mínima: ${minimumViewsPerDay} views/dia; termos mínimos: ${minimumQueryTermMatches}.`,
-          `Vídeos únicos encontrados: ${ids.length}; após duração: ${normalized.length}; aprovados no filtro local: ${snapshot.length}.`,
+          `Vídeos únicos encontrados: ${ids.length}; após duração: ${normalized.length}; aprovados localmente: ${eligible.length}; revisão aprofundada: ${deepReview.length}; Top ${snapshot.length}.`,
+          `O Top ${snapshot.length} reserva até ${minimumBendingTop} referências de niche-bending quando elas passarem pelo filtro. A nota 0–5 em saltos de 0,5 é uma heurística explicável; não mede retenção, qualidade visual, veracidade nem conversão.`,
           "Este snapshot é factual: não cria nem aprova tema, título, CTA ou roteiro.",
         ].join("\n"),
       },
       usage: {
         provider: "YouTube Data API",
-        inputUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls,
-        totalUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls,
+        inputUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls + client.usage.channelCalls + client.usage.commentCalls,
+        totalUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls + client.usage.channelCalls + client.usage.commentCalls,
         unit: "estimated quota units",
       },
       logs: [
         `youtube_search_calls=${client.usage.searchCalls}`,
         `youtube_video_details_calls=${client.usage.detailsCalls}`,
+        `youtube_channel_calls=${client.usage.channelCalls}`,
+        `youtube_comment_calls=${client.usage.commentCalls}`,
         `quota_rotations=${client.usage.rotations}`,
         `records=${snapshot.length}`,
       ],
