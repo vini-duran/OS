@@ -53,13 +53,14 @@ Os campos `core_queries`, `niche_bending_queries` e `excluded_title_terms` são 
 | Consultas niche-bending | até 20 consultas de nichos de origem | Capturam padrões para adaptar, não temas para copiar. |
 | Janela | 60 dias | Mantém sinais recentes sem forçar tendência diária. |
 | Resultados por consulta | até 50 | Permite coleta ampla sem multiplicar análise profunda. |
-| Alvo de candidatos | até 10.000 únicos | Use paginação somente com quota disponível; o filtro local vem antes da análise aprofundada. |
-| Páginas por consulta | 1–5 | Cada página é uma chamada adicional da YouTube Data API. |
-| Consultas multilíngues | `idioma|consulta`, uma por linha | Permite testar inglês, espanhol, francês, polonês, japonês etc. sem descartar automaticamente o idioma. |
-| Revisão aprofundada | Top 20 recomendado | Coleta comentários e compara, de forma limitada, o desempenho do canal. |
-| Saída final | Top 5 recomendado | Dossiê final deve explicar gancho, promessa, estrutura, sinais de comentários e adaptação. |
+| Alvo de candidatos | 10.000 únicos | É alvo, não garantia: duplicações e resultados indisponíveis reduzem o total. |
+| Páginas por consulta | 5 | Cada página é uma chamada adicional da YouTube Data API; com 40 consultas de 50 resultados, cinco páginas permitem atingir o alvo antes da deduplicação. |
+| Consultas multilíngues | `idioma|consulta`, uma por linha | Permite testar inglês, espanhol, francês, polonês, japonês etc. sem descartar automaticamente o idioma; as três frentes são intercaladas na coleta. |
+| Revisão aprofundada | Top 20 | Coleta comentários públicos, descrição, thumbnail e compara, de forma limitada, o desempenho do canal. |
+| Ranking intermediário | Top 10 | Ordenação factual após a revisão aprofundada. |
+| Saída final | Top 5 | Dossiê final deve explicar gancho, promessa, estrutura, sinais de comentários e adaptação. |
 | Duração mínima | 180 s | Remove Shorts e referências curtas. |
-| Região / idioma | `BR` / `pt` + consultas multilíngues | A consulta multilíngue define `relevanceLanguage` para aquela linha. |
+| Região / idioma | `BR` / `pt` + consultas multilíngues | A consulta multilíngue define `relevanceLanguage` e remove o filtro regional somente para aquela linha. |
 | Velocidade mínima | 30 views/dia | Evita referências sem tração operacional. |
 | Aderência mínima | 1 termo da consulta | Evita resultado que só coincidiu superficialmente com a busca. |
 | Formatos excluídos | podcast, entrevista, pregação, palestra motivacional | Evita formatos que não servem como referência inicial do método. |
@@ -67,10 +68,10 @@ Os campos `core_queries`, `niche_bending_queries` e `excluded_title_terms` são 
 
 ## Saídas esperadas
 
-- `market_snapshot`: Top 10 rastreável com ID/URL, canal, inscritos, relação views/inscritos, comparação limitada com o canal, amostra de comentários, URL da thumbnail, padrão de gancho e nota explicável 0–5.
-- `research_summary`: parâmetros, número de chamadas, total de vídeos e filtro aplicado.
+- `market_snapshot`: Top 5 rastreável entregue ao dossiê, com ID/URL, canal, inscritos, relação views/inscritos, comparação limitada com o canal, descrição pública, amostra de comentários, URL da thumbnail, padrão de gancho e nota explicável 0–5.
+- `research_summary`: parâmetros, número de chamadas, total de vídeos, Top 20, Top 10, Top 5 e filtro aplicado.
 
-O resultado não prova retenção, conversão, licença de mídia ou adequação visual. A próxima unidade do método transformará o snapshot em dossiês de tema e fará a validação de repetição no escopo correto.
+O resultado não prova retenção, conversão, licença de mídia ou adequação visual. Ele também não contém roteiro ou transcrição completa: isso exige uma etapa própria autorizada. A próxima unidade do método transforma o Top 5 em dossiês de tema e faz a validação de repetição no escopo correto.
 
 ## Registro da primeira execução real
 
@@ -93,7 +94,7 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 
 Registros de execuções anteriores são históricos e não autorizam continuar o pipeline. A configuração vigente deve seguir `docs/CHANNEL_RESEARCH.md`: pesquisa manual do canal, brief aprovado e Tema curado com seleção humana.
 
-O Radar v0.6 aceita consultas centrais, niche-bending e multilíngues. Para o primeiro teste, use uma página por consulta, `candidate_target=1000`, revisão aprofundada de 20 e Top 5. Aumente paginação somente após revisar quota e resultados.
+O Radar v0.7 aceita consultas centrais, niche-bending e multilíngues. A configuração de produção é `candidate_target=10000`, `max_search_pages=5`, revisão aprofundada de 20, ranking Top 10 e saída final Top 5. Execute somente quando a decisão operacional autorizar Tema; os estados históricos não autorizam continuação.
 ## Teste antes de mover
 
 ```sh

@@ -8,8 +8,15 @@
   "configuration": {
     "core_queries": "disciplina masculina autocontrole\nhábitos foco produtividade",
     "niche_bending_queries": "",
+    "cross_language_queries": "en|discipline without motivation\nes|procrastinación y disciplina",
     "published_within_days": 60,
-    "max_results_per_query": 8,
+    "max_results_per_query": 50,
+    "candidate_target": 10000,
+    "max_search_pages": 5,
+    "deep_review_limit": 20,
+    "ranked_top_limit": 10,
+    "top_limit": 5,
+    "minimum_niche_bending_top": 2,
     "min_duration_seconds": 180,
     "simulate": true
   },

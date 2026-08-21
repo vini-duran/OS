@@ -5,6 +5,8 @@ const MAX_CANDIDATES = 10_000;
 const MAX_SEARCH_PAGES = 5;
 const MAX_DEEP_REVIEWS = 100;
 const MAX_CHANNEL_BENCHMARKS = 20;
+const DEFAULT_RANKED_TOP_LIMIT = 10;
+const DEFAULT_FINAL_TOP_LIMIT = 5;
 const YOUTUBE_KEY_SECRETS = [
   "YOUTUBE_API_KEY_PROJECT_01",
   "YOUTUBE_API_KEY_PROJECT_02",
@@ -24,6 +26,7 @@ const RECORD_FIELDS = [
   ["channel_id", "ID do canal", "text"],
   ["channel_title", "Canal", "text"],
   ["title", "Título observado", "text"],
+  ["description", "Descrição observada", "textarea"],
   ["published_at", "Publicado em", "datetime"],
   ["duration_seconds", "Duração (s)", "number"],
   ["view_count", "Visualizações", "number"],
@@ -42,7 +45,7 @@ const RECORD_FIELDS = [
   ["market_score", "Nota de mercado (0-5)", "number"],
   ["score_reason", "Justificativa da nota", "textarea"],
   ["content_language", "Idioma declarado", "text"],
-  ["language_status", "Aderência de idioma", "select", ["preferred", "unknown"]],
+  ["language_status", "Aderência de idioma", "select", ["preferred", "cross_language", "unknown"]],
   ["query_term_matches", "Termos da consulta no conteúdo", "number"],
   ["research_lane", "Linha de pesquisa", "select", ["core", "niche_bending"]],
   ["source_query", "Consulta de origem", "text"],
@@ -135,6 +138,17 @@ function chunks(values, size) {
   return result;
 }
 
+function interleaveQueryPlans(...groups) {
+  const result = [];
+  const length = Math.max(0, ...groups.map((group) => group.length));
+  for (let index = 0; index < length; index += 1) {
+    for (const group of groups) {
+      if (group[index]) result.push(group[index]);
+    }
+  }
+  return result;
+}
+
 function hookPattern(title) {
   return text(title)
     .replace(/\d+/g, "[n]")
@@ -161,6 +175,27 @@ function scoreCandidate(item) {
     market_score: score,
     score_reason: `Velocidade ${fixed(velocity, 1)}/1,5; desempenho relativo ${fixed(breakout, 1)}/1,5; engajamento ${fixed(engagement, 1)}/1; sinal em comentários ${fixed(comments, 1)}/1. Heurística factual, não mede retenção nem vendas.`,
   };
+}
+
+function rankedLine(item, position) {
+  const comment = text(item.comment_samples).replace(/\s+/g, " ").slice(0, 180) || "sem amostra";
+  return [
+    `#${position} | nota ${fixed(item.market_score, 1)}/5 | ${item.research_lane}`,
+    `${item.title} — ${item.channel_title}`,
+    `${item.views_per_day} views/dia | ${item.views_per_subscriber} views/inscrito | ${item.outperformance_vs_channel}x vs. canal`,
+    `gancho: ${item.hook_pattern || "não identificado"}`,
+    `comentário: ${comment}`,
+    item.video_url,
+  ].join(" | ");
+}
+
+function selectFinalCandidates(ranked, finalLimit, minimumBending) {
+  const selected = ranked.filter((item) => item.research_lane === "niche_bending").slice(0, minimumBending);
+  for (const item of ranked) {
+    if (selected.length >= finalLimit) break;
+    if (!selected.includes(item)) selected.push(item);
+  }
+  return selected.slice(0, finalLimit);
 }
 
 function invalidConfiguration(message) {
@@ -288,7 +323,7 @@ async function configuredKeys(services) {
   ];
 }
 
-function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
+function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage, queryLanguage) {
   const statistics = item.statistics ?? {};
   const snippet = item.snippet ?? {};
   const duration = durationSeconds(item.contentDetails?.duration);
@@ -298,11 +333,13 @@ function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
   const contentLanguage = text(
     snippet.defaultAudioLanguage || snippet.defaultLanguage,
   ).toLowerCase();
-  const languageStatus =
-    !contentLanguage || contentLanguage.startsWith(preferredLanguage)
-      ? contentLanguage
-        ? "preferred"
-        : "unknown"
+  const expectedLanguage = queryLanguage || preferredLanguage;
+  const languageStatus = !contentLanguage
+    ? "unknown"
+    : contentLanguage.startsWith(expectedLanguage)
+      ? queryLanguage
+        ? "cross_language"
+        : "preferred"
       : "mismatch";
   const queryTerms = normalizedWords(query);
   const contentTerms = normalizedWords(`${snippet.title ?? ""} ${snippet.description ?? ""}`);
@@ -315,6 +352,7 @@ function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
     channel_id: text(snippet.channelId),
     channel_title: text(snippet.channelTitle),
     title: text(snippet.title),
+    description: text(snippet.description).slice(0, 2_000),
     published_at: publishedAt,
     duration_seconds: duration,
     view_count: views,
@@ -374,10 +412,11 @@ export async function execute(request, services) {
   const publishedWithinDays = integer(request.configuration?.published_within_days, 60);
   const maxResults = integer(request.configuration?.max_results_per_query, MAX_RESULTS_PER_QUERY);
   const candidateTarget = integer(request.configuration?.candidate_target, MAX_CANDIDATES);
-  const maxSearchPages = integer(request.configuration?.max_search_pages, 1);
+  const maxSearchPages = integer(request.configuration?.max_search_pages, MAX_SEARCH_PAGES);
   const deepReviewLimit = integer(request.configuration?.deep_review_limit, 20);
-  const topLimit = integer(request.configuration?.top_limit, 5);
-  const minimumBendingTop = integer(request.configuration?.minimum_niche_bending_top, 3);
+  const rankedTopLimit = integer(request.configuration?.ranked_top_limit, DEFAULT_RANKED_TOP_LIMIT);
+  const topLimit = integer(request.configuration?.top_limit, DEFAULT_FINAL_TOP_LIMIT);
+  const minimumBendingTop = integer(request.configuration?.minimum_niche_bending_top, 2);
   const minimumDuration = integer(request.configuration?.min_duration_seconds, 180);
   const regionCode = text(request.configuration?.region_code || "BR").toUpperCase();
   const preferredLanguage = text(request.configuration?.preferred_language || "pt").toLowerCase();
@@ -402,8 +441,14 @@ export async function execute(request, services) {
     return invalidConfiguration(`max_search_pages deve estar entre 1 e ${MAX_SEARCH_PAGES}.`);
   if (deepReviewLimit < 10 || deepReviewLimit > MAX_DEEP_REVIEWS)
     return invalidConfiguration(`deep_review_limit deve estar entre 10 e ${MAX_DEEP_REVIEWS}.`);
+  if (rankedTopLimit < 5 || rankedTopLimit > 20)
+    return invalidConfiguration("ranked_top_limit deve estar entre 5 e 20.");
   if (topLimit < 1 || topLimit > 20)
     return invalidConfiguration("top_limit deve estar entre 1 e 20.");
+  if (rankedTopLimit > deepReviewLimit)
+    return invalidConfiguration("ranked_top_limit não pode ser maior que deep_review_limit.");
+  if (topLimit > rankedTopLimit)
+    return invalidConfiguration("top_limit não pode ser maior que ranked_top_limit.");
   if (minimumBendingTop < 0 || minimumBendingTop > topLimit)
     return invalidConfiguration("minimum_niche_bending_top deve estar entre 0 e top_limit.");
   if (minimumDuration < 30 || minimumDuration > 7200)
@@ -440,11 +485,11 @@ export async function execute(request, services) {
 
   const retrievedAt = new Date().toISOString();
   const publishedAfter = new Date(Date.now() - publishedWithinDays * 86_400_000).toISOString();
-  const plannedQueries = [
-    ...coreQueries.map((query) => ({ query, lane: "core" })),
-    ...bridgeQueries.map((query) => ({ query, lane: "niche_bending" })),
-    ...crossLanguageQueries.map(({ language, query }) => ({ query, lane: "niche_bending", language })),
-  ];
+  const plannedQueries = interleaveQueryPlans(
+    coreQueries.map((query) => ({ query, lane: "core" })),
+    bridgeQueries.map((query) => ({ query, lane: "niche_bending" })),
+    crossLanguageQueries.map(({ language, query }) => ({ query, lane: "niche_bending", language })),
+  );
   const found = new Map();
   const client = makeYouTubeClient(keys, services.signal);
 
@@ -466,7 +511,7 @@ export async function execute(request, services) {
           type: "video",
           order: "viewCount",
           publishedAfter,
-          regionCode,
+          ...(plan.language ? {} : { regionCode }),
           relevanceLanguage: plan.language || preferredLanguage,
           maxResults,
           ...(pageToken ? { pageToken } : {}),
@@ -517,7 +562,7 @@ export async function execute(request, services) {
       .map((item) => {
         const plan = found.get(text(item.id));
         return plan
-          ? normalizeVideo(item, plan.query, plan.lane, retrievedAt, preferredLanguage)
+          ? normalizeVideo(item, plan.query, plan.lane, retrievedAt, preferredLanguage, plan.language)
           : undefined;
       })
       .filter((item) => item && item.duration_seconds >= minimumDuration);
@@ -581,8 +626,8 @@ export async function execute(request, services) {
 
     for (const item of deepReview) Object.assign(item, scoreCandidate(item));
     const ranked = deepReview.sort((left, right) => right.market_score - left.market_score || right.views_per_day - left.views_per_day);
-    const bending = ranked.filter((item) => item.research_lane === "niche_bending").slice(0, minimumBendingTop);
-    const snapshot = [...bending, ...ranked.filter((item) => !bending.includes(item))].slice(0, topLimit);
+    const rankedTop = ranked.slice(0, rankedTopLimit);
+    const snapshot = selectFinalCandidates(rankedTop, topLimit, minimumBendingTop);
 
     return {
       status: "success",
@@ -593,9 +638,15 @@ export async function execute(request, services) {
           `Consultas executadas: ${client.usage.searchCalls}; alvo de candidatos: ${candidateTarget}; máximo por consulta: ${maxResults}.`,
           `Região: ${regionCode}; idioma preferencial: ${preferredLanguage}; janela: ${publishedWithinDays} dias.`,
           `Duração mínima: ${minimumDuration}s; velocidade mínima: ${minimumViewsPerDay} views/dia; termos mínimos: ${minimumQueryTermMatches}.`,
-          `Vídeos únicos encontrados: ${ids.length}; após duração: ${normalized.length}; aprovados localmente: ${eligible.length}; revisão aprofundada: ${deepReview.length}; Top ${snapshot.length}.`,
+          `Vídeos únicos encontrados: ${ids.length}; após duração: ${normalized.length}; aprovados localmente: ${eligible.length}; revisão aprofundada: Top ${deepReview.length}; ranking intermediário: Top ${rankedTop.length}; seleção final: Top ${snapshot.length}.`,
           `O Top ${snapshot.length} reserva até ${minimumBendingTop} referências de niche-bending quando elas passarem pelo filtro. A nota 0–5 em saltos de 0,5 é uma heurística explicável; não mede retenção, qualidade visual, veracidade nem conversão.`,
-          "Este snapshot é factual: não cria nem aprova tema, título, CTA ou roteiro.",
+          "TOP 20 — revisão factual aprofundada (comentários, descrição, thumbnail e desempenho relativo):",
+          ...deepReview.map((item, index) => rankedLine(item, index + 1)),
+          "TOP 10 — ranking após revisão aprofundada:",
+          ...rankedTop.map((item, index) => rankedLine(item, index + 1)),
+          "TOP 5 — referências entregues ao dossiê editorial:",
+          ...snapshot.map((item, index) => rankedLine(item, index + 1)),
+          "O snapshot é factual: não cria nem aprova tema, título, CTA ou roteiro. Transcrição completa e análise da edição não são inferidas pela YouTube Data API e exigem uma etapa própria autorizada.",
         ].join("\n"),
       },
       usage: {
@@ -623,4 +674,4 @@ export async function execute(request, services) {
   }
 }
 
-export { outputFields };
+export { interleaveQueryPlans, outputFields };

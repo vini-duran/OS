@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { execute } from "./handler.mjs";
+import { execute, interleaveQueryPlans } from "./handler.mjs";
 
 const fixtureUrl = new URL("./fixtures/execution.json", import.meta.url);
 const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
@@ -18,11 +18,19 @@ const json = (value, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 
 try {
+  assert.deepEqual(
+    interleaveQueryPlans(["core-1", "core-2"], ["bend-1"], ["cross-1", "cross-2"]),
+    ["core-1", "bend-1", "cross-1", "core-2", "cross-2"],
+  );
+
   const realFixture = {
     ...fixture,
     configuration: {
       ...fixture.configuration,
       core_queries: "disciplina foco",
+      niche_bending_queries: "",
+      cross_language_queries: "en|discipline without motivation",
+      max_search_pages: 1,
       simulate: false,
       region_code: "BR",
       preferred_language: "pt",
@@ -31,7 +39,8 @@ try {
       excluded_title_terms: "podcast",
       candidate_target: 50,
       deep_review_limit: 10,
-      top_limit: 10,
+      ranked_top_limit: 10,
+      top_limit: 5,
       minimum_niche_bending_top: 0,
     },
   };
@@ -64,6 +73,7 @@ try {
               channelId: "channel-1",
               channelTitle: "Canal referência",
               title: "Disciplina e foco",
+              description: "Descrição pública usada apenas como evidência factual.",
               publishedAt: "2026-08-10T12:00:00.000Z",
               defaultAudioLanguage: "pt-BR",
             },
@@ -91,12 +101,27 @@ try {
   assert.equal(response.values.market_snapshot.length, 1);
   assert.equal(response.values.market_snapshot[0].video_id, "video-1");
   assert.equal(response.values.market_snapshot[0].duration_seconds, 372);
+  assert.equal(response.values.market_snapshot[0].description, "Descrição pública usada apenas como evidência factual.");
   assert.equal(response.values.market_snapshot[0].subscriber_count, 1000);
   assert.ok(response.values.market_snapshot[0].market_score >= 0);
-  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 2);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 3);
   assert.equal(requests.filter((item) => item.pathname.endsWith("/videos")).length, 2);
   assert.equal(requests.filter((item) => item.pathname.endsWith("/channels")).length, 1);
   assert.equal(requests.filter((item) => item.pathname.endsWith("/commentThreads")).length, 1);
+  assert.match(response.values.research_summary, /TOP 20/i);
+  assert.match(response.values.research_summary, /TOP 10/i);
+  assert.match(response.values.research_summary, /TOP 5/i);
+  assert.equal(requests[0].searchParams.get("relevanceLanguage"), "pt");
+  assert.equal(requests[0].searchParams.get("regionCode"), "BR");
+  assert.equal(requests[1].searchParams.get("relevanceLanguage"), "en");
+  assert.equal(requests[1].searchParams.get("regionCode"), null);
+
+  const invalidFunnel = await execute({
+    ...realFixture,
+    configuration: { ...realFixture.configuration, deep_review_limit: 10, ranked_top_limit: 20, top_limit: 5 },
+  }, projectServices());
+  assert.equal(invalidFunnel.status, "error");
+  assert.equal(invalidFunnel.code, "INVALID_CONFIGURATION");
 
   let quotaCalls = 0;
   globalThis.fetch = async (url) => {
