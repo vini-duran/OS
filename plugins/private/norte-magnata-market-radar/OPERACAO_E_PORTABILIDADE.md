@@ -34,11 +34,11 @@ Essa limitação foi registrada aqui para evitar uma falsa promessa de portabili
 
 ## Credenciais do YouTube e rodízio
 
-O cofre do macOS não é transportado por Git nem por cópia da pasta. Na máquina nova, conecte no painel do plugin as oito credenciais individuais: `YOUTUBE_API_KEY`, `YOUTUBE_API_KEY_2`, `YOUTUBE_API_KEY_3`, `YOUTUBE_API_KEY_A` até `YOUTUBE_API_KEY_E`.
+O cofre do macOS não é transportado por Git nem por cópia da pasta. No painel do plugin, conecte as oito credenciais individuais: `YOUTUBE_API_KEY_PROJECT_01` até `YOUTUBE_API_KEY_PROJECT_08`. Esse é o padrão por projeto usado pelo ContentFlow.
 
 O plugin usa a primeira chave disponível e só avança para a próxima se a YouTube Data API responder quota/rate limit. Não troca por erro de rede, credencial inválida ou configuração incorreta; erros transitórios de rede recebem até duas tentativas na mesma chave. Logs mostram apenas o total de rotações, nunca a chave usada.
 
-`YOUTUBE_DATA_API_KEYS`, com uma chave por linha, continua aceito apenas como compatibilidade com instalações antigas. Não preencha os dois formatos com as mesmas chaves: escolha o formato individual acima para instalações novas.
+`YOUTUBE_DATA_API_KEYS`, com uma chave por linha, continua aceito apenas como compatibilidade com instalações antigas. Não preencha os dois formatos com as mesmas chaves: use as credenciais `PROJECT_01` a `PROJECT_08` em instalações novas.
 
 ## Configuração inicial do único bloco BUSCAR
 
