@@ -179,6 +179,48 @@ export type ProcessMethod = {
   blocks: ActionBlock[];
 };
 
+/** A factual monitor belongs to a channel, never to one video project. */
+export type ChannelResearchConfig = {
+  pluginId: string;
+  capabilityId: string;
+  cadence: "manual";
+  configuration: Record<string, string | number | boolean>;
+  recordsKey: string;
+  summaryKey: string;
+  minimumBriefRecords: number;
+};
+
+export type ChannelResearchRun = {
+  id: string;
+  channelId: string;
+  status: "completed" | "failed" | "running";
+  startedAt: string;
+  completedAt?: string;
+  updatedAt: string;
+  planSnapshot: ChannelResearchConfig;
+  records: Array<Record<string, RuntimeValue>>;
+  summary?: string;
+  usage?: Record<string, unknown>;
+  logs?: string[];
+  error?: { code: string; message: string; retryable: boolean };
+};
+
+export type ChannelResearchBrief = {
+  id: string;
+  channelId: string;
+  status: "draft" | "approved" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+  sourceRunIds: string[];
+  sourceRecordCount: number;
+  provider: "local";
+  summary: string;
+  evidence: string;
+  antiCopy: string;
+  limitations: string;
+  approvedLibraryItemId?: string;
+};
+
 export type Channel = {
   id: string;
   youtubeChannelId?: string;
@@ -199,6 +241,7 @@ export type Channel = {
   status: "healthy" | "attention" | "paused";
   trend: number[];
   methods: Record<UniversalProcess, ProcessMethod>;
+  research?: ChannelResearchConfig;
   createdAt: string;
 };
 

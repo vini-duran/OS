@@ -17,6 +17,8 @@ import type {
   ActionBlock,
   BlockExecution,
   Channel,
+  ChannelResearchBrief,
+  ChannelResearchRun,
   ChannelLibraryItem,
   HumanFieldType,
   ProcessExecution,
@@ -32,7 +34,8 @@ import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
 } from "../src/lib/presentation";
-import type { PluginExecutionRequest, PluginFieldContract } from "../src/lib/plugin-contract";
+import type { PluginExecutionRequest, PluginExecutionResponse, PluginFieldContract } from "../src/lib/plugin-contract";
+import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import {
   activeProjectDeliveries,
@@ -191,6 +194,24 @@ database.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS library_collections_channel_id ON library_collections(channel_id);
+  CREATE TABLE IF NOT EXISTS channel_research_runs (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS channel_research_runs_channel_id ON channel_research_runs(channel_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS channel_research_briefs (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS channel_research_briefs_channel_id ON channel_research_briefs(channel_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS app_preferences (
     id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
@@ -2139,6 +2160,239 @@ app.post("/api/execute-block", async (request, response) => {
   });
 });
 
+function researchRunsFor(channelId: string, limit = 30) {
+  return (
+    database
+      .prepare("SELECT payload FROM channel_research_runs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?")
+      .all(channelId, limit) as { payload: string }[]
+  ).map((row) => JSON.parse(row.payload) as ChannelResearchRun);
+}
+
+function researchBriefsFor(channelId: string, limit = 12) {
+  return (
+    database
+      .prepare("SELECT payload FROM channel_research_briefs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?")
+      .all(channelId, limit) as { payload: string }[]
+  ).map((row) => JSON.parse(row.payload) as ChannelResearchBrief);
+}
+
+function saveResearchRun(run: ChannelResearchRun) {
+  database
+    .prepare(
+      `INSERT INTO channel_research_runs (id, channel_id, status, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
+    )
+    .run(run.id, run.channelId, run.status, JSON.stringify(run), run.startedAt, run.updatedAt);
+}
+
+function saveResearchBrief(brief: ChannelResearchBrief) {
+  database
+    .prepare(
+      `INSERT INTO channel_research_briefs (id, channel_id, status, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
+    )
+    .run(brief.id, brief.channelId, brief.status, JSON.stringify(brief), brief.createdAt, brief.updatedAt);
+}
+
+function researchError(result: PluginExecutionResponse) {
+  return result.status === "error"
+    ? { code: result.code, message: result.message, retryable: result.retryable }
+    : undefined;
+}
+
+function createLocalResearchBrief(channel: Channel, runs: ChannelResearchRun[]): ChannelResearchBrief {
+  const latest = runs.find((run) => run.status === "completed");
+  const records = latest?.records ?? [];
+  const top = [...records]
+    .sort((left, right) => Number(right.view_count ?? 0) - Number(left.view_count ?? 0))
+    .slice(0, 5);
+  const observed = top.length
+    ? top
+        .map(
+          (record) =>
+            `• ${String(record.title ?? "Sem título")} — ${Number(record.view_count ?? 0).toLocaleString("pt-BR")} views; canal: ${String(record.channel_title ?? "—")}; fonte: ${String(record.video_url ?? "—")}`,
+        )
+        .join("\n")
+    : "Nenhum registro elegível no snapshot mais recente.";
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    channelId: channel.id,
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+    sourceRunIds: latest ? [latest.id] : [],
+    sourceRecordCount: records.length,
+    provider: "local",
+    summary: `Brief factual local com ${records.length} registro(s) do snapshot mais recente. Ele não cria Tema, Título, Thumbnail ou Roteiro e não usa IA.`,
+    evidence: `OBSERVADO\n${observed}\n\nINFERÊNCIA E HIPÓTESE\nAinda não aprovadas. Devem ser definidas pelo Método Tema, sem tratar métricas públicas como prova de retenção, conversão ou causalidade.`,
+    antiCopy: "Transferir apenas dor, mecanismo, pergunta, estrutura ou padrão de apresentação. Não copiar título, thumbnail, roteiro, personagem, identidade visual, fala, promessa ou símbolo de uma referência.",
+    limitations: "Views, comentários e inscritos são dados públicos pontuais. Não comprovam retenção, receita, vendas, qualidade, veracidade, país da audiência ou causa do desempenho.",
+  };
+}
+
+app.get("/api/channels/:id/research/runs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
+  response.json({ runs: researchRunsFor(channel.id) });
+});
+
+app.get("/api/channels/:id/research/briefs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
+  response.json({ briefs: researchBriefsFor(channel.id) });
+});
+
+app.post("/api/channels/:id/research/plan/from-theme", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
+  const source = channel.methods.theme.blocks.find(
+    (block) => block.type === "BUSCAR" && block.operator === "Código" && block.plugin,
+  );
+  const plugin = source?.plugin ? getRegisteredPlugin(source.plugin.pluginId) : undefined;
+  const capability = plugin?.manifest.capabilities.find((item) => item.id === source?.plugin?.capabilityId);
+  const records = source?.outputs?.find((output) => output.type === "records");
+  const summary = source?.outputs?.find((output) => output.type === "textarea");
+  if (!source?.plugin || !capability || !records || !summary)
+    return response.status(422).json({ error: "O Método Tema não possui um Radar BUSCAR compatível para reaproveitar." });
+  const updated: Channel = {
+    ...channel,
+    research: {
+      pluginId: source.plugin.pluginId,
+      capabilityId: source.plugin.capabilityId,
+      cadence: "manual",
+      configuration: source.plugin.configuration,
+      recordsKey: records.key,
+      summaryKey: summary.key,
+      minimumBriefRecords: 2,
+    },
+  };
+  database.prepare("UPDATE channels SET payload = ? WHERE id = ?").run(JSON.stringify(updated), updated.id);
+  response.json(updated);
+});
+
+app.post("/api/channels/:id/research/briefs", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel || !isChannelResearchConfig(channel.research))
+    return response.status(422).json({ error: "O canal não possui um plano de pesquisa válido." });
+  const runs = researchRunsFor(channel.id, 7);
+  const latest = runs.find((run) => run.status === "completed");
+  if (!latest || latest.records.length < channel.research.minimumBriefRecords)
+    return response.status(422).json({
+      error: `A pesquisa precisa de pelo menos ${channel.research.minimumBriefRecords} registros antes do brief.`,
+    });
+  const brief = createLocalResearchBrief(channel, runs);
+  saveResearchBrief(brief);
+  response.status(201).json({ brief });
+});
+
+app.post("/api/channels/:id/research/briefs/:briefId/approve", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  const brief = researchBriefsFor(request.params.id).find((item) => item.id === request.params.briefId);
+  if (!channel || !brief) return response.status(404).json({ error: "Canal ou brief não encontrado." });
+  if (brief.status !== "draft") return response.status(409).json({ error: "Este brief já foi decidido." });
+  const collectionId = `channel-research-approved-briefs:${channel.id}`;
+  const collection = database
+    .prepare("SELECT payload FROM library_collections WHERE id = ?")
+    .get(collectionId) as { payload: string } | undefined;
+  if (!collection) {
+    const created = {
+      id: collectionId,
+      channelId: channel.id,
+      name: "Briefs estratégicos aprovados",
+      fields: [
+        { id: "brief-summary", label: "Resumo factual", type: "textarea", required: true },
+        { id: "brief-evidence", label: "Evidências e separações", type: "textarea", required: true },
+        { id: "brief-anti-copy", label: "Limites anti-cópia", type: "textarea", required: true },
+        { id: "brief-limitations", label: "Limitações", type: "textarea", required: true },
+      ],
+      createdAt: new Date().toISOString(),
+    };
+    database
+      .prepare("INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
+      .run(created.id, channel.id, JSON.stringify(created), created.createdAt);
+  }
+  const now = new Date().toISOString();
+  const item = {
+    id: `research-brief-${brief.id}`,
+    channelId: channel.id,
+    collectionId,
+    createdAt: now,
+    values: {
+      "brief-summary": brief.summary,
+      "brief-evidence": brief.evidence,
+      "brief-anti-copy": brief.antiCopy,
+      "brief-limitations": brief.limitations,
+    },
+  };
+  database
+    .prepare("INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
+    .run(item.id, channel.id, JSON.stringify(item), now);
+  brief.status = "approved";
+  brief.updatedAt = now;
+  brief.approvedLibraryItemId = item.id;
+  saveResearchBrief(brief);
+  response.json({ brief, item });
+});
+
+app.post("/api/channels/:id/research/runs", async (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel || !isChannelResearchConfig(channel.research))
+    return response.status(422).json({ error: "O canal não possui um plano de pesquisa válido." });
+  if (researchRunsFor(channel.id).some((run) => run.status === "running"))
+    return response.status(409).json({ error: "Já existe uma pesquisa em execução para este canal." });
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(channel.research.pluginId);
+  if (!plugin || !plugin.executable || !pluginConsentIsCurrent(plugin))
+    return response.status(403).json({ error: "Ative o plugin de pesquisa e confirme as permissões." });
+  const capability = plugin.manifest.capabilities.find((item) => item.id === channel.research?.capabilityId);
+  if (!capability || capability.operator !== "Código" || !capability.blockTypes.includes("BUSCAR"))
+    return response.status(422).json({ error: "A capability de pesquisa não é compatível." });
+  const now = new Date().toISOString();
+  const run: ChannelResearchRun = {
+    id: randomUUID(), channelId: channel.id, status: "running", startedAt: now, updatedAt: now,
+    planSnapshot: channel.research, records: [],
+  };
+  saveResearchRun(run);
+  const secrets: Record<string, string> = {};
+  for (const key of plugin.manifest.secretKeys ?? []) {
+    const value = await getPluginSecret(plugin.id, key);
+    if (value) secrets[key] = value;
+  }
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `channel-research:${run.id}`, traceId: randomUUID(), blockId: "channel-research",
+    capabilityId: capability.id, attempt: 1, invocation: { mode: "start" },
+    configuration: channel.research.configuration, settings: {}, inputs: {}, inputContract: [],
+    outputContract: researchOutputContract(capability),
+    context: {
+      locale: channel.language || "pt-BR", timeZone: "America/Porto_Velho",
+      channel: { id: channel.id, name: channel.name, language: channel.language, niche: channel.niche },
+      project: { id: `channel-research:${channel.id}`, title: "Pesquisa factual do canal" }, processType: "theme",
+      block: { type: "BUSCAR", name: "Pesquisa factual do canal", instructions: "Colete dados públicos; não crie tema, título, mídia ou publicação." },
+      previousProcessOutputs: [], previousBlockOutputs: [], previousDeliveries: [],
+    },
+  };
+  try {
+    const result = await executeRegisteredPlugin(plugin, pluginRequest, capability.execution.defaultTimeoutMs ?? 90_000, secrets);
+    run.updatedAt = new Date().toISOString(); run.completedAt = run.updatedAt; run.usage = result.usage; run.logs = result.logs;
+    if (result.status === "success") {
+      run.status = "completed";
+      run.records = Array.isArray(result.values[channel.research.recordsKey]) ? result.values[channel.research.recordsKey] as Array<Record<string, RuntimeValue>> : [];
+      const summary = result.values[channel.research.summaryKey];
+      run.summary = typeof summary === "string" ? summary : undefined;
+      saveResearchRun(run); return response.status(201).json({ run });
+    }
+    run.status = "failed"; run.error = researchError(result) ?? { code: "UNEXPECTED_PLUGIN_RESPONSE", message: "A pesquisa não devolveu resultado final.", retryable: false };
+    saveResearchRun(run); return response.status(422).json({ error: run.error.message, run });
+  } catch (error) {
+    run.status = "failed"; run.updatedAt = new Date().toISOString(); run.completedAt = run.updatedAt;
+    run.error = { code: "RESEARCH_EXECUTION_FAILED", message: error instanceof Error ? error.message : "A pesquisa falhou.", retryable: true };
+    saveResearchRun(run); return response.status(422).json({ error: run.error.message, run });
+  }
+});
+
 app.get("/api/youtube/channel", async (request, response) => {
   try {
     const handle = typeof request.query.handle === "string" ? request.query.handle : "";
@@ -2270,6 +2524,8 @@ app.delete("/api/channels/:id", (request, response) => {
     database.prepare("DELETE FROM projects WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM library_items WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM library_collections WHERE channel_id = ?").run(channelId);
+    database.prepare("DELETE FROM channel_research_runs WHERE channel_id = ?").run(channelId);
+    database.prepare("DELETE FROM channel_research_briefs WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_order WHERE channel_id = ?").run(channelId);
     return database.prepare("DELETE FROM channels WHERE id = ?").run(channelId);
   });
