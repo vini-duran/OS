@@ -4,6 +4,11 @@ const { spawn } = require("node:child_process");
 const { cpSync, existsSync, mkdirSync, readFileSync, statSync } = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const {
+  assertWritableDataOutsideApp,
+  resolveDesktopDataRoot,
+  runtimeExecutable,
+} = require("./desktop-paths.cjs");
 
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) app.quit();
@@ -11,6 +16,7 @@ if (!singleInstance) app.quit();
 let mainWindow;
 let webServer;
 let apiProcess;
+let webPort;
 let quitting = false;
 
 app.setName("ContentFlow OS");
@@ -37,6 +43,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+app.on("activate", () => {
+  if (mainWindow || !webPort) return;
+  void createMainWindow(webPort);
+});
+
 app.on("before-quit", () => {
   quitting = true;
   webServer?.close();
@@ -49,7 +60,17 @@ async function startDesktop() {
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
-  const dataRoot = path.join(app.getPath("userData"), "data");
+  const useNativeMacRuntime = process.platform === "darwin";
+  const privatePluginRuntimeExecutable = runtimeExecutable(runtimeRoot);
+  const apiRuntimeExecutable = useNativeMacRuntime
+    ? process.execPath
+    : privatePluginRuntimeExecutable;
+  const defaultDataRoot = path.join(app.getPath("userData"), "data");
+  const dataRoot = resolveDesktopDataRoot(
+    defaultDataRoot,
+    process.env.CONTENTFLOW_DESKTOP_DATA_DIR,
+  );
+  assertWritableDataOutsideApp(appRoot, dataRoot);
   const examplesTarget = path.join(app.getPath("documents"), "ContentFlow OS", "Plugins");
   const examplesSource = app.isPackaged
     ? path.join(resourcesRoot, "examples", "plugins")
@@ -80,14 +101,21 @@ async function startDesktop() {
   process.env.CONTENTFLOW_PLUGIN_WORKER_DIR = app.isPackaged
     ? path.join(runtimeRoot, "workers")
     : path.join(appRoot, "server");
-  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, "node.exe");
+  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = privatePluginRuntimeExecutable;
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
+  if (useNativeMacRuntime) {
+    process.env.CONTENTFLOW_BUNDLED_PLUGIN_NODE_EXECUTABLE = process.execPath;
+  }
+  const apiEnvironment = {
+    ...process.env,
+    ...(useNativeMacRuntime ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+  };
   process.env.CONTENTFLOW_EXAMPLES_DIR = examplesTarget;
   process.env.NODE_ENV = "production";
 
   const apiEntry = path.join(appRoot, "desktop-dist", "api.mjs");
-  apiProcess = spawn(process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE, [apiEntry], {
-    env: process.env,
+  apiProcess = spawn(apiRuntimeExecutable, [apiEntry], {
+    env: apiEnvironment,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -103,7 +131,11 @@ async function startDesktop() {
   });
   await waitForApi(apiPort);
 
-  const webPort = await startWebServer(appRoot, apiPort);
+  webPort = await startWebServer(appRoot, apiPort);
+  await createMainWindow(webPort);
+}
+
+async function createMainWindow(port) {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 940,
@@ -122,7 +154,10 @@ async function startDesktop() {
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
     return { action: "deny" };
   });
-  await mainWindow.loadURL(`http://127.0.0.1:${webPort}/dashboard`);
+  mainWindow.once("closed", () => {
+    mainWindow = undefined;
+  });
+  await mainWindow.loadURL(`http://127.0.0.1:${port}/dashboard`);
 }
 
 async function startWebServer(appRoot, apiPort) {
@@ -244,7 +279,7 @@ function reservePort() {
 }
 
 async function waitForApi(port) {
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/preferences`);

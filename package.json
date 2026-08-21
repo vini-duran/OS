@@ -23,6 +23,7 @@
     "start": "concurrently -k \"npm run api:start\" \"vite preview --host 127.0.0.1 --port 8080\"",
     "desktop:prepare": "npm run build && node desktop/prepare-desktop.mjs",
     "desktop:run": "npm run desktop:prepare && electron .",
+    "desktop:mac": "npm run desktop:prepare && electron-builder --mac dir --arm64",
     "desktop:portable": "npm run desktop:prepare && electron-builder --win portable --x64",
     "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis --x64",
     "desktop:v0": "npm run desktop:prepare && electron-builder --win portable nsis --x64",

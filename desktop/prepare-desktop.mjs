@@ -14,7 +14,8 @@ if (nodeMajor !== 26) {
 
 mkdirSync(runtimeDirectory, { recursive: true });
 mkdirSync(desktopBuildDirectory, { recursive: true });
-const bundledNodePath = path.join(runtimeDirectory, "node.exe");
+const runtimeExecutableName = process.platform === "win32" ? "node.exe" : "node";
+const bundledNodePath = path.join(runtimeDirectory, runtimeExecutableName);
 const bundledNodeVersion = existsSync(bundledNodePath)
   ? execFileSync(bundledNodePath, ["--version"], { encoding: "utf8" }).trim()
   : undefined;
@@ -57,6 +58,8 @@ writeFileSync(
     {
       version: packageJson.version,
       node: process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
       builtAt: new Date().toISOString(),
     },
     null,
