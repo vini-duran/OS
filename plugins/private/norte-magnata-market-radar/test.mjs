@@ -8,6 +8,10 @@ const services = (secrets = ["test-key-1", "test-key-2"]) => ({
   signal: new AbortController().signal,
   getSecret: async (name) => (name === "YOUTUBE_DATA_API_KEYS" ? secrets.join("\n") : ""),
 });
+const projectServices = () => ({
+  signal: new AbortController().signal,
+  getSecret: async (name) => (name === "YOUTUBE_API_KEY_PROJECT_01" ? "project-test-key" : ""),
+});
 
 const originalFetch = globalThis.fetch;
 const json = (value, status = 200) =>
@@ -82,7 +86,7 @@ try {
     }
     throw new Error(`Rota inesperada: ${parsed.pathname}`);
   };
-  const response = await execute(realFixture, services());
+  const response = await execute(realFixture, projectServices());
   assert.equal(response.status, "success");
   assert.equal(response.values.market_snapshot.length, 1);
   assert.equal(response.values.market_snapshot[0].video_id, "video-1");
