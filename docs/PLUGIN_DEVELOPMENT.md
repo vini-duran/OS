@@ -74,6 +74,8 @@ Comece pelo exemplo completo em [`examples/contentflow.plugin.example.json`](exa
 
 `blockConfigSchema` descreve opções escolhidas no método, como modelo, temperatura ou endpoint. `settingsSchema` descreve preferências locais reutilizadas entre métodos. Credenciais ficam apenas em `secretKeys`.
 
+Para uma configuração textual com vários itens, declare `"type": "string"` e `"format": "textarea"`. O editor do Método então renderiza uma área de texto que preserva quebras de linha; o handler deve documentar e validar como essas linhas são interpretadas. Não use um `Input` de uma linha para listas de consultas, termos ou URLs.
+
 Exemplo de rede declarativa:
 
 ```json
