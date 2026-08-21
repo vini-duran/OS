@@ -4,7 +4,17 @@ const MAX_RESULTS_PER_QUERY = 50;
 const MAX_CANDIDATES = 1_000;
 const MAX_DEEP_REVIEWS = 100;
 const MAX_CHANNEL_BENCHMARKS = 20;
-const YOUTUBE_KEY_SECRET = "YOUTUBE_DATA_API_KEYS";
+const YOUTUBE_KEY_SECRETS = [
+  "YOUTUBE_API_KEY",
+  "YOUTUBE_API_KEY_2",
+  "YOUTUBE_API_KEY_3",
+  "YOUTUBE_API_KEY_A",
+  "YOUTUBE_API_KEY_B",
+  "YOUTUBE_API_KEY_C",
+  "YOUTUBE_API_KEY_D",
+  "YOUTUBE_API_KEY_E",
+];
+const LEGACY_YOUTUBE_KEY_SECRET = "YOUTUBE_DATA_API_KEYS";
 
 const RECORD_FIELDS = [
   ["source", "Fonte", "text"],
@@ -173,7 +183,7 @@ function apiError(payload) {
       message: "Os comentários deste vídeo estão desativados.",
     };
   }
-  if (["quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
+  if (["quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
     return {
       code: "RATE_LIMIT",
       retryable: true,
@@ -201,6 +211,7 @@ function makeYouTubeClient(keys, signal) {
   const usage = { searchCalls: 0, detailsCalls: 0, channelCalls: 0, commentCalls: 0, rotations: 0 };
 
   async function request(path, params) {
+    let transientAttempts = 0;
     while (true) {
       const url = new URL(`${YOUTUBE_API}${path}`);
       for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
@@ -218,6 +229,10 @@ function makeYouTubeClient(keys, signal) {
             code: "CANCELLED",
             retryable: false,
           });
+        if (transientAttempts++ < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** transientAttempts));
+          continue;
+        }
         throw Object.assign(new Error("Não foi possível alcançar a YouTube Data API."), {
           code: "UPSTREAM_UNAVAILABLE",
           retryable: true,
@@ -226,7 +241,10 @@ function makeYouTubeClient(keys, signal) {
       const payload = await response.json().catch(() => ({}));
       if (response.ok) return payload;
       const error = apiError(payload);
-      if (error.quota) {
+      const quotaResponse =
+        error.quota ||
+        ([403, 429].includes(response.status) && /quota|dailylimit|ratelimit/.test(JSON.stringify(payload).toLowerCase()));
+      if (quotaResponse) {
         exhausted.add(keyIndex);
         const nextIndex = keys.findIndex((_, index) => !exhausted.has(index));
         if (nextIndex >= 0) {
@@ -246,13 +264,13 @@ function makeYouTubeClient(keys, signal) {
 }
 
 async function configuredKeys(services) {
-  const value = await services.getSecret(YOUTUBE_KEY_SECRET);
+  const values = await Promise.all([
+    ...YOUTUBE_KEY_SECRETS.map((name) => services.getSecret(name)),
+    services.getSecret(LEGACY_YOUTUBE_KEY_SECRET),
+  ]);
   return [
     ...new Set(
-      text(value)
-        .split(/[\r\n,]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
+      values.flatMap((value) => text(value).split(/[\r\n,]+/).map((item) => item.trim())).filter(Boolean),
     ),
   ];
 }
