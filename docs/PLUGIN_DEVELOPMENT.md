@@ -11,7 +11,7 @@ npm run plugin:kit -- check ./meu-plugin
 
 Ele oferece `create`, `validate`, `test-contract`, `test-sandbox`, `fixture`, `report` e `check`, usa o mesmo validador do carregador real e nunca instala dependências nem executa scripts de instalação de terceiros. Há três templates em [`../plugin-kit/templates`](../plugin-kit/templates), uma [aula prática de 30 minutos](PLUGIN_TUTORIAL_30_MIN.md) e um [pacote curto para agentes de IA](PLUGIN_AI_KIT.md).
 
-> Estado atual: plugins locais e comunitários podem ser instalados por pasta, ativados pelo próprio usuário e executados sem aprovação central. O núcleo valida o manifesto, exige novo consentimento quando versão ou permissões mudam e executa o código em processo separado com filesystem, rede, subprocessos, workers e módulos nativos negados por padrão.
+> Estado atual: plugins locais e comunitários podem ser instalados por pasta, ativados pelo próprio usuário e executados sem aprovação central. O núcleo valida o manifesto e preserva a ativação em atualizações compatíveis do mesmo `pluginId`; novo consentimento é exigido se permissões ou hosts de rede mudarem. O código executa em processo separado com filesystem, rede, subprocessos, workers e módulos nativos negados por padrão.
 
 Se você está usando uma IA para criar o plugin, prefira o conjunto pequeno listado em [`PLUGIN_AI_KIT.md`](PLUGIN_AI_KIT.md). Para o primeiro plugin, o autor precisa se concentrar em três coisas: o manifesto, o valor recebido em `request.inputs` e o valor devolvido em `response.values`. Instalação, consentimento, cofre, sandbox e importação de artifacts ficam a cargo do ContentFlow OS.
 
@@ -22,7 +22,7 @@ Na tela **Plugins**, use uma destas opções:
 - **Usar pasta ao vivo**: recomendado durante o desenvolvimento. O ContentFlow OS mantém um vínculo com a pasta escolhida; salvar uma alteração no código basta para a próxima execução usar a nova versão. Para remover, clique em **Desconectar pasta**.
 - **Instalar uma cópia**: recomendado para distribuição. O aplicativo copia o pacote para a área local e ele continua instalado mesmo se a pasta original for apagada. Para remover, clique em **Desinstalar**.
 
-O botão de exemplo preenche a pasta `Documentos\ContentFlow OS\Plugins\community-reference`, criada automaticamente pela V0. Atualizar a página apenas relê os plugins conectados ou instalados; apagar a pasta de origem não desinstala uma cópia. Essa distinção evita perda acidental de um plugin já instalado.
+O botão de exemplo preenche a pasta `Documentos\ContentFlow OS\Plugins\community-reference`, criada automaticamente pela V0. Atualizar a página apenas relê os plugins conectados ou instalados; uma atualização compatível de uma pasta ao vivo não desativa o plugin nem remove seus secrets do cofre. Apagar a pasta de origem não desinstala uma cópia. Essa distinção evita perda acidental de um plugin já instalado.
 
 ## 1. Escolha uma entrega clara
 

@@ -295,7 +295,6 @@ function pluginConsentIsCurrent(plugin: {
   const consent = readPluginConsent(plugin.id);
   return (
     consent?.enabled === true &&
-    consent.version === plugin.manifest.version &&
     JSON.stringify(consent.permissions) === JSON.stringify(plugin.manifest.permissions) &&
     JSON.stringify(consent.networkHosts) === JSON.stringify(plugin.manifest.networkHosts ?? [])
   );
