@@ -60,11 +60,10 @@ async function startDesktop() {
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
-  const useNativeMacRuntime = process.platform === "darwin";
   const privatePluginRuntimeExecutable = runtimeExecutable(runtimeRoot);
-  const apiRuntimeExecutable = useNativeMacRuntime
-    ? process.execPath
-    : privatePluginRuntimeExecutable;
+  // Keep Keychain authorization tied to the stable, signed Node runtime.
+  // The Electron executable is ad-hoc signed and changes identity after rebuilds.
+  const apiRuntimeExecutable = privatePluginRuntimeExecutable;
   const defaultDataRoot = path.join(app.getPath("userData"), "data");
   const dataRoot = resolveDesktopDataRoot(
     defaultDataRoot,
@@ -103,19 +102,12 @@ async function startDesktop() {
     : path.join(appRoot, "server");
   process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = privatePluginRuntimeExecutable;
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
-  if (useNativeMacRuntime) {
-    process.env.CONTENTFLOW_BUNDLED_PLUGIN_NODE_EXECUTABLE = process.execPath;
-  }
-  const apiEnvironment = {
-    ...process.env,
-    ...(useNativeMacRuntime ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-  };
   process.env.CONTENTFLOW_EXAMPLES_DIR = examplesTarget;
   process.env.NODE_ENV = "production";
 
   const apiEntry = path.join(appRoot, "desktop-dist", "api.mjs");
   apiProcess = spawn(apiRuntimeExecutable, [apiEntry], {
-    env: apiEnvironment,
+    env: process.env,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });

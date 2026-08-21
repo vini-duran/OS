@@ -19,9 +19,16 @@ inclui banco, projetos, plugins instalados e credenciais guardadas pelo sistema.
 Para atualizar, feche o App e substitua somente `ContentFlow OS.app` por uma
 compilação nova. Não copie, apague ou recrie a pasta de dados.
 
-O App usa o executável assinado do Electron para iniciar sua API local no macOS
-e usa o runtime privado somente para plugins. Assim a instalação não depende de
-`node.exe`, que existe apenas no Windows.
+O App usa o runtime Node privado e assinado tanto para a API local quanto para
+os plugins. A identidade desse executável permanece estável entre recompilações,
+evitando que o macOS solicite novamente a senha do chaveiro a cada atualização.
+Na primeira utilização desse runtime, o macOS ainda pode pedir autorização uma
+vez; selecione **Sempre Permitir**. O App não depende de `node.exe`, que existe
+apenas no Windows.
+
+Os plugins opcionais oficiais são copiados para
+`~/Documents/ContentFlow OS/Plugins` sem ativação automática. A atualização não
+remove plugins, consentimentos nem credenciais já armazenados na pasta de dados.
 
 ## Teste mínimo antes de substituir uma instalação
 
