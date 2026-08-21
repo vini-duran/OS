@@ -32,11 +32,13 @@ Na versão atual do ContentFlow, o formato de exportação de Método não trans
 
 Essa limitação foi registrada aqui para evitar uma falsa promessa de portabilidade. O plugin, a configuração de consultas e as chaves do cofre são itens diferentes.
 
-## Credencial do YouTube
+## Credenciais do YouTube e rodízio
 
-O cofre do macOS não é transportado por Git nem por cópia da pasta. Na máquina nova, conecte novamente `YOUTUBE_DATA_API_KEYS` no painel do plugin: uma chave por linha, até oito chaves distintas.
+O cofre do macOS não é transportado por Git nem por cópia da pasta. Na máquina nova, conecte no painel do plugin as oito credenciais individuais: `YOUTUBE_API_KEY`, `YOUTUBE_API_KEY_2`, `YOUTUBE_API_KEY_3`, `YOUTUBE_API_KEY_A` até `YOUTUBE_API_KEY_E`.
 
-O plugin usa a primeira chave disponível e só avança para a próxima se a YouTube Data API responder quota/rate limit. Não troca por erro de rede, credencial inválida ou configuração incorreta. Logs mostram apenas o total de rotações, nunca a chave usada.
+O plugin usa a primeira chave disponível e só avança para a próxima se a YouTube Data API responder quota/rate limit. Não troca por erro de rede, credencial inválida ou configuração incorreta; erros transitórios de rede recebem até duas tentativas na mesma chave. Logs mostram apenas o total de rotações, nunca a chave usada.
+
+`YOUTUBE_DATA_API_KEYS`, com uma chave por linha, continua aceito apenas como compatibilidade com instalações antigas. Não preencha os dois formatos com as mesmas chaves: escolha o formato individual acima para instalações novas.
 
 ## Configuração inicial do único bloco BUSCAR
 
