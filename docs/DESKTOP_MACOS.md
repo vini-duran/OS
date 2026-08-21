@@ -26,6 +26,11 @@ Na primeira utilização desse runtime, o macOS ainda pode pedir autorização u
 vez; selecione **Sempre Permitir**. O App não depende de `node.exe`, que existe
 apenas no Windows.
 
+Desde a v0.3.2, todas as credenciais de plugins usam um único registro no
+Chaveiro. Isso evita uma autorização separada para cada chave de um plugin com
+rotação. Registros anteriores permanecem intactos, mas as credenciais precisam
+ser preenchidas novamente uma vez no novo cofre.
+
 Os plugins opcionais oficiais são copiados para
 `~/Documents/ContentFlow OS/Plugins` sem ativação automática. A atualização não
 remove plugins, consentimentos nem credenciais já armazenados na pasta de dados.
