@@ -89,56 +89,11 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 - Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave, sem erro técnico.
 - Revisão: tecnicamente correta, porém insuficiente para niche-bending. Não tinha nichos de origem, comentários textuais, inscritos ou desempenho relativo. Não reutilizar como base de Tema.
 
-## Método Tema histórico configurado após o Radar
+## Estado operacional atual
 
-O método do canal **Norte Magnata** agora tem três blocos lineares, cada qual com uma responsabilidade única:
+Registros de execuções anteriores são históricos e não autorizam continuar o pipeline. A configuração vigente deve seguir `docs/CHANNEL_RESEARCH.md`: pesquisa manual do canal, brief aprovado e Tema curado com seleção humana.
 
-| Ordem | Bloco | Executor | Resultado |
-| --- | --- | --- | --- |
-| 1 | BUSCAR — Radar factual do YouTube | Código | `market_snapshot` e resumo rastreável. |
-| 2 | CRIAR — Dossiê de tema rastreável | OpenAI `gpt-5.6-terra` | `theme` e `theme_dossier`; não cria título, roteiro, thumbnail ou CTA. |
-| 3 | VALIDAR — Evidência e diferenciação | OpenAI `gpt-5.6-terra` | decisão e relatório contra evidências, especificidade, honestidade e não cópia. |
-
-Não há bloco `ESCOLHER` ainda porque esta primeira versão não seleciona item preexistente da Biblioteca Estratégica. Ele será incluído somente quando houver uma coleção editorial real para escolher; não deve ser inserido como etapa vazia.
-
-O resultado histórico de “disciplina sem motivação” é somente um teste. A decisão operacional registrada no repositório Automation Magnata permanece **TEMA**; o método não está autorizado a avançar sozinho para Título.
-
-## Radar v0.6 — próximo teste manual autorizado
-
-1. Preencha consultas centrais e consultas de niche-bending, uma por linha, até vinte em cada grupo. Não use uma consulta política ou uma afirmação factual sem uma fonte que permita verificação posterior.
-2. Configure `max_results_per_query=50`, `max_search_pages=1` inicialmente, `candidate_target=1000`, `deep_review_limit=20`, `top_limit=5` e `minimum_niche_bending_top=3`. Para ampliar, aumente `max_search_pages` gradualmente e monitore a quota.
-3. Para sinais internacionais, preencha `cross_language_queries` com uma consulta por linha no formato `en|discipline without motivation`, `es|disciplina sin motivación`, `fr|discipline sans motivation`, `pl|dyscyplina bez motywacji` ou `ja|やる気がなくても規律`.
-4. Execute somente o bloco **BUSCAR** e confira o resumo: total coletado, total filtrado, Top 5, idiomas e justificativa de cada nota.
-5. Antes de CRIAR Tema, valide manualmente se as referências de outros nichos trazem um mecanismo adaptável ao Norte Magnata — não apenas uma frase chamativa.
-
-A nota combina velocidade de views, desempenho relativo, engajamento e sinais em uma pequena amostra de comentários. Ela não lê roteiro completo nem garante transcrição: captions/transcrições não são expostas de forma universal pela YouTube Data API pública. Também não interpreta thumbnail nem prova conversão, retenção ou verdade de afirmações. Esses limites são deliberados para não transformar uma pesquisa pública em uma falsa certeza.
-
-### Critério que merece revisão humana posterior
-
-O único ponto editorial que vale revisar nesta rodada é se a lente filosófica escolhida representa de fato o Norte Magnata. Não é necessário validar URLs, métricas ou formato técnico: isso já é rastreado no snapshot. Essa revisão não transforma o dossiê em título, roteiro ou autorização de publicação.
-
-### Limitação conhecida da versão 0.3.0 do App
-
-O motor do App executa plugins de `VALIDAR`, registra a decisão e conclui a cadeia. Na implementação atual, uma decisão automática `rejected` ainda **não reinicia automaticamente** o bloco `CRIAR` alvo, mesmo quando a configuração declara `retry_target`. A rodada abaixo foi aprovada, portanto não afetou o resultado; porém o limite de duas tentativas não pode ser prometido como funcional até que essa correção do núcleo seja implementada, testada e empacotada no App. Em uma reprovação futura, tratar o relatório como bloqueio editorial e não avançar para Título/Roteiro.
-
-## Quarta execução real — dossiê e validação encadeados
-
-- Data: `2026-08-19T02:04:52Z` a `2026-08-19T02:05:12Z`.
-- Radar: 24 vídeos únicos; 16 após duração; 8 aceitos; 4 chamadas `search.list`, 1 chamada `videos.list`, nenhuma rotação e nenhum erro técnico.
-- Tema criado: disciplina sem motivação, com lente de controle estoico, promessa honesta e contraponto contra moralização ou controle mental absoluto.
-- Evidências citadas no dossiê: `rFQ52rDgrBI`, `7e2PHiGv7cc`, `MqP8V8Hqscc`, `kmzcU_aKbFA` e `rn_xUuoSiQ4`.
-- Validação: **approved**. Verificou duas ou mais evidências identificáveis, mecanismo explícito, promessa sem garantia, ângulo visual inicial, diferenciação e ausência de cópia literal dos títulos observados.
-- Limite preservado: as métricas públicas não comprovam retenção, causalidade, intenção do público ou eficácia prática.
-
-## Recuperação do cofre no macOS
-
-Depois de uma atualização do App ad-hoc, o macOS pode manter uma entrada do Keychain associada ao binário anterior e bloquear a leitura do novo binário. A correção segura é recriar **somente** as entradas do serviço `ContentFlow OS` para:
-
-- `plugin:com.norte-magnata.market-radar:YOUTUBE_DATA_API_KEYS`
-- `plugin:official-openai-gpt:OPENAI_API_KEY`
-
-Antes disso, mantenha uma cópia privada das chaves fora do repositório. Nunca registre valores de credenciais em Git, logs, relatórios ou screenshots. Após recriar as duas entradas pelo App atual, não consulte repetidamente o status de segredo: isso pode disparar novos pedidos do Keychain.
-
+O Radar v0.6 aceita consultas centrais, niche-bending e multilíngues. Para o primeiro teste, use uma página por consulta, `candidate_target=1000`, revisão aprofundada de 20 e Top 5. Aumente paginação somente após revisar quota e resultados.
 ## Teste antes de mover
 
 ```sh
