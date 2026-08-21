@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.market-radar",
   "name": "Norte Magnata — Radar de Mercado",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Coleta ampla e pontua referências do YouTube para pesquisa de tema e niche-bending, sem criar ou aprovar temas.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",
@@ -82,6 +82,14 @@
             "default": "",
             "description": "Uma consulta de nicho de origem por linha. Elas são referências a adaptar, nunca temas a copiar."
           },
+          "cross_language_queries": {
+            "type": "string",
+            "format": "textarea",
+            "title": "Consultas multilíngues",
+            "maxLength": 6000,
+            "default": "",
+            "description": "Uma linha por consulta no formato idioma|consulta. Ex.: en|discipline without motivation. Use para testar sinais em outros idiomas sem copiar temas."
+          },
           "published_within_days": {
             "type": "integer",
             "minimum": 1,
@@ -97,28 +105,35 @@
           "candidate_target": {
             "type": "integer",
             "minimum": 50,
-            "maximum": 1000,
+            "maximum": 10000,
             "default": 1000,
             "description": "Quantidade máxima de candidatos únicos a coletar antes dos filtros locais."
+          },
+          "max_search_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 1,
+            "description": "Páginas por consulta. Aumente somente quando houver quota disponível; cada página é uma chamada adicional."
           },
           "deep_review_limit": {
             "type": "integer",
             "minimum": 10,
             "maximum": 100,
-            "default": 100,
+            "default": 20,
             "description": "Somente estes candidatos recebem leitura amostral de comentários e comparação limitada com o canal."
           },
           "top_limit": {
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
-            "default": 10
+            "default": 5
           },
           "minimum_niche_bending_top": {
             "type": "integer",
             "minimum": 0,
             "maximum": 20,
-            "default": 6,
+            "default": 3,
             "description": "Reserva referências de outros nichos no Top, apenas quando aprovadas pelo filtro local."
           },
           "min_duration_seconds": {

@@ -6,7 +6,7 @@ Plugin privado do ContentFlow OS para a pesquisa factual que antecede a criaçã
 
 Ele consulta a YouTube Data API, remove vídeos abaixo da duração mínima, elimina IDs duplicados e devolve um snapshot por vídeo. Cada registro preserva URL, ID, canal, consulta de origem, janela da coleta e métricas públicas observadas.
 
-A busca inicial usa `regionCode=BR` e `relevanceLanguage=pt`. Como a própria API pode devolver outros idiomas, o filtro local descarta idioma explicitamente incompatível, baixa velocidade, falta de termos da consulta e formatos excluídos configurados no bloco.
+A busca inicial usa `regionCode=BR` e `relevanceLanguage=pt`. Consultas adicionais podem ser fornecidas em `cross_language_queries`, uma por linha no formato `idioma|consulta` (por exemplo `en|discipline without motivation`). O filtro local preserva o idioma declarado e descarta somente incompatibilidade explícita, baixa velocidade, falta de termos e formatos excluídos.
 
 Ele não cria temas, não aprova candidatos, não gera título/thumbnail/roteiro, não coleta comentários, não publica e não inicia nenhum outro método.
 
@@ -14,6 +14,8 @@ Ele não cria temas, não aprova candidatos, não gera título/thumbnail/roteiro
 
 - `core_queries`: uma consulta central por linha.
 - `niche_bending_queries`: uma consulta de nicho adjacente por linha. Mantenha vazia até a estratégia específica ser aprovada.
+- `cross_language_queries`: consultas traduzidas no formato `idioma|consulta`; não traduz automaticamente e não copia o tema de origem.
+- `max_search_pages`: páginas adicionais por consulta, com impacto direto na quota.
 - `published_within_days`: janela máxima em dias.
 - `max_results_per_query`: teto de resultados da busca por consulta.
 - `min_duration_seconds`: filtro local de duração.
@@ -35,7 +37,7 @@ Na Central de Plugins, use **Usar pasta ao vivo** e selecione esta pasta. Revise
 
 ## Limites
 
-O ranking é uma ordenação operacional por views/dia e visualizações públicas; não afirma qualidade editorial, retenção, conversão ou licença de mídia. A próxima peça do método transformará este snapshot em dossiês estruturados e validará repetição no escopo de tema.
+O ranking é uma ordenação operacional por views/dia, desempenho relativo ao canal, comentários públicos e visualizações; não afirma qualidade editorial, retenção, conversão ou licença de mídia. A coleta não promete transcrição: a YouTube Data API não fornece automaticamente o texto completo de todos os vídeos públicos. A próxima peça do método transformará este snapshot em dossiês estruturados e validará repetição no escopo de tema.
 
 ## Teste
 
