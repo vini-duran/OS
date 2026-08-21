@@ -104,7 +104,7 @@
       "buildResources": "build"
     },
     "files": [
-      "desktop/main.cjs",
+      "desktop/**/*.cjs",
       "desktop-dist/**/*",
       "dist/**/*",
       "package.json"
