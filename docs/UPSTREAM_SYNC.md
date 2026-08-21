@@ -4,6 +4,8 @@
 
 O fork não faz merge ou instalação automática de atualizações do autor. Ele pode detectar atualizações automaticamente, mas a integração deve ocorrer em branch isolada e com testes.
 
+O workflow `.github/workflows/upstream-watch.yml` executa diariamente e também pode ser disparado manualmente. Ele compara o fork com o upstream e abre ou atualiza uma Issue. O workflow nunca faz merge, build, instalação ou acesso a credenciais.
+
 ## Motivo
 
 O fork contém personalizações do Norte Magnata, plugins privados e correções de portabilidade para macOS. Um merge automático pode alterar contratos, permissões, runtime, credenciais ou comportamento de execução.
