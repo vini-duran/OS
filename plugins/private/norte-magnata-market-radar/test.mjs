@@ -25,6 +25,10 @@ try {
       minimum_views_per_day: 30,
       minimum_query_term_matches: 1,
       excluded_title_terms: "podcast",
+      candidate_target: 50,
+      deep_review_limit: 10,
+      top_limit: 10,
+      minimum_niche_bending_top: 0,
     },
   };
   const missingSecret = await execute(realFixture, services([]));
@@ -36,7 +40,16 @@ try {
     const parsed = new URL(url);
     requests.push(parsed);
     if (parsed.pathname.endsWith("/search")) {
+      if (parsed.searchParams.get("channelId")) {
+        return json({ items: [{ id: { videoId: "video-1" } }] });
+      }
       return json({ items: [{ id: { videoId: "video-1" } }, { id: { videoId: "video-curto" } }] });
+    }
+    if (parsed.pathname.endsWith("/channels")) {
+      return json({ items: [{ id: "channel-1", statistics: { subscriberCount: "1000" } }] });
+    }
+    if (parsed.pathname.endsWith("/commentThreads")) {
+      return json({ items: [{ snippet: { topLevelComment: { snippet: { textDisplay: "Eu comecei e funcionou" } } } }] });
     }
     if (parsed.pathname.endsWith("/videos")) {
       return json({
@@ -74,8 +87,12 @@ try {
   assert.equal(response.values.market_snapshot.length, 1);
   assert.equal(response.values.market_snapshot[0].video_id, "video-1");
   assert.equal(response.values.market_snapshot[0].duration_seconds, 372);
-  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 1);
-  assert.equal(requests.filter((item) => item.pathname.endsWith("/videos")).length, 1);
+  assert.equal(response.values.market_snapshot[0].subscriber_count, 1000);
+  assert.ok(response.values.market_snapshot[0].market_score >= 0);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/search")).length, 2);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/videos")).length, 2);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/channels")).length, 1);
+  assert.equal(requests.filter((item) => item.pathname.endsWith("/commentThreads")).length, 1);
 
   let quotaCalls = 0;
   globalThis.fetch = async (url) => {

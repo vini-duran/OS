@@ -45,10 +45,13 @@ O plugin usa a primeira chave disponível e só avança para a próxima se a You
 | Processo | Tema | O Radar produz evidência para o método de Tema. |
 | Bloco | BUSCAR / Código | Consulta uma fonte externa e aplica filtros determinísticos. |
 | Plugin | `com.norte-magnata.market-radar` | Capacidade `collect-youtube-market-snapshot`. |
-| Consultas centrais | 4 consultas em português configuráveis | Cobertura inicial orientada a disciplina, foco, procrastinação e impulso. |
-| Consultas niche-bending | vazias | Só serão incluídas após a estratégia própria ser aprovada. |
+| Consultas centrais | até 20 consultas em português | Cobrem a dor e o vocabulário do público do canal. |
+| Consultas niche-bending | até 20 consultas de nichos de origem | Capturam padrões para adaptar, não temas para copiar. |
 | Janela | 60 dias | Mantém sinais recentes sem forçar tendência diária. |
-| Resultados por consulta | 8 | Limita a primeira coleta. |
+| Resultados por consulta | até 50 | Permite coleta ampla sem multiplicar análise profunda. |
+| Alvo de candidatos | até 1.000 únicos | O filtro local vem antes da análise aprofundada. |
+| Revisão aprofundada | Top 100 | Coleta comentários e compara, de forma limitada, o desempenho do canal. |
+| Saída final | Top 10 | Nota de 0 a 5 em saltos de 0,5, com justificativa visível. |
 | Duração mínima | 180 s | Remove Shorts e referências curtas. |
 | Região / idioma | `BR` / `pt` | Prioriza resultados brasileiros e em português; o filtro local descarta idioma declarado incompatível. |
 | Velocidade mínima | 30 views/dia | Evita referências sem tração operacional. |
@@ -58,7 +61,7 @@ O plugin usa a primeira chave disponível e só avança para a próxima se a You
 
 ## Saídas esperadas
 
-- `market_snapshot`: registros com ID e URL do vídeo, canal, consulta de origem, data, duração, visualizações, comentários, métricas derivadas e linha `core` ou `niche_bending`.
+- `market_snapshot`: Top 10 rastreável com ID/URL, canal, inscritos, relação views/inscritos, comparação limitada com o canal, amostra de comentários, URL da thumbnail, padrão de gancho e nota explicável 0–5.
 - `research_summary`: parâmetros, número de chamadas, total de vídeos e filtro aplicado.
 
 O resultado não prova retenção, conversão, licença de mídia ou adequação visual. A próxima unidade do método transformará o snapshot em dossiês de tema e fará a validação de repetição no escopo correto.
@@ -73,15 +76,15 @@ O resultado não prova retenção, conversão, licença de mídia ou adequação
 - Resultado técnico: coleta concluída; o projeto aguarda a unidade editorial seguinte, pois o Radar não cria um Tema final.
 - Revisão editorial: **não usar este primeiro snapshot para criar dossiês**. Os resultados misturaram referências genéricas e em espanhol/inglês; a próxima rodada deve ajustar consultas, idioma e critérios de aderência antes de seguir.
 
-## Segunda execução real — filtros corrigidos
+## Execuções históricas v0.4 — não reutilizar para decisão de tema
 
 - Data: `2026-08-19T01:46:57.476Z`.
 - Consultas centrais: 4; região `BR`; idioma preferencial `pt`; niche-bending: 0.
 - Vídeos únicos encontrados: 24; após duração: 16; aprovados: 8.
 - Uso operacional: 4 chamadas `search.list`, 1 chamada `videos.list`, 0 rotações de chave, sem erro técnico.
-- Revisão: base factual utilizável para o próximo bloco de dossiê de Tema. Ela ainda não é uma decisão de tema e não deve ser publicada ou tratada como roteiro.
+- Revisão: tecnicamente correta, porém insuficiente para niche-bending. Não tinha nichos de origem, comentários textuais, inscritos ou desempenho relativo. Não reutilizar como base de Tema.
 
-## Método Tema configurado após o Radar
+## Método Tema histórico configurado após o Radar
 
 O método do canal **Norte Magnata** agora tem três blocos lineares, cada qual com uma responsabilidade única:
 
@@ -92,6 +95,17 @@ O método do canal **Norte Magnata** agora tem três blocos lineares, cada qual 
 | 3 | VALIDAR — Evidência e diferenciação | OpenAI `gpt-5.6-terra` | decisão e relatório contra evidências, especificidade, honestidade e não cópia. |
 
 Não há bloco `ESCOLHER` ainda porque esta primeira versão não seleciona item preexistente da Biblioteca Estratégica. Ele será incluído somente quando houver uma coleção editorial real para escolher; não deve ser inserido como etapa vazia.
+
+O resultado histórico de “disciplina sem motivação” é somente um teste. A decisão operacional registrada no repositório Automation Magnata permanece **TEMA**; o método não está autorizado a avançar sozinho para Título.
+
+## Radar v0.5 — próximo teste manual autorizado
+
+1. Preencha consultas centrais e consultas de niche-bending, uma por linha, até vinte em cada grupo. Não use uma consulta política ou uma afirmação factual sem uma fonte que permita verificação posterior.
+2. Configure `max_results_per_query=50`, `candidate_target=1000`, `deep_review_limit=100`, `top_limit=10` e `minimum_niche_bending_top=6`.
+3. Execute somente o bloco **BUSCAR** e confira o resumo: total coletado, total filtrado, Top 10 e justificativa de cada nota.
+4. Antes de CRIAR Tema, valide manualmente se as referências de outros nichos trazem um mecanismo adaptável ao Norte Magnata — não apenas uma frase chamativa.
+
+A nota combina velocidade de views, desempenho relativo, engajamento e sinais em uma pequena amostra de comentários. Ela não lê roteiro completo, não interpreta thumbnail nem prova conversão, retenção ou verdade de afirmações. Esses limites são deliberados para não transformar uma pesquisa pública em uma falsa certeza.
 
 ### Critério que merece revisão humana posterior
 
