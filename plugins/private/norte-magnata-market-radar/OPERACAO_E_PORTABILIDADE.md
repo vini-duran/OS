@@ -42,6 +42,8 @@ O plugin usa a primeira chave disponível e só avança para a próxima se a You
 
 ## Configuração inicial do único bloco BUSCAR
 
+Os campos `core_queries`, `niche_bending_queries` e `excluded_title_terms` são áreas de texto multilinha no ContentFlow OS. Cada Enter cria um item; o plugin lê cada linha como uma consulta ou termo separado. Nunca cole itens sem quebra de linha.
+
 | Campo | Valor inicial | Motivo |
 | --- | --- | --- |
 | Processo | Tema | O Radar produz evidência para o método de Tema. |

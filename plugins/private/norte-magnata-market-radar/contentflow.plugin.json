@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.norte-magnata.market-radar",
   "name": "Norte Magnata — Radar de Mercado",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Coleta ampla e pontua referências do YouTube para pesquisa de tema e niche-bending, sem criar ou aprovar temas.",
   "author": "Norte Magnata",
   "license": "LicenseRef-NorteMagnata-Private",
@@ -67,6 +67,8 @@
         "properties": {
           "core_queries": {
             "type": "string",
+            "format": "textarea",
+            "title": "Consultas centrais",
             "minLength": 1,
             "maxLength": 3000,
             "default": "como ter disciplina mesmo sem motivação\ncomo parar de procrastinar e ter foco\nhábitos que destroem sua disciplina\ncomo controlar impulso e vício no celular",
@@ -74,6 +76,8 @@
           },
           "niche_bending_queries": {
             "type": "string",
+            "format": "textarea",
+            "title": "Consultas de niche-bending",
             "maxLength": 3000,
             "default": "",
             "description": "Uma consulta de nicho de origem por linha. Elas são referências a adaptar, nunca temas a copiar."
@@ -146,6 +150,8 @@
           },
           "excluded_title_terms": {
             "type": "string",
+            "format": "textarea",
+            "title": "Formatos/títulos excluídos",
             "maxLength": 1000,
             "default": "podcast\nentrevista\npregação\npalestra motivacional",
             "description": "Uma expressão por linha. O filtro local rejeita títulos que contenham esses formatos."
