@@ -53,11 +53,13 @@ Os campos `core_queries`, `niche_bending_queries` e `excluded_title_terms` são 
 | Consultas niche-bending | até 20 consultas de nichos de origem | Capturam padrões para adaptar, não temas para copiar. |
 | Janela | 60 dias | Mantém sinais recentes sem forçar tendência diária. |
 | Resultados por consulta | até 50 | Permite coleta ampla sem multiplicar análise profunda. |
-| Alvo de candidatos | até 1.000 únicos | O filtro local vem antes da análise aprofundada. |
-| Revisão aprofundada | Top 100 | Coleta comentários e compara, de forma limitada, o desempenho do canal. |
-| Saída final | Top 10 | Nota de 0 a 5 em saltos de 0,5, com justificativa visível. |
+| Alvo de candidatos | até 10.000 únicos | Use paginação somente com quota disponível; o filtro local vem antes da análise aprofundada. |
+| Páginas por consulta | 1–5 | Cada página é uma chamada adicional da YouTube Data API. |
+| Consultas multilíngues | `idioma|consulta`, uma por linha | Permite testar inglês, espanhol, francês, polonês, japonês etc. sem descartar automaticamente o idioma. |
+| Revisão aprofundada | Top 20 recomendado | Coleta comentários e compara, de forma limitada, o desempenho do canal. |
+| Saída final | Top 5 recomendado | Dossiê final deve explicar gancho, promessa, estrutura, sinais de comentários e adaptação. |
 | Duração mínima | 180 s | Remove Shorts e referências curtas. |
-| Região / idioma | `BR` / `pt` | Prioriza resultados brasileiros e em português; o filtro local descarta idioma declarado incompatível. |
+| Região / idioma | `BR` / `pt` + consultas multilíngues | A consulta multilíngue define `relevanceLanguage` para aquela linha. |
 | Velocidade mínima | 30 views/dia | Evita referências sem tração operacional. |
 | Aderência mínima | 1 termo da consulta | Evita resultado que só coincidiu superficialmente com a busca. |
 | Formatos excluídos | podcast, entrevista, pregação, palestra motivacional | Evita formatos que não servem como referência inicial do método. |
@@ -102,14 +104,15 @@ Não há bloco `ESCOLHER` ainda porque esta primeira versão não seleciona item
 
 O resultado histórico de “disciplina sem motivação” é somente um teste. A decisão operacional registrada no repositório Automation Magnata permanece **TEMA**; o método não está autorizado a avançar sozinho para Título.
 
-## Radar v0.5 — próximo teste manual autorizado
+## Radar v0.6 — próximo teste manual autorizado
 
 1. Preencha consultas centrais e consultas de niche-bending, uma por linha, até vinte em cada grupo. Não use uma consulta política ou uma afirmação factual sem uma fonte que permita verificação posterior.
-2. Configure `max_results_per_query=50`, `candidate_target=1000`, `deep_review_limit=100`, `top_limit=10` e `minimum_niche_bending_top=6`.
-3. Execute somente o bloco **BUSCAR** e confira o resumo: total coletado, total filtrado, Top 10 e justificativa de cada nota.
-4. Antes de CRIAR Tema, valide manualmente se as referências de outros nichos trazem um mecanismo adaptável ao Norte Magnata — não apenas uma frase chamativa.
+2. Configure `max_results_per_query=50`, `max_search_pages=1` inicialmente, `candidate_target=1000`, `deep_review_limit=20`, `top_limit=5` e `minimum_niche_bending_top=3`. Para ampliar, aumente `max_search_pages` gradualmente e monitore a quota.
+3. Para sinais internacionais, preencha `cross_language_queries` com uma consulta por linha no formato `en|discipline without motivation`, `es|disciplina sin motivación`, `fr|discipline sans motivation`, `pl|dyscyplina bez motywacji` ou `ja|やる気がなくても規律`.
+4. Execute somente o bloco **BUSCAR** e confira o resumo: total coletado, total filtrado, Top 5, idiomas e justificativa de cada nota.
+5. Antes de CRIAR Tema, valide manualmente se as referências de outros nichos trazem um mecanismo adaptável ao Norte Magnata — não apenas uma frase chamativa.
 
-A nota combina velocidade de views, desempenho relativo, engajamento e sinais em uma pequena amostra de comentários. Ela não lê roteiro completo, não interpreta thumbnail nem prova conversão, retenção ou verdade de afirmações. Esses limites são deliberados para não transformar uma pesquisa pública em uma falsa certeza.
+A nota combina velocidade de views, desempenho relativo, engajamento e sinais em uma pequena amostra de comentários. Ela não lê roteiro completo nem garante transcrição: captions/transcrições não são expostas de forma universal pela YouTube Data API pública. Também não interpreta thumbnail nem prova conversão, retenção ou verdade de afirmações. Esses limites são deliberados para não transformar uma pesquisa pública em uma falsa certeza.
 
 ### Critério que merece revisão humana posterior
 

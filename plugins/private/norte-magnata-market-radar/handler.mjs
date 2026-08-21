@@ -1,7 +1,8 @@
 const YOUTUBE_API = "https://www.googleapis.com/youtube/v3";
 const MAX_QUERIES_PER_LANE = 20;
 const MAX_RESULTS_PER_QUERY = 50;
-const MAX_CANDIDATES = 1_000;
+const MAX_CANDIDATES = 10_000;
+const MAX_SEARCH_PAGES = 5;
 const MAX_DEEP_REVIEWS = 100;
 const MAX_CHANNEL_BENCHMARKS = 20;
 const YOUTUBE_KEY_SECRETS = [
@@ -65,6 +66,18 @@ function queries(value) {
         .filter(Boolean),
     ),
   ].slice(0, MAX_QUERIES_PER_LANE);
+}
+
+function multilingualQueries(value) {
+  return phrases(value)
+    .map((line) => {
+      const separator = line.indexOf("|");
+      if (separator < 1) return undefined;
+      const language = line.slice(0, separator).trim().toLowerCase();
+      const query = line.slice(separator + 1).trim();
+      return /^[a-z]{2}$/.test(language) && query ? { language, query } : undefined;
+    })
+    .filter(Boolean);
 }
 
 function phrases(value) {
@@ -354,15 +367,17 @@ export async function execute(request, services) {
 
   const coreQueries = queries(request.configuration?.core_queries);
   const bridgeQueries = queries(request.configuration?.niche_bending_queries);
+  const crossLanguageQueries = multilingualQueries(request.configuration?.cross_language_queries);
   if (!coreQueries.length)
     return invalidConfiguration("Informe ao menos uma consulta central em core_queries.");
 
   const publishedWithinDays = integer(request.configuration?.published_within_days, 60);
   const maxResults = integer(request.configuration?.max_results_per_query, MAX_RESULTS_PER_QUERY);
   const candidateTarget = integer(request.configuration?.candidate_target, MAX_CANDIDATES);
-  const deepReviewLimit = integer(request.configuration?.deep_review_limit, MAX_DEEP_REVIEWS);
-  const topLimit = integer(request.configuration?.top_limit, 10);
-  const minimumBendingTop = integer(request.configuration?.minimum_niche_bending_top, 6);
+  const maxSearchPages = integer(request.configuration?.max_search_pages, 1);
+  const deepReviewLimit = integer(request.configuration?.deep_review_limit, 20);
+  const topLimit = integer(request.configuration?.top_limit, 5);
+  const minimumBendingTop = integer(request.configuration?.minimum_niche_bending_top, 3);
   const minimumDuration = integer(request.configuration?.min_duration_seconds, 180);
   const regionCode = text(request.configuration?.region_code || "BR").toUpperCase();
   const preferredLanguage = text(request.configuration?.preferred_language || "pt").toLowerCase();
@@ -383,6 +398,8 @@ export async function execute(request, services) {
     return invalidConfiguration(`max_results_per_query deve estar entre 1 e ${MAX_RESULTS_PER_QUERY}.`);
   if (candidateTarget < 50 || candidateTarget > MAX_CANDIDATES)
     return invalidConfiguration(`candidate_target deve estar entre 50 e ${MAX_CANDIDATES}.`);
+  if (maxSearchPages < 1 || maxSearchPages > MAX_SEARCH_PAGES)
+    return invalidConfiguration(`max_search_pages deve estar entre 1 e ${MAX_SEARCH_PAGES}.`);
   if (deepReviewLimit < 10 || deepReviewLimit > MAX_DEEP_REVIEWS)
     return invalidConfiguration(`deep_review_limit deve estar entre 10 e ${MAX_DEEP_REVIEWS}.`);
   if (topLimit < 1 || topLimit > 20)
@@ -426,6 +443,7 @@ export async function execute(request, services) {
   const plannedQueries = [
     ...coreQueries.map((query) => ({ query, lane: "core" })),
     ...bridgeQueries.map((query) => ({ query, lane: "niche_bending" })),
+    ...crossLanguageQueries.map(({ language, query }) => ({ query, lane: "niche_bending", language })),
   ];
   const found = new Map();
   const client = makeYouTubeClient(keys, services.signal);
@@ -440,19 +458,25 @@ export async function execute(request, services) {
           retryable: false,
         };
       }
-      const search = await client.request("/search", {
-        part: "snippet",
-        q: plan.query,
-        type: "video",
-        order: "viewCount",
-        publishedAfter,
-        regionCode,
-        relevanceLanguage: preferredLanguage,
-        maxResults,
-      });
-      for (const item of Array.isArray(search.items) ? search.items : []) {
-        const id = text(item?.id?.videoId);
-        if (id && !found.has(id)) found.set(id, plan);
+      let pageToken = "";
+      for (let page = 0; page < maxSearchPages; page += 1) {
+        const search = await client.request("/search", {
+          part: "snippet",
+          q: plan.query,
+          type: "video",
+          order: "viewCount",
+          publishedAfter,
+          regionCode,
+          relevanceLanguage: plan.language || preferredLanguage,
+          maxResults,
+          ...(pageToken ? { pageToken } : {}),
+        });
+        for (const item of Array.isArray(search.items) ? search.items : []) {
+          const id = text(item?.id?.videoId);
+          if (id && !found.has(id)) found.set(id, plan);
+        }
+        pageToken = text(search.nextPageToken);
+        if (!pageToken || found.size >= candidateTarget) break;
       }
       if (found.size >= candidateTarget) break;
     }
