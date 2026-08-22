@@ -685,7 +685,10 @@ async function processPluginJob(
   const storedSecrets = await pluginSecretsForJob(plugin.id, plugin.manifest.secretKeys ?? []);
   const secrets = { ...storedSecrets, ...transientSecrets };
   const workspaceDirectory = readPluginWorkspace(plugin.id);
-  const invocationTimeout = Math.max(1_000, Math.min(remainingMs, 120_000));
+  // O prazo declarado no manifesto é o prazo do job. Limitar cada invocação
+  // a 120 s tornava impossíveis capacidades immediate legítimas de leitura
+  // ampla, apesar de o contrato permitir até 24 horas.
+  const invocationTimeout = Math.max(1_000, remainingMs);
 
   try {
     if (isPluginJobTimedOut(job)) {
