@@ -43,8 +43,13 @@
       },
       "autoCreateProject": {
         "type": "boolean",
+        "default": false,
+        "description": "Se true, pode clicar em Novo projeto quando nenhum projeto estiver disponível. Deixe false para seleção manual."
+      },
+      "requireManualProjectSelection": {
+        "type": "boolean",
         "default": true,
-        "description": "Se nenhum projeto estiver disponível, tenta clicar em Novo projeto automaticamente."
+        "description": "Abre a tela inicial e aguarda você selecionar o projeto do Google Flow; não navega nem cria projeto automaticamente."
       },
       "remoteDebuggingPort": {
         "type": "integer",

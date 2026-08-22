@@ -62,6 +62,7 @@ O padrão é conservador: uma geração por vez e intervalo mínimo de 5 segundo
 - `profilesRootPath` para perfis adicionais
 - `flowUrl`
 - `autoCreateProject`
+- `requireManualProjectSelection` (padrão `true`): mantém a tela inicial aberta para o usuário escolher o projeto do Flow; não navega para o primeiro projeto nem cria um projeto automaticamente.
 - `remoteDebuggingPort`
 - `keepBrowserOpen`
 - `startMinimized`

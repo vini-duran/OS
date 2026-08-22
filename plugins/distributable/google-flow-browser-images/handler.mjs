@@ -886,7 +886,12 @@ async function ensureFlowProjectReady(
       if (last?.projectLike && last?.promptFound) return last;
 
       // Durante login/CAPTCHA não fazemos nada: a janela fica disponível para intervenção humana.
-      if (!last?.loginLike && !last?.challenge && Date.now() - lastActionAt > 2500) {
+      if (
+        !last?.loginLike &&
+        !last?.challenge &&
+        settings?.requireManualProjectSelection !== true &&
+        Date.now() - lastActionAt > 2500
+      ) {
         if (Array.isArray(last?.projectLinks) && last.projectLinks.length > 0) {
           const candidate = last.projectLinks[0]?.href;
           if (typeof candidate === "string" && candidate.startsWith("https://labs.google/")) {
