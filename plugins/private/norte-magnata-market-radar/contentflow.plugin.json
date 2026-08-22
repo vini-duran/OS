@@ -51,8 +51,8 @@
       ],
       "execution": {
         "mode": "immediate",
-        "defaultTimeoutMs": 90000,
-        "supportsCancellation": true,
+        "defaultTimeoutMs": 900000,
+        "supportsCancellation": false,
         "maxConcurrency": 1
       },
       "sideEffects": ["external_read"],

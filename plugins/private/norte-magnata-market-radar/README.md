@@ -27,6 +27,8 @@ Ele não cria temas, não aprova candidatos, não gera título/thumbnail/roteiro
 
 A configuração de produção usa até 20 consultas centrais, 20 de niche-bending e consultas multilíngues, 50 resultados e cinco páginas por consulta. As três frentes são intercaladas para que referências estrangeiras participem da coleta mesmo se o alvo for atingido antes de esgotar todas as linhas. O alvo de 10 mil exige consultas suficientemente diversas e pode não ser alcançado se houver duplicação ou poucos resultados. Cada `search.list` consome quota; o plugin registra o consumo estimado e troca para a próxima chave somente após resposta explícita de quota/rate limit.
 
+Para essa coleta ampla, o prazo declarado é de até 15 minutos. É uma única execução de leitura: não refaça a tentativa enquanto ela estiver em andamento e use **Cancelar execução** apenas se desejar abandonar aquela rodada.
+
 ## Credencial e dados enviados
 
 Conecte uma lista em `YOUTUBE_DATA_API_KEYS`: cole de uma a oito chaves, uma por linha. A lista inteira fica em um único item do cofre local, nunca no Método, histórico, logs ou repositório.

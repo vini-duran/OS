@@ -66,6 +66,8 @@ Os campos `core_queries`, `niche_bending_queries` e `excluded_title_terms` são 
 | Formatos excluídos | podcast, entrevista, pregação, palestra motivacional | Evita formatos que não servem como referência inicial do método. |
 | Simulação | desativada | A execução usa dados públicos reais. |
 
+O Radar tem prazo de até 15 minutos para a coleta ampla. Não clique em nova tentativa enquanto a execução estiver ativa.
+
 ## Saídas esperadas
 
 - `market_snapshot`: Top 5 rastreável entregue ao dossiê, com ID/URL, canal, inscritos, relação views/inscritos, comparação limitada com o canal, descrição pública, amostra de comentários, URL da thumbnail, padrão de gancho e nota explicável 0–5.
