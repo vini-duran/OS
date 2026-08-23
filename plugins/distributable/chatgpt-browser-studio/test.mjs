@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { __test, execute } from "./handler.mjs";
 
 const manifest = JSON.parse(
@@ -34,7 +36,13 @@ function request(overrides = {}) {
 
 test("manifesto declara oito capabilities modulares", () => {
   assert.equal(manifest.id, "local.contentflow.chatgpt-browser-studio");
-  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.version, "0.1.15");
+  assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
+  const generation = manifest.capabilities.find((item) => item.id === "generate-text-in-browser");
+  assert.deepEqual(generation.outputPorts.find((port) => port.key === "result").producedTypes, [
+    "text",
+    "textarea",
+  ]);
   assert.deepEqual(
     manifest.capabilities.map((item) => item.id),
     [
@@ -65,6 +73,24 @@ test("isola contas por alias e porta", () => {
     /chatgpt-browser-profiles\/canal-a$/,
   );
   assert.notEqual(__test.profilePort(9544, "canal-a"), __test.profilePort(9544, "canal-b"));
+  assert.equal(
+    __test.runtimeProfilePath({}, "canal-a", {
+      getWorkspacePath: (relativePath) => `workspace/${relativePath}`,
+    }),
+    "workspace/canal-a",
+  );
+});
+
+test("só considera pronto o perfil marcado após login", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "contentflow-chatgpt-profile-"));
+  try {
+    assert.equal(await __test.profileIsPrepared(directory, "canal-a"), false);
+    await __test.markProfilePrepared(directory, "canal-a");
+    assert.equal(await __test.profileIsPrepared(directory, "canal-a"), true);
+    assert.equal(await __test.profileIsPrepared(directory, "canal-b"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("expande placeholders ContentFlow e legados", () => {

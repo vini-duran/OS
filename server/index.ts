@@ -34,11 +34,16 @@ import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
 } from "../src/lib/presentation";
-import type { PluginExecutionRequest, PluginExecutionResponse, PluginFieldContract } from "../src/lib/plugin-contract";
+import type {
+  PluginExecutionRequest,
+  PluginExecutionResponse,
+  PluginFieldContract,
+} from "../src/lib/plugin-contract";
 import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import {
   activeProjectDeliveries,
+  invalidateBlockDeliveries,
   normalizeExecutionDeliveries,
   recordBlockDeliveries,
   recordProcessOutputDelivery,
@@ -49,6 +54,7 @@ import {
   initializePluginRunner,
 } from "./plugin-runner";
 import { normalizeNetworkHostPattern } from "./remote-artifact-downloader";
+import { composePluginPortValue } from "./plugin-input-values";
 import {
   createPersistentPluginJob,
   isPluginJobTimedOut,
@@ -153,6 +159,7 @@ mkdirSync(installedPluginsDirectory, { recursive: true });
 mkdirSync(developmentLinksDirectory, { recursive: true });
 
 const database = new Database(databasePath);
+database.pragma("busy_timeout = 5000");
 database.pragma("journal_mode = WAL");
 database.exec(`
   CREATE TABLE IF NOT EXISTS channels (
@@ -328,6 +335,14 @@ function readPluginWorkspace(pluginId: string) {
   return row?.directory;
 }
 
+function executionWorkspaceForPlugin(plugin: { id: string; manifest: { profileSetup?: unknown } }) {
+  const configuredWorkspace = readPluginWorkspace(plugin.id);
+  if (configuredWorkspace) return configuredWorkspace;
+  if (!plugin.manifest.profileSetup) return undefined;
+  const safePluginId = plugin.id.replace(/[^A-Za-z0-9._-]/g, "_");
+  return path.join(dataDirectory, "plugin-workspaces", "profiles", safePluginId);
+}
+
 function executionFor(projectId: string, processType: string) {
   const row = database
     .prepare("SELECT payload FROM process_executions WHERE project_id = ? AND process_type = ?")
@@ -394,6 +409,52 @@ function finishPluginBlock(
   blockExecution.error = undefined;
   recordBlockDeliveries(execution, block, values, "completed", now);
   const completedIndex = execution.blocks.indexOf(blockExecution);
+  const rejected =
+    block.type === "VALIDAR" &&
+    (block.outputs ?? []).some(
+      (output) => output.type === "approval" && values[output.key] === "rejected",
+    );
+  if (rejected && block.validation?.onReject === "retry_target") {
+    const targetIndex = execution.methodSnapshot.blocks.findIndex(
+      (candidate) => candidate.id === block.validation?.targetBlockId,
+    );
+    const maxAttempts = Math.max(1, block.validation.maxAttempts ?? 3);
+    const targetExecution = execution.blocks[targetIndex];
+    const targetBlock = execution.methodSnapshot.blocks[targetIndex];
+    if (targetIndex >= 0 && targetIndex < completedIndex && targetExecution && targetBlock) {
+      if ((targetExecution.attempt ?? 1) >= maxAttempts) {
+        execution.status = "awaiting_human";
+        blockExecution.status = "awaiting_human";
+        blockExecution.error = `O limite de ${maxAttempts} tentativas foi atingido.`;
+      } else {
+        for (let index = targetIndex; index < execution.blocks.length; index += 1) {
+          const item = execution.blocks[index];
+          item.values = {};
+          item.error = undefined;
+          item.logs = undefined;
+          item.completedAt = undefined;
+          item.jobId = undefined;
+          item.progress = undefined;
+          item.progressMessage = undefined;
+          item.retryFeedback = undefined;
+          item.status = "pending";
+        }
+        targetExecution.attempt = (targetExecution.attempt ?? 1) + 1;
+        targetExecution.retryFeedback = structuredClone(values);
+        targetExecution.startedAt = now;
+        targetExecution.status =
+          targetBlock.operator === "Humano" ? "awaiting_human" : "blocked_executor";
+        invalidateBlockDeliveries(
+          execution,
+          execution.methodSnapshot.blocks.slice(targetIndex).map((candidate) => candidate.id),
+        );
+        execution.status =
+          targetExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
+      }
+      execution.updatedAt = now;
+      return;
+    }
+  }
   const nextExecution = execution.blocks[completedIndex + 1];
   const nextBlock = execution.methodSnapshot.blocks[completedIndex + 1];
 
@@ -409,6 +470,10 @@ function finishPluginBlock(
     for (let index = execution.methodSnapshot.blocks.length - 1; index >= 0; index -= 1) {
       const candidate = execution.methodSnapshot.blocks[index];
       if (candidate.type === "VALIDAR" || candidate.type === "ESCOLHER") continue;
+      const candidateOutput = candidate.outputs?.find(
+        (output) => output.key === finalField.key && output.type === finalField.type,
+      );
+      if (!candidateOutput) continue;
       const candidateExecution = execution.blocks.find((item) => item.blockId === candidate.id);
       const value = candidateExecution?.values[finalField.key];
       if (!isEmptyRuntimeValue(value)) {
@@ -684,8 +749,14 @@ async function processPluginJob(
   const remainingMs = new Date(job.deadlineAt).getTime() - Date.now();
   const storedSecrets = await pluginSecretsForJob(plugin.id, plugin.manifest.secretKeys ?? []);
   const secrets = { ...storedSecrets, ...transientSecrets };
-  const workspaceDirectory = readPluginWorkspace(plugin.id);
-  const invocationTimeout = Math.max(1_000, Math.min(remainingMs, 120_000));
+  const workspaceDirectory = executionWorkspaceForPlugin(plugin);
+  // Browser-driven capabilities legitimately need more than two minutes for
+  // page loading, model generation and UI transitions. Honor the capability's
+  // declared bound while never exceeding the persistent job deadline.
+  const invocationTimeout = Math.max(
+    1_000,
+    Math.min(remainingMs, capability.execution.defaultTimeoutMs ?? 120_000),
+  );
 
   try {
     if (isPluginJobTimedOut(job)) {
@@ -1004,6 +1075,7 @@ function isOptionalHttpsUrl(value: unknown) {
 function isPluginManifest(manifest: Record<string, unknown>) {
   const runtime = manifest.runtime as Record<string, unknown> | undefined;
   const capabilities = manifest.capabilities;
+  const profileSetup = manifest.profileSetup as Record<string, unknown> | undefined;
   const permissions = [
     "network",
     "filesystem:read",
@@ -1100,6 +1172,17 @@ function isPluginManifest(manifest: Record<string, unknown>) {
     !manifest.entrypoint.includes("..") &&
     isUniqueStringArray(manifest.permissions, permissions) &&
     networkHostsAreValid &&
+    (profileSetup === undefined ||
+      (isNonEmptyString(profileSetup.configurationKey) &&
+        isNonEmptyString(profileSetup.label) &&
+        (profileSetup.description === undefined || typeof profileSetup.description === "string") &&
+        (profileSetup.prepareTimeoutMs === undefined ||
+          (Number.isInteger(profileSetup.prepareTimeoutMs) &&
+            Number(profileSetup.prepareTimeoutMs) >= 30_000 &&
+            Number(profileSetup.prepareTimeoutMs) <= 900_000)) &&
+        Object.keys(profileSetup).every((key) =>
+          ["configurationKey", "label", "description", "prepareTimeoutMs"].includes(key),
+        ))) &&
     (manifest.secretKeys === undefined || isUniqueStringArray(manifest.secretKeys)) &&
     runtime?.kind === "node" &&
     runtime.module === "esm" &&
@@ -1448,6 +1531,100 @@ app.get("/api/plugins", (_request, response) => {
     issues: registry.issues,
     examplesDirectory: process.env.CONTENTFLOW_EXAMPLES_DIR,
   });
+});
+
+app.post("/api/plugins/:pluginId/profile", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const action = request.body?.action;
+  const configuration = request.body?.configuration;
+  if (!plugin || !plugin.manifest.profileSetup) {
+    response.status(404).json({ error: "Este plugin não oferece preparação de perfil." });
+    return;
+  }
+  if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+    response.status(403).json({
+      error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+    });
+    return;
+  }
+  if (
+    !["status", "prepare"].includes(String(action)) ||
+    !configuration ||
+    typeof configuration !== "object" ||
+    Array.isArray(configuration)
+  ) {
+    response.status(400).json({ error: "Solicitação de preparação de perfil inválida." });
+    return;
+  }
+  const profileKey = plugin.manifest.profileSetup.configurationKey;
+  const profileName = (configuration as Record<string, unknown>)[profileKey];
+  if (typeof profileName !== "string" || !profileName.trim()) {
+    response.status(422).json({ error: "Informe o nome do perfil antes de prepará-lo." });
+    return;
+  }
+  const capability = plugin.manifest.capabilities.find(
+    (candidate) => candidate.blockConfigSchema.properties?.[profileKey],
+  );
+  if (!capability) {
+    response.status(422).json({ error: "O perfil não pertence à configuração deste plugin." });
+    return;
+  }
+
+  try {
+    const pluginSecrets: Record<string, string> = {};
+    for (const declaredSecret of plugin.manifest.secretKeys ?? []) {
+      const storedSecret = await getPluginSecret(plugin.id, declaredSecret);
+      if (storedSecret) pluginSecrets[declaredSecret] = storedSecret;
+    }
+    const pluginRequest: PluginExecutionRequest = {
+      executionId: `profile-${randomUUID()}`,
+      traceId: randomUUID(),
+      blockId: "profile-setup",
+      capabilityId: capability.id,
+      attempt: 1,
+      invocation: { mode: "configure", action: action as "status" | "prepare" },
+      configuration: { [profileKey]: profileName.trim() },
+      settings: {},
+      inputs: {},
+      inputContract: [],
+      outputContract: [],
+      context: {
+        locale: "pt-BR",
+        timeZone: "America/Sao_Paulo",
+        channel: { id: "profile-setup", name: "Configuração", language: "pt-BR", niche: "" },
+        project: { id: "profile-setup", title: "Preparação de perfil" },
+        processType: "theme",
+        block: { type: "CRIAR", name: "Preparar perfil", instructions: "" },
+        previousProcessOutputs: [],
+        previousBlockOutputs: [],
+      },
+    };
+    const timeoutMs =
+      action === "prepare" ? (plugin.manifest.profileSetup.prepareTimeoutMs ?? 600_000) : 30_000;
+    const result = await executeRegisteredPlugin(plugin, pluginRequest, timeoutMs, pluginSecrets, {
+      workspaceDirectory: executionWorkspaceForPlugin(plugin),
+    });
+    if (result.status === "error") {
+      response.status(action === "status" ? 200 : 422).json({
+        ready: false,
+        error: result.message,
+      });
+      return;
+    }
+    response.json({
+      ready: result.status === "success" && result.values.ready === true,
+      message:
+        result.status === "success" && typeof result.values.message === "string"
+          ? result.values.message
+          : undefined,
+    });
+  } catch (error) {
+    response.status(422).json({
+      ready: false,
+      error: error instanceof Error ? error.message : "Não foi possível preparar o perfil.",
+    });
+  }
 });
 
 app.post("/api/plugins/install-from-folder", (request, response) => {
@@ -1897,6 +2074,21 @@ app.post("/api/execute-block", async (request, response) => {
       .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
       .all(project.id) as { payload: string }[]
   ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+  const channelProjects = (
+    database.prepare("SELECT payload FROM projects WHERE channel_id = ?").all(channel.id) as {
+      payload: string;
+    }[]
+  ).map((row) => JSON.parse(row.payload) as Project);
+  const channelExecutions = (
+    database
+      .prepare(
+        `SELECT process_executions.payload
+         FROM process_executions
+         INNER JOIN projects ON projects.id = process_executions.project_id
+         WHERE projects.channel_id = ?`,
+      )
+      .all(channel.id) as { payload: string }[]
+  ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
   const collections = (
     database
       .prepare("SELECT payload FROM library_collections WHERE channel_id = ?")
@@ -1912,6 +2104,8 @@ app.post("/api/execute-block", async (request, response) => {
     execution,
     project,
     projectExecutions,
+    channelExecutions,
+    channelProjects,
     collections,
     libraryItems,
   });
@@ -1925,15 +2119,23 @@ app.post("/api/execute-block", async (request, response) => {
 
   const usedInputPorts = new Set<string>();
   const assignedInputs = resolvedInputs.map((item) => {
-    const port =
-      capability.inputPorts.find(
-        (candidate) =>
-          candidate.acceptedTypes.includes(item.input.type) &&
-          (candidate.multiple || !usedInputPorts.has(candidate.key)),
-      ) ?? capability.inputPorts[0];
+    const port = capability.inputPorts.find(
+      (candidate) =>
+        candidate.acceptedTypes.includes(item.input.type) &&
+        (candidate.multiple || !usedInputPorts.has(candidate.key)),
+    );
     if (port && !port.multiple) usedInputPorts.add(port.key);
     return { resolved: item, port };
   });
+  const unsupportedInputs = assignedInputs.filter((item) => !item.port);
+  if (unsupportedInputs.length) {
+    response.status(422).json({
+      error: `O plugin não aceita: ${unsupportedInputs
+        .map((item) => item.resolved.input.label)
+        .join(", ")}.`,
+    });
+    return;
+  }
   const inputContract = assignedInputs.map(({ resolved: item, port }) => ({
     id: item.input.id,
     portKey: port?.key ?? item.input.id,
@@ -1946,22 +2148,124 @@ app.post("/api/execute-block", async (request, response) => {
     capability.inputPorts.flatMap((port) => {
       const assigned = assignedInputs.filter((item) => item.port?.key === port.key);
       if (!assigned.length) return [];
-      if (assigned.length === 1 && !port.multiple) {
-        return [[port.key, assigned[0].resolved.value ?? null]];
-      }
       return [
         [
           port.key,
-          assigned
-            .map(
-              ({ resolved }) =>
-                `${resolved.input.label}: ${JSON.stringify(resolved.value ?? null)}`,
-            )
-            .join("\n"),
+          composePluginPortValue(
+            assigned.map(({ resolved }) => ({
+              label: resolved.input.label,
+              value: resolved.value ?? null,
+            })),
+          ),
         ],
       ];
     }),
   ) as Record<string, RuntimeValue>;
+  if (block.type === "VALIDAR" && block.validation?.targetBlockId) {
+    const targetBlock = execution.methodSnapshot.blocks.find(
+      (candidate) => candidate.id === block.validation?.targetBlockId,
+    );
+    const targetExecution = execution.blocks.find(
+      (candidate) => candidate.blockId === block.validation?.targetBlockId,
+    );
+    const targetOutput =
+      targetBlock?.outputs?.find((field) => field.key === block.validation?.targetOutputKey) ??
+      targetBlock?.outputs?.[0];
+    const targetValue = targetOutput ? targetExecution?.values[targetOutput.key] : undefined;
+    const targetPort = targetOutput
+      ? capability.inputPorts.find((port) => port.acceptedTypes.includes(targetOutput.type))
+      : undefined;
+    if (
+      targetOutput &&
+      targetValue !== undefined &&
+      targetPort &&
+      inputs[targetPort.key] === undefined
+    ) {
+      inputs[targetPort.key] = targetValue;
+      inputContract.push({
+        id: `validation-${targetBlock?.id ?? "target"}-${targetOutput.key}`,
+        portKey: targetPort.key,
+        label: targetOutput.label,
+        type: targetOutput.type,
+        recordFields: targetOutput.recordFields,
+        presentation: targetOutput.presentation,
+      });
+    }
+  }
+  // The builder intentionally allows a block without declared inputs while
+  // still advertising prior deliveries as available context. Materialize that
+  // context for plugins so browser automations receive the actual values, not
+  // only instructions that refer to them.
+  const currentBlockIndex = execution.blocks.indexOf(blockExecution);
+  const contextValues = execution.methodSnapshot.blocks
+    .slice(0, Math.max(0, currentBlockIndex))
+    .flatMap((previousBlock) =>
+      (previousBlock.outputs ?? []).flatMap((field) => {
+        const previousExecution = execution.blocks.find(
+          (item) => item.blockId === previousBlock.id,
+        );
+        const value = previousExecution?.values[field.key];
+        return value === undefined || isEmptyRuntimeValue(value) ? [] : [{ field, value }];
+      }),
+    );
+  for (const { field, value } of contextValues) {
+    if (!["image", "audio", "video", "file", "files"].includes(field.type)) continue;
+    const port = capability.inputPorts.find(
+      (candidate) =>
+        inputs[candidate.key] === undefined && candidate.acceptedTypes.includes(field.type),
+    );
+    if (!port) continue;
+    inputs[port.key] = value;
+    inputContract.push({
+      id: `context-${field.id}`,
+      portKey: port.key,
+      label: field.label,
+      type: field.type,
+      recordFields: field.recordFields,
+      presentation: field.presentation,
+    });
+  }
+  const textPort = capability.inputPorts.find(
+    (candidate) =>
+      inputs[candidate.key] === undefined &&
+      (candidate.acceptedTypes.includes("text") || candidate.acceptedTypes.includes("textarea")),
+  );
+  const previousProcessContextText = projectExecutions
+    .filter(
+      (candidate) =>
+        candidate.outputStatus === "completed" &&
+        PROCESS_ORDER.indexOf(candidate.processType) < PROCESS_ORDER.indexOf(execution.processType),
+    )
+    .flatMap((candidate) =>
+      Object.entries(candidate.output?.values ?? {}).map(
+        ([key, value]) =>
+          `${candidate.processType}.${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`,
+      ),
+    )
+    .join("\n\n");
+  if (textPort && (contextValues.length || previousProcessContextText)) {
+    const currentProcessContextText = contextValues
+      .filter(({ field }) => !["image", "audio", "video", "file", "files"].includes(field.type))
+      .map(
+        ({ field, value }) =>
+          `${field.label}: ${typeof value === "string" ? value : JSON.stringify(value)}`,
+      )
+      .join("\n\n");
+    const contextText = [previousProcessContextText, currentProcessContextText]
+      .filter(Boolean)
+      .join("\n\n");
+    if (contextText) {
+      inputs[textPort.key] = contextText;
+      inputContract.push({
+        id: "previous-block-context",
+        portKey: textPort.key,
+        label: "Contexto dos blocos anteriores",
+        type: "textarea",
+        recordFields: undefined,
+        presentation: undefined,
+      });
+    }
+  }
   const selectedCollection =
     block.type === "ESCOLHER"
       ? collections.find((item) => item.id === block.collectionId)
@@ -2162,7 +2466,9 @@ app.post("/api/execute-block", async (request, response) => {
 function researchRunsFor(channelId: string, limit = 30) {
   return (
     database
-      .prepare("SELECT payload FROM channel_research_runs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?")
+      .prepare(
+        "SELECT payload FROM channel_research_runs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
       .all(channelId, limit) as { payload: string }[]
   ).map((row) => JSON.parse(row.payload) as ChannelResearchRun);
 }
@@ -2170,7 +2476,9 @@ function researchRunsFor(channelId: string, limit = 30) {
 function researchBriefsFor(channelId: string, limit = 12) {
   return (
     database
-      .prepare("SELECT payload FROM channel_research_briefs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?")
+      .prepare(
+        "SELECT payload FROM channel_research_briefs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
       .all(channelId, limit) as { payload: string }[]
   ).map((row) => JSON.parse(row.payload) as ChannelResearchBrief);
 }
@@ -2192,7 +2500,14 @@ function saveResearchBrief(brief: ChannelResearchBrief) {
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
     )
-    .run(brief.id, brief.channelId, brief.status, JSON.stringify(brief), brief.createdAt, brief.updatedAt);
+    .run(
+      brief.id,
+      brief.channelId,
+      brief.status,
+      JSON.stringify(brief),
+      brief.createdAt,
+      brief.updatedAt,
+    );
 }
 
 function researchError(result: PluginExecutionResponse) {
@@ -2201,7 +2516,10 @@ function researchError(result: PluginExecutionResponse) {
     : undefined;
 }
 
-function createLocalResearchBrief(channel: Channel, runs: ChannelResearchRun[]): ChannelResearchBrief {
+function createLocalResearchBrief(
+  channel: Channel,
+  runs: ChannelResearchRun[],
+): ChannelResearchBrief {
   const latest = runs.find((run) => run.status === "completed");
   const records = latest?.records ?? [];
   const top = [...records]
@@ -2227,8 +2545,10 @@ function createLocalResearchBrief(channel: Channel, runs: ChannelResearchRun[]):
     provider: "local",
     summary: `Brief factual local com ${records.length} registro(s) do snapshot mais recente. Ele não cria Tema, Título, Thumbnail ou Roteiro e não usa IA.`,
     evidence: `OBSERVADO\n${observed}\n\nINFERÊNCIA E HIPÓTESE\nAinda não aprovadas. Devem ser definidas pelo Método Tema, sem tratar métricas públicas como prova de retenção, conversão ou causalidade.`,
-    antiCopy: "Transferir apenas dor, mecanismo, pergunta, estrutura ou padrão de apresentação. Não copiar título, thumbnail, roteiro, personagem, identidade visual, fala, promessa ou símbolo de uma referência.",
-    limitations: "Views, comentários e inscritos são dados públicos pontuais. Não comprovam retenção, receita, vendas, qualidade, veracidade, país da audiência ou causa do desempenho.",
+    antiCopy:
+      "Transferir apenas dor, mecanismo, pergunta, estrutura ou padrão de apresentação. Não copiar título, thumbnail, roteiro, personagem, identidade visual, fala, promessa ou símbolo de uma referência.",
+    limitations:
+      "Views, comentários e inscritos são dados públicos pontuais. Não comprovam retenção, receita, vendas, qualidade, veracidade, país da audiência ou causa do desempenho.",
   };
 }
 
@@ -2251,11 +2571,15 @@ app.post("/api/channels/:id/research/plan/from-theme", (request, response) => {
     (block) => block.type === "BUSCAR" && block.operator === "Código" && block.plugin,
   );
   const plugin = source?.plugin ? getRegisteredPlugin(source.plugin.pluginId) : undefined;
-  const capability = plugin?.manifest.capabilities.find((item) => item.id === source?.plugin?.capabilityId);
+  const capability = plugin?.manifest.capabilities.find(
+    (item) => item.id === source?.plugin?.capabilityId,
+  );
   const records = source?.outputs?.find((output) => output.type === "records");
   const summary = source?.outputs?.find((output) => output.type === "textarea");
   if (!source?.plugin || !capability || !records || !summary)
-    return response.status(422).json({ error: "O Método Tema não possui um Radar BUSCAR compatível para reaproveitar." });
+    return response
+      .status(422)
+      .json({ error: "O Método Tema não possui um Radar BUSCAR compatível para reaproveitar." });
   const updated: Channel = {
     ...channel,
     research: {
@@ -2268,7 +2592,9 @@ app.post("/api/channels/:id/research/plan/from-theme", (request, response) => {
       minimumBriefRecords: 2,
     },
   };
-  database.prepare("UPDATE channels SET payload = ? WHERE id = ?").run(JSON.stringify(updated), updated.id);
+  database
+    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+    .run(JSON.stringify(updated), updated.id);
   response.json(updated);
 });
 
@@ -2289,9 +2615,13 @@ app.post("/api/channels/:id/research/briefs", (request, response) => {
 
 app.post("/api/channels/:id/research/briefs/:briefId/approve", (request, response) => {
   const channel = readPayload<Channel>("channels", request.params.id);
-  const brief = researchBriefsFor(request.params.id).find((item) => item.id === request.params.briefId);
-  if (!channel || !brief) return response.status(404).json({ error: "Canal ou brief não encontrado." });
-  if (brief.status !== "draft") return response.status(409).json({ error: "Este brief já foi decidido." });
+  const brief = researchBriefsFor(request.params.id).find(
+    (item) => item.id === request.params.briefId,
+  );
+  if (!channel || !brief)
+    return response.status(404).json({ error: "Canal ou brief não encontrado." });
+  if (brief.status !== "draft")
+    return response.status(409).json({ error: "Este brief já foi decidido." });
   const collectionId = `channel-research-approved-briefs:${channel.id}`;
   const collection = database
     .prepare("SELECT payload FROM library_collections WHERE id = ?")
@@ -2303,14 +2633,21 @@ app.post("/api/channels/:id/research/briefs/:briefId/approve", (request, respons
       name: "Briefs estratégicos aprovados",
       fields: [
         { id: "brief-summary", label: "Resumo factual", type: "textarea", required: true },
-        { id: "brief-evidence", label: "Evidências e separações", type: "textarea", required: true },
+        {
+          id: "brief-evidence",
+          label: "Evidências e separações",
+          type: "textarea",
+          required: true,
+        },
         { id: "brief-anti-copy", label: "Limites anti-cópia", type: "textarea", required: true },
         { id: "brief-limitations", label: "Limitações", type: "textarea", required: true },
       ],
       createdAt: new Date().toISOString(),
     };
     database
-      .prepare("INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
+      .prepare(
+        "INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+      )
       .run(created.id, channel.id, JSON.stringify(created), created.createdAt);
   }
   const now = new Date().toISOString();
@@ -2341,18 +2678,29 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
   if (!channel || !isChannelResearchConfig(channel.research))
     return response.status(422).json({ error: "O canal não possui um plano de pesquisa válido." });
   if (researchRunsFor(channel.id).some((run) => run.status === "running"))
-    return response.status(409).json({ error: "Já existe uma pesquisa em execução para este canal." });
+    return response
+      .status(409)
+      .json({ error: "Já existe uma pesquisa em execução para este canal." });
   initializePluginRunner();
   const plugin = getRegisteredPlugin(channel.research.pluginId);
   if (!plugin || !plugin.executable || !pluginConsentIsCurrent(plugin))
-    return response.status(403).json({ error: "Ative o plugin de pesquisa e confirme as permissões." });
-  const capability = plugin.manifest.capabilities.find((item) => item.id === channel.research?.capabilityId);
+    return response
+      .status(403)
+      .json({ error: "Ative o plugin de pesquisa e confirme as permissões." });
+  const capability = plugin.manifest.capabilities.find(
+    (item) => item.id === channel.research?.capabilityId,
+  );
   if (!capability || capability.operator !== "Código" || !capability.blockTypes.includes("BUSCAR"))
     return response.status(422).json({ error: "A capability de pesquisa não é compatível." });
   const now = new Date().toISOString();
   const run: ChannelResearchRun = {
-    id: randomUUID(), channelId: channel.id, status: "running", startedAt: now, updatedAt: now,
-    planSnapshot: channel.research, records: [],
+    id: randomUUID(),
+    channelId: channel.id,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    planSnapshot: channel.research,
+    records: [],
   };
   saveResearchRun(run);
   const secrets: Record<string, string> = {};
@@ -2361,34 +2709,78 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
     if (value) secrets[key] = value;
   }
   const pluginRequest: PluginExecutionRequest = {
-    executionId: `channel-research:${run.id}`, traceId: randomUUID(), blockId: "channel-research",
-    capabilityId: capability.id, attempt: 1, invocation: { mode: "start" },
-    configuration: channel.research.configuration, settings: {}, inputs: {}, inputContract: [],
+    executionId: `channel-research:${run.id}`,
+    traceId: randomUUID(),
+    blockId: "channel-research",
+    capabilityId: capability.id,
+    attempt: 1,
+    invocation: { mode: "start" },
+    configuration: channel.research.configuration,
+    settings: {},
+    inputs: {},
+    inputContract: [],
     outputContract: researchOutputContract(capability),
     context: {
-      locale: channel.language || "pt-BR", timeZone: "America/Porto_Velho",
-      channel: { id: channel.id, name: channel.name, language: channel.language, niche: channel.niche },
-      project: { id: `channel-research:${channel.id}`, title: "Pesquisa factual do canal" }, processType: "theme",
-      block: { type: "BUSCAR", name: "Pesquisa factual do canal", instructions: "Colete dados públicos; não crie tema, título, mídia ou publicação." },
-      previousProcessOutputs: [], previousBlockOutputs: [], previousDeliveries: [],
+      locale: channel.language || "pt-BR",
+      timeZone: "America/Porto_Velho",
+      channel: {
+        id: channel.id,
+        name: channel.name,
+        language: channel.language,
+        niche: channel.niche,
+      },
+      project: { id: `channel-research:${channel.id}`, title: "Pesquisa factual do canal" },
+      processType: "theme",
+      block: {
+        type: "BUSCAR",
+        name: "Pesquisa factual do canal",
+        instructions: "Colete dados públicos; não crie tema, título, mídia ou publicação.",
+      },
+      previousProcessOutputs: [],
+      previousBlockOutputs: [],
+      previousDeliveries: [],
     },
   };
   try {
-    const result = await executeRegisteredPlugin(plugin, pluginRequest, capability.execution.defaultTimeoutMs ?? 90_000, secrets);
-    run.updatedAt = new Date().toISOString(); run.completedAt = run.updatedAt; run.usage = result.usage; run.logs = result.logs;
+    const result = await executeRegisteredPlugin(
+      plugin,
+      pluginRequest,
+      capability.execution.defaultTimeoutMs ?? 90_000,
+      secrets,
+    );
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    run.usage = result.usage;
+    run.logs = result.logs;
     if (result.status === "success") {
       run.status = "completed";
-      run.records = Array.isArray(result.values[channel.research.recordsKey]) ? result.values[channel.research.recordsKey] as Array<Record<string, RuntimeValue>> : [];
+      run.records = Array.isArray(result.values[channel.research.recordsKey])
+        ? (result.values[channel.research.recordsKey] as Array<Record<string, RuntimeValue>>)
+        : [];
       const summary = result.values[channel.research.summaryKey];
       run.summary = typeof summary === "string" ? summary : undefined;
-      saveResearchRun(run); return response.status(201).json({ run });
+      saveResearchRun(run);
+      return response.status(201).json({ run });
     }
-    run.status = "failed"; run.error = researchError(result) ?? { code: "UNEXPECTED_PLUGIN_RESPONSE", message: "A pesquisa não devolveu resultado final.", retryable: false };
-    saveResearchRun(run); return response.status(422).json({ error: run.error.message, run });
+    run.status = "failed";
+    run.error = researchError(result) ?? {
+      code: "UNEXPECTED_PLUGIN_RESPONSE",
+      message: "A pesquisa não devolveu resultado final.",
+      retryable: false,
+    };
+    saveResearchRun(run);
+    return response.status(422).json({ error: run.error.message, run });
   } catch (error) {
-    run.status = "failed"; run.updatedAt = new Date().toISOString(); run.completedAt = run.updatedAt;
-    run.error = { code: "RESEARCH_EXECUTION_FAILED", message: error instanceof Error ? error.message : "A pesquisa falhou.", retryable: true };
-    saveResearchRun(run); return response.status(422).json({ error: run.error.message, run });
+    run.status = "failed";
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    run.error = {
+      code: "RESEARCH_EXECUTION_FAILED",
+      message: error instanceof Error ? error.message : "A pesquisa falhou.",
+      retryable: true,
+    };
+    saveResearchRun(run);
+    return response.status(422).json({ error: run.error.message, run });
   }
 });
 

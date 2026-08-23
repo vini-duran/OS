@@ -32,7 +32,12 @@ test("preserva ativação em atualização compatível de pasta ao vivo", async 
   const root = await mkdtemp(path.join(tmpdir(), "contentflow-plugin-consent-"));
   const dataDirectory = path.join(root, "data");
   const pluginDirectory = path.join(root, "plugin");
-  const sourceDirectory = path.join(repositoryRoot, "plugins", "examples", "kit-generated-text-transform");
+  const sourceDirectory = path.join(
+    repositoryRoot,
+    "plugins",
+    "examples",
+    "kit-generated-text-transform",
+  );
   await cp(sourceDirectory, pluginDirectory, { recursive: true });
   const server = spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     cwd: repositoryRoot,
@@ -63,7 +68,9 @@ test("preserva ativação em atualização compatível de pasta ao vivo", async 
     const compatible = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
     compatible.version = "0.1.1";
     await writeFile(manifestPath, JSON.stringify(compatible, null, 2), "utf8");
-    const compatiblePlugins = (await request("/api/plugins")) as { plugins: Array<{ id: string; enabled: boolean }> };
+    const compatiblePlugins = (await request("/api/plugins")) as {
+      plugins: Array<{ id: string; enabled: boolean }>;
+    };
     assert.equal(compatiblePlugins.plugins.find((plugin) => plugin.id === pluginId)?.enabled, true);
 
     compatible.permissions = ["network"];
@@ -71,7 +78,9 @@ test("preserva ativação em atualização compatível de pasta ao vivo", async 
     const capabilities = compatible.capabilities as Array<Record<string, unknown>>;
     capabilities[0].dataPolicy = { sendsDataToThirdParties: true, providers: ["Example API"] };
     await writeFile(manifestPath, JSON.stringify(compatible, null, 2), "utf8");
-    const expandedPlugins = (await request("/api/plugins")) as { plugins: Array<{ id: string; enabled: boolean }> };
+    const expandedPlugins = (await request("/api/plugins")) as {
+      plugins: Array<{ id: string; enabled: boolean }>;
+    };
     assert.equal(expandedPlugins.plugins.find((plugin) => plugin.id === pluginId)?.enabled, false);
   } finally {
     server.kill();

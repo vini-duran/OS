@@ -131,7 +131,8 @@ function median(values) {
 
 function chunks(values, size) {
   const result = [];
-  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  for (let index = 0; index < values.length; index += size)
+    result.push(values.slice(index, index + size));
   return result;
 }
 
@@ -147,16 +148,34 @@ function hookPattern(title) {
 function commentSignal(comments) {
   const value = comments.join(" ").toLowerCase();
   if (!value) return 0;
-  const signals = ["eu", "minha", "meu", "preciso", "comecei", "vou", "ajudou", "funcionou", "verdade", "obrigado", "parte 2", "continua"];
+  const signals = [
+    "eu",
+    "minha",
+    "meu",
+    "preciso",
+    "comecei",
+    "vou",
+    "ajudou",
+    "funcionou",
+    "verdade",
+    "obrigado",
+    "parte 2",
+    "continua",
+  ];
   return fixed(Math.min(1, signals.filter((signal) => value.includes(signal)).length / 5), 2);
 }
 
 function scoreCandidate(item) {
-  const velocity = Math.min(1.5, Math.log10(Math.max(1, item.views_per_day)) / 4 * 1.5);
-  const breakout = Math.min(1.5, Math.log10(Math.max(1, item.views_per_subscriber || 1)) / 2 * 0.75 + Math.min(0.75, (item.outperformance_vs_channel || 0) / 4));
+  const velocity = Math.min(1.5, (Math.log10(Math.max(1, item.views_per_day)) / 4) * 1.5);
+  const breakout = Math.min(
+    1.5,
+    (Math.log10(Math.max(1, item.views_per_subscriber || 1)) / 2) * 0.75 +
+      Math.min(0.75, (item.outperformance_vs_channel || 0) / 4),
+  );
   const engagement = Math.min(1, item.comments_per_1k_views / 8);
   const comments = Math.min(1, item.comment_signal_score || 0);
-  const score = Math.round(Math.max(0, Math.min(5, velocity + breakout + engagement + comments)) * 2) / 2;
+  const score =
+    Math.round(Math.max(0, Math.min(5, velocity + breakout + engagement + comments)) * 2) / 2;
   return {
     market_score: score,
     score_reason: `Velocidade ${fixed(velocity, 1)}/1,5; desempenho relativo ${fixed(breakout, 1)}/1,5; engajamento ${fixed(engagement, 1)}/1; sinal em comentários ${fixed(comments, 1)}/1. Heurística factual, não mede retenção nem vendas.`,
@@ -196,7 +215,11 @@ function apiError(payload) {
       message: "Os comentários deste vídeo estão desativados.",
     };
   }
-  if (["quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(reason)) {
+  if (
+    ["quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"].includes(
+      reason,
+    )
+  ) {
     return {
       code: "RATE_LIMIT",
       retryable: true,
@@ -256,7 +279,8 @@ function makeYouTubeClient(keys, signal) {
       const error = apiError(payload);
       const quotaResponse =
         error.quota ||
-        ([403, 429].includes(response.status) && /quota|dailylimit|ratelimit/.test(JSON.stringify(payload).toLowerCase()));
+        ([403, 429].includes(response.status) &&
+          /quota|dailylimit|ratelimit/.test(JSON.stringify(payload).toLowerCase()));
       if (quotaResponse) {
         exhausted.add(keyIndex);
         const nextIndex = keys.findIndex((_, index) => !exhausted.has(index));
@@ -283,7 +307,13 @@ async function configuredKeys(services) {
   ]);
   return [
     ...new Set(
-      values.flatMap((value) => text(value).split(/[\r\n,]+/).map((item) => item.trim())).filter(Boolean),
+      values
+        .flatMap((value) =>
+          text(value)
+            .split(/[\r\n,]+/)
+            .map((item) => item.trim()),
+        )
+        .filter(Boolean),
     ),
   ];
 }
@@ -328,7 +358,11 @@ function normalizeVideo(item, query, lane, retrievedAt, preferredLanguage) {
     outperformance_vs_channel: 0,
     comment_signal_score: 0,
     comment_samples: "",
-    thumbnail_url: text(snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url),
+    thumbnail_url: text(
+      snippet.thumbnails?.high?.url ||
+        snippet.thumbnails?.medium?.url ||
+        snippet.thumbnails?.default?.url,
+    ),
     hook_pattern: hookPattern(snippet.title),
     market_score: 0,
     score_reason: "Ainda não classificado.",
@@ -395,7 +429,9 @@ export async function execute(request, services) {
   if (publishedWithinDays < 1 || publishedWithinDays > 365)
     return invalidConfiguration("published_within_days deve estar entre 1 e 365.");
   if (maxResults < 1 || maxResults > MAX_RESULTS_PER_QUERY)
-    return invalidConfiguration(`max_results_per_query deve estar entre 1 e ${MAX_RESULTS_PER_QUERY}.`);
+    return invalidConfiguration(
+      `max_results_per_query deve estar entre 1 e ${MAX_RESULTS_PER_QUERY}.`,
+    );
   if (candidateTarget < 50 || candidateTarget > MAX_CANDIDATES)
     return invalidConfiguration(`candidate_target deve estar entre 50 e ${MAX_CANDIDATES}.`);
   if (maxSearchPages < 1 || maxSearchPages > MAX_SEARCH_PAGES)
@@ -443,7 +479,11 @@ export async function execute(request, services) {
   const plannedQueries = [
     ...coreQueries.map((query) => ({ query, lane: "core" })),
     ...bridgeQueries.map((query) => ({ query, lane: "niche_bending" })),
-    ...crossLanguageQueries.map(({ language, query }) => ({ query, lane: "niche_bending", language })),
+    ...crossLanguageQueries.map(({ language, query }) => ({
+      query,
+      lane: "niche_bending",
+      language,
+    })),
   ];
   const found = new Map();
   const client = makeYouTubeClient(keys, services.signal);
@@ -529,12 +569,19 @@ export async function execute(request, services) {
           excludedTitleTerms,
         }),
       )
-      .sort((left, right) => right.views_per_day - left.views_per_day || right.view_count - left.view_count);
+      .sort(
+        (left, right) =>
+          right.views_per_day - left.views_per_day || right.view_count - left.view_count,
+      );
 
     const channelIds = [...new Set(eligible.map((item) => item.channel_id).filter(Boolean))];
     const channelSubscribers = new Map();
     for (const group of chunks(channelIds, 50)) {
-      const channels = await client.request("/channels", { part: "statistics", id: group.join(","), maxResults: 50 });
+      const channels = await client.request("/channels", {
+        part: "statistics",
+        id: group.join(","),
+        maxResults: 50,
+      });
       for (const channel of Array.isArray(channels.items) ? channels.items : []) {
         channelSubscribers.set(text(channel.id), number(channel.statistics?.subscriberCount));
       }
@@ -548,12 +595,22 @@ export async function execute(request, services) {
 
     const deepReview = eligible
       .slice()
-      .sort((left, right) => right.views_per_day - left.views_per_day || right.views_per_subscriber - left.views_per_subscriber)
+      .sort(
+        (left, right) =>
+          right.views_per_day - left.views_per_day ||
+          right.views_per_subscriber - left.views_per_subscriber,
+      )
       .slice(0, deepReviewLimit);
     for (const item of deepReview) {
       let thread = { items: [] };
       try {
-        thread = await client.request("/commentThreads", { part: "snippet", videoId: item.video_id, order: "relevance", maxResults: 10, textFormat: "plainText" });
+        thread = await client.request("/commentThreads", {
+          part: "snippet",
+          videoId: item.video_id,
+          order: "relevance",
+          maxResults: 10,
+          textFormat: "plainText",
+        });
       } catch (error) {
         if (error?.code !== "COMMENTS_DISABLED") throw error;
       }
@@ -567,22 +624,47 @@ export async function execute(request, services) {
 
     const benchmark = deepReview.slice(0, MAX_CHANNEL_BENCHMARKS);
     for (const item of benchmark) {
-      const recent = await client.request("/search", { part: "snippet", channelId: item.channel_id, type: "video", order: "date", maxResults: 5 });
-      const recentIds = (Array.isArray(recent.items) ? recent.items : []).map((entry) => text(entry.id?.videoId)).filter(Boolean);
+      const recent = await client.request("/search", {
+        part: "snippet",
+        channelId: item.channel_id,
+        type: "video",
+        order: "date",
+        maxResults: 5,
+      });
+      const recentIds = (Array.isArray(recent.items) ? recent.items : [])
+        .map((entry) => text(entry.id?.videoId))
+        .filter(Boolean);
       if (!recentIds.length) continue;
-      const videos = await client.request("/videos", { part: "snippet,statistics", id: recentIds.join(","), maxResults: 50 });
+      const videos = await client.request("/videos", {
+        part: "snippet,statistics",
+        id: recentIds.join(","),
+        maxResults: 50,
+      });
       const performance = (Array.isArray(videos.items) ? videos.items : []).map((video) => {
         const published = text(video.snippet?.publishedAt) || retrievedAt;
-        return number(video.statistics?.viewCount) / Math.max(1, (Date.parse(retrievedAt) - Date.parse(published)) / 86_400_000);
+        return (
+          number(video.statistics?.viewCount) /
+          Math.max(1, (Date.parse(retrievedAt) - Date.parse(published)) / 86_400_000)
+        );
       });
       item.channel_median_views_per_day = fixed(median(performance));
-      item.outperformance_vs_channel = fixed(item.views_per_day / Math.max(1, item.channel_median_views_per_day));
+      item.outperformance_vs_channel = fixed(
+        item.views_per_day / Math.max(1, item.channel_median_views_per_day),
+      );
     }
 
     for (const item of deepReview) Object.assign(item, scoreCandidate(item));
-    const ranked = deepReview.sort((left, right) => right.market_score - left.market_score || right.views_per_day - left.views_per_day);
-    const bending = ranked.filter((item) => item.research_lane === "niche_bending").slice(0, minimumBendingTop);
-    const snapshot = [...bending, ...ranked.filter((item) => !bending.includes(item))].slice(0, topLimit);
+    const ranked = deepReview.sort(
+      (left, right) =>
+        right.market_score - left.market_score || right.views_per_day - left.views_per_day,
+    );
+    const bending = ranked
+      .filter((item) => item.research_lane === "niche_bending")
+      .slice(0, minimumBendingTop);
+    const snapshot = [...bending, ...ranked.filter((item) => !bending.includes(item))].slice(
+      0,
+      topLimit,
+    );
 
     return {
       status: "success",
@@ -600,8 +682,16 @@ export async function execute(request, services) {
       },
       usage: {
         provider: "YouTube Data API",
-        inputUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls + client.usage.channelCalls + client.usage.commentCalls,
-        totalUnits: client.usage.searchCalls * 100 + client.usage.detailsCalls + client.usage.channelCalls + client.usage.commentCalls,
+        inputUnits:
+          client.usage.searchCalls * 100 +
+          client.usage.detailsCalls +
+          client.usage.channelCalls +
+          client.usage.commentCalls,
+        totalUnits:
+          client.usage.searchCalls * 100 +
+          client.usage.detailsCalls +
+          client.usage.channelCalls +
+          client.usage.commentCalls,
         unit: "estimated quota units",
       },
       logs: [

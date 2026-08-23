@@ -31,6 +31,8 @@ function req(o = {}) {
 }
 test("manifesto possui oito capabilities e permissões mínimas", () => {
   assert.equal(manifest.id, "local.contentflow.gemini-browser-studio");
+  assert.equal(manifest.version, "0.1.12");
+  assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
   assert.equal(manifest.capabilities.length, 8);
   assert.deepEqual(
     manifest.capabilities.map((x) => x.id),
@@ -61,6 +63,12 @@ test("separa contas por perfil dedicado", () => {
     /gemini-browser-profiles\/canal-a$/,
   );
   assert.notEqual(__test.profilePort(9644, "canal-a"), __test.profilePort(9644, "canal-b"));
+  assert.equal(
+    __test.runtimeProfilePath({}, "canal-a", {
+      getWorkspacePath: (relativePath) => `workspace/${relativePath}`,
+    }),
+    "workspace/canal-a",
+  );
 });
 test("expande placeholders", () =>
   assert.equal(

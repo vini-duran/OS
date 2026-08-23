@@ -36,7 +36,7 @@ Não há rotação automática de contas. Limite de uso, cobrança, reautentica�
 4. Revise e conceda `network`, `filesystem:read`, `filesystem:write` e `process`. A leitura alcança somente arquivos liberados pelo núcleo.
 5. Vincule a capability correspondente ao bloco `BUSCAR`, `ESCOLHER`, `CRIAR` ou `VALIDAR`.
 
-No primeiro uso, deixe `startMinimized=false`. O Chrome dedicado será aberto em `https://claude.ai/new`; faça login manualmente. Com `keepBrowserOpen=true`, a sessão fica disponível para as próximas execuções.
+Depois de informar o perfil no construtor do Método, use **Salvar perfil**. O Chrome dedicado abre em `https://claude.ai/new`, aguarda o login e fecha depois que a área real do chat for validada.
 
 ## Capabilities
 
@@ -96,12 +96,12 @@ Cada capability possui a configuração de bloco `accountProfile`. Use um alias 
 O plugin deriva perfis separados em:
 
 ```text
-~/.contentflow-os/claude-browser-profiles/canal-a
-~/.contentflow-os/claude-browser-profiles/canal-b
-~/.contentflow-os/claude-browser-profiles/canal-c
+<workspace-do-plugin>/canal-a
+<workspace-do-plugin>/canal-b
+<workspace-do-plugin>/canal-c
 ```
 
-No primeiro bloco executado com um alias, o Chrome correspondente abre em primeiro plano. Faça login manualmente na conta Claude daquele canal. Nas próximas execuções, o Método escolhe automaticamente a conta pelo alias configurado, sem ler ou exportar cookies.
+Antes da primeira execução com um alias, use **Salvar perfil** no bloco do Método e faça login manualmente na conta Claude daquele canal. Nas execuções seguintes, o Método escolhe a conta pelo alias configurado, sem ler ou exportar cookies. Um perfil não preparado é recusado antes de qualquer prompt ser preenchido.
 
 O ContentFlow OS v0.3 ainda envia `settings: {}` para plugins comunitários, portanto a página de Plugins não mantém hoje uma lista dinâmica de contas. A escolha por `accountProfile` no bloco é a solução compatível com a API v1 atual e fica naturalmente no nível do Método/canal. `settingsSchema` permanece preparado para um futuro suporte do núcleo a settings persistentes.
 
@@ -140,7 +140,7 @@ Esses templates aceitam `{{PROMPT_BASE}}`, `{{BLOCK}}`, `{{BLOCK_JSON}}`, `{{BLO
 - Quando uma capability recebe anexos, os arquivos autorizados são enviados ao Claude web. O plugin não aceita caminhos arbitrários nem URLs remotas como substituto de `StoredFile`.
 - Efeitos externos: criação de conversa e mensagens na conta Claude conectada.
 - Custo: depende do plano e dos limites da conta Claude.
-- Pasta-base padrão: `~/.contentflow-os/claude-browser-profiles`.
+- Pasta-base padrão: workspace interno e autorizado do plugin; uma pasta existente pode ser conectada na Central de Plugins.
 - Porta CDP base: `9444`, limitada a `127.0.0.1`; cada alias recebe uma porta derivada estável para permitir perfis separados.
 - Logs redigidos não incluem prompts, respostas, cookies ou tokens.
 

@@ -1,6 +1,6 @@
 # Google Flow Browser Images — ContentFlow OS
 
-Versão **1.0.0**.
+Versão **1.0.3**.
 
 Plugin de geração de imagens reais no Google Flow por meio de um Chrome dedicado. A versão 1.0 oferece perfis de conta separados, seleção de modelo, fallback entre modelos da mesma conta, proporção configurável, imagens de referência e captura de múltiplas variantes.
 
@@ -12,12 +12,12 @@ O plugin nunca cria imagens substitutas. CAPTCHA, sessão expirada, cota geral, 
 
 `accountProfile` identifica um perfil persistente do Chrome:
 
-- `default` preserva o perfil legado em `~/.contentflow-os/google-flow-chrome-profile`;
-- qualquer outra chave válida usa `~/.contentflow-os/google-flow-chrome-profiles/<accountProfile>`;
+- `default` usa a raiz da pasta de trabalho autorizada do plugin;
+- qualquer outra chave válida usa `<workspace-do-plugin>/<accountProfile>`;
 - configure a mesma chave nos blocos de um canal para reutilizar conta, projetos, personagens e referências;
 - use chaves diferentes entre canais quando quiser bases separadas.
 
-O primeiro uso de cada perfil abre uma janela para login. O plugin não copia cookies e não alterna contas automaticamente quando há limite ou cota.
+Depois de informar o perfil no construtor do Método, use **Salvar perfil**. O plugin abre uma janela para login, valida a conta quando a lista de projetos ou o editor aparece e fecha o navegador. A execução recusa perfis ainda não preparados. O plugin não copia cookies e não alterna contas automaticamente quando há limite ou cota.
 
 ## Modelos
 

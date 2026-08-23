@@ -53,7 +53,11 @@ try {
       return json({ items: [{ id: "channel-1", statistics: { subscriberCount: "1000" } }] });
     }
     if (parsed.pathname.endsWith("/commentThreads")) {
-      return json({ items: [{ snippet: { topLevelComment: { snippet: { textDisplay: "Eu comecei e funcionou" } } } }] });
+      return json({
+        items: [
+          { snippet: { topLevelComment: { snippet: { textDisplay: "Eu comecei e funcionou" } } } },
+        ],
+      });
     }
     if (parsed.pathname.endsWith("/videos")) {
       return json({

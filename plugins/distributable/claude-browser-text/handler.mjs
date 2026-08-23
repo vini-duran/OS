@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 
@@ -600,6 +600,30 @@ function profilePathFor(settings, profileName) {
   const base = settings?.profilesBasePath?.trim?.() || defaultProfilesBasePath();
   return join(base, profileName);
 }
+function runtimeProfilePath(settings, profileName, services) {
+  if (settings?.profilePath?.trim?.() || settings?.profilesBasePath?.trim?.()) {
+    return profilePathFor(settings, profileName);
+  }
+  return services.getWorkspacePath(profileName);
+}
+function profileMarkerPath(path) {
+  return join(path, ".contentflow-profile-ready.json");
+}
+async function profileIsPrepared(path, name) {
+  try {
+    const marker = JSON.parse(await readFile(profileMarkerPath(path), "utf8"));
+    return marker?.provider === CLAUDE_HOST && marker?.profile === name;
+  } catch {
+    return false;
+  }
+}
+async function markProfilePrepared(path, name) {
+  await writeFile(
+    profileMarkerPath(path),
+    JSON.stringify({ provider: CLAUDE_HOST, profile: name, preparedAt: new Date().toISOString() }),
+    "utf8",
+  );
+}
 
 function profilePort(basePort, profileName) {
   if (profileName === "default") return basePort;
@@ -1046,7 +1070,8 @@ async function waitForPrompt(client, sessionId, waitMs, signal) {
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     last = await pageState(client, sessionId);
-    if (last?.prompt) return last;
+    if (last?.url?.startsWith(`https://${CLAUDE_HOST}/`) && last?.prompt && !last?.login)
+      return last;
     await sleep(750, signal);
   }
   if (last?.captcha)
@@ -1070,6 +1095,11 @@ async function waitForPrompt(client, sessionId, waitMs, signal) {
 
 async function attachFiles(client, sessionId, attachments, signal) {
   if (!attachments.length) return;
+  const baselinePreviewCount = await evaluate(
+    client,
+    sessionId,
+    `(() => [...document.querySelectorAll('img')].filter(el => { const r=el.getBoundingClientRect(); return r.width>40 && r.height>40; }).length)()`,
+  );
   await client.send("DOM.enable", {}, sessionId);
   const { root } = await client.send("DOM.getDocument", { depth: 1, pierce: true }, sessionId);
   const { nodeIds = [] } = await client.send(
@@ -1096,9 +1126,14 @@ async function attachFiles(client, sessionId, attachments, signal) {
     const state = await evaluate(
       client,
       sessionId,
-      `(() => { ${PAGE_HELPERS}; const body=(document.body?.innerText||'').toLowerCase(); return {body, prompt:!!cfPrompt()}; })()`,
+      `(() => { ${PAGE_HELPERS}; const body=(document.body?.innerText||'').toLowerCase(); const previewCount=[...document.querySelectorAll('img')].filter(el => { const r=el.getBoundingClientRect(); return r.width>40 && r.height>40; }).length; return {body, prompt:!!cfPrompt(), previewCount}; })()`,
     );
-    if (state?.prompt && expected.every((name) => state.body.includes(name))) return;
+    if (
+      state?.prompt &&
+      (expected.every((name) => state.body.includes(name)) ||
+        Number(state.previewCount) > Number(baselinePreviewCount))
+    )
+      return;
     if (
       /upload failed|falha.*upload|arquivo.*grande|file.*large/i.test(String(state?.body ?? ""))
     ) {
@@ -1184,28 +1219,36 @@ async function setPrompt(client, sessionId, prompt, settings, signal) {
   }
 }
 
-async function clickSend(client, sessionId) {
-  const point = await evaluate(
-    client,
-    sessionId,
-    `(() => { ${PAGE_HELPERS}; const buttons=[...document.querySelectorAll('button')].filter(cfVisible); const button=buttons.find(el => /send message|enviar mensagem|send$/i.test(cfText(el)) && !el.disabled && el.getAttribute('aria-disabled')!=='true'); if(!button)return null; button.scrollIntoView({block:'center'}); const r=button.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`,
-  );
+async function clickSend(client, sessionId, signal) {
+  const deadline = Date.now() + 10_000;
+  let point;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    point = await evaluate(
+      client,
+      sessionId,
+      `(() => { ${PAGE_HELPERS}; const buttons=[...document.querySelectorAll('button')].filter(cfVisible); const button=buttons.find(el => /send message|enviar mensagem|send$/i.test(cfText(el)) && !el.disabled && el.getAttribute('aria-disabled')!=='true'); if(!button)return null; button.scrollIntoView({block:'center'}); const r=button.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2}; })()`,
+    );
+    if (point) break;
+    await sleep(200, signal);
+  }
   if (!point)
     throw codedError(
       "OUTPUT_VALIDATION_FAILED",
       "O botão Enviar do Claude não ficou disponível.",
       true,
     );
-  await client.send(
-    "Input.dispatchMouseEvent",
-    { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 },
+  const clicked = await evaluate(
+    client,
     sessionId,
+    `(() => { ${PAGE_HELPERS}; const button=[...document.querySelectorAll('button')].filter(cfVisible).find(el => /send message|enviar mensagem|send$/i.test(cfText(el)) && !el.disabled && el.getAttribute('aria-disabled')!=='true'); if(!button)return false; button.click(); return true; })()`,
   );
-  await client.send(
-    "Input.dispatchMouseEvent",
-    { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 },
-    sessionId,
-  );
+  if (!clicked)
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O botão Enviar do Claude não aceitou o clique.",
+      true,
+    );
 }
 
 async function ensureWebSearchEnabled(client, sessionId, signal) {
@@ -1331,12 +1374,82 @@ async function generatePart(client, sessionId, prompt, settings, signal) {
   const before = await responseState(client, sessionId);
   const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
   await setPrompt(client, sessionId, prompt, settings, signal);
-  await clickSend(client, sessionId);
+  await clickSend(client, sessionId, signal);
   const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
   return await waitForResponse(client, sessionId, baselineCount, timeoutSeconds * 1000, signal);
 }
 
+async function configureProfile(request, services) {
+  const settings = request?.settings ?? {};
+  let profileName, profilePath, port;
+  try {
+    profileName = normalizeAccountProfile(request?.configuration?.accountProfile);
+    profilePath = runtimeProfilePath(settings, profileName, services);
+    port = profilePort(
+      clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000),
+      profileName,
+    );
+    assertDedicatedProfilePath(profilePath);
+  } catch (error) {
+    return resultError(
+      error?.code || "INVALID_CONFIGURATION",
+      error?.message || "Perfil inválido.",
+    );
+  }
+  if (request?.invocation?.action === "status") {
+    return {
+      status: "success",
+      values: { ready: await profileIsPrepared(profilePath, profileName) },
+    };
+  }
+  if (request?.invocation?.action !== "prepare") {
+    return resultError("INVALID_CONFIGURATION", "Ação de configuração de perfil inválida.");
+  }
+
+  let client, child;
+  try {
+    const launched = await launchOrReuseChrome({
+      executables: await resolveChromeExecutables(settings),
+      profilePath,
+      port,
+      startMinimized: false,
+      keepBrowserOpen: false,
+      signal: services.signal,
+    });
+    child = launched.child;
+    client = await new CdpClient(launched.version.webSocketDebuggerUrl).connect(services.signal);
+    const { sessionId } = await attachClaudePage(client, services.signal);
+    await openNewConversation(client, sessionId, services.signal);
+    await waitForPrompt(
+      client,
+      sessionId,
+      clampInteger(settings.interactiveWaitSeconds, 600, 30, 900) * 1000,
+      services.signal,
+    );
+    await markProfilePrepared(profilePath, profileName);
+    return {
+      status: "success",
+      values: { ready: true, message: `Perfil ${profileName} validado no Claude.` },
+    };
+  } catch (error) {
+    return resultError(
+      error?.code || "AUTHENTICATION_FAILED",
+      error?.message || "Não foi possível validar o login do Claude.",
+      Boolean(error?.retryable),
+    );
+  } finally {
+    try {
+      await client?.send("Browser.close");
+    } catch {}
+    client?.close();
+    try {
+      child?.kill();
+    } catch {}
+  }
+}
+
 export async function execute(request, services) {
+  if (request?.invocation?.mode === "configure") return await configureProfile(request, services);
   const settings = request?.settings ?? {};
   const capabilityId = String(request?.capabilityId ?? "generate-text-in-browser");
   const mockResponse = String(settings?.diagnosticMockResponse ?? "").trim();
@@ -1396,7 +1509,7 @@ export async function execute(request, services) {
   let port;
   try {
     profileName = normalizeAccountProfile(configuration.accountProfile);
-    profilePath = profilePathFor(settings, profileName);
+    profilePath = runtimeProfilePath(settings, profileName, services);
     const basePort = clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000);
     port = profilePort(basePort, profileName);
   } catch (error) {
@@ -1420,6 +1533,12 @@ export async function execute(request, services) {
   try {
     const attachments = await resolveAttachments(request, services);
     assertDedicatedProfilePath(profilePath);
+    if (!(await profileIsPrepared(profilePath, profileName))) {
+      throw codedError(
+        "AUTHENTICATION_FAILED",
+        `O perfil ${profileName} ainda não foi salvo. Abra a configuração do Método e use Salvar perfil antes de executar.`,
+      );
+    }
     const executables = await resolveChromeExecutables(settings);
     step(`Preparando perfil ${profileName} para ${parts.length} etapa(s).`);
     const launched = await launchOrReuseChrome({
@@ -1427,7 +1546,7 @@ export async function execute(request, services) {
       profilePath,
       port,
       startMinimized: settings.startMinimized === true,
-      keepBrowserOpen: settings.keepBrowserOpen !== false,
+      keepBrowserOpen: settings.keepBrowserOpen === true,
       signal: services.signal,
     });
     child = launched.child;
@@ -1531,8 +1650,12 @@ export async function execute(request, services) {
       Boolean(error?.retryable),
     );
   } finally {
+    if (settings.keepBrowserOpen !== true)
+      try {
+        await client?.send("Browser.close");
+      } catch {}
     client?.close();
-    if (settings.keepBrowserOpen === false && child) {
+    if (settings.keepBrowserOpen !== true && child) {
       try {
         child.kill();
       } catch {
@@ -1558,7 +1681,10 @@ export const __test = {
   outlineItems,
   parseSelectedItemId,
   parseValidationValues,
+  profileIsPrepared,
+  markProfilePrepared,
   profilePathFor,
+  runtimeProfilePath,
   profilePort,
   searchResponseValues,
   serializeInputs,
