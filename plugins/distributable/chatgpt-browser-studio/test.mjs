@@ -13,6 +13,13 @@ test("mantém a ponte CDP restrita ao loopback e às origens locais", async () =
   assert.match(handler, /--remote-allow-origins=http:\/\/localhost,http:\/\/127\.0\.0\.1/);
 });
 
+test("cada job abre uma conversa nova, sem reutilizar aba existente", async () => {
+  const handler = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+  const attachBody = handler.slice(handler.indexOf("async function attachChatGptPage"), handler.indexOf("const PAGE_HELPERS"));
+  assert.match(attachBody, /Target\.createTarget/);
+  assert.doesNotMatch(attachBody, /Target\.getTargets/);
+});
+
 function request(overrides = {}) {
   return {
     capabilityId: overrides.capabilityId ?? "generate-text-in-browser",

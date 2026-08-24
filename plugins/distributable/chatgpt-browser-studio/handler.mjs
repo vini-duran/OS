@@ -770,14 +770,10 @@ async function evaluate(client, sessionId, expression) {
 }
 
 async function attachChatGptPage(client, signal) {
-  const { targetInfos = [] } = await client.send("Target.getTargets");
-  let target = targetInfos.find(
-    (item) => item.type === "page" && String(item.url).includes(CHATGPT_HOST),
-  );
-  if (!target) {
-    const created = await client.send("Target.createTarget", { url: CHATGPT_NEW_URL });
-    target = { targetId: created.targetId };
-  }
+  // Never reuse an existing ChatGPT tab: it may belong to a previous thumbnail,
+  // research or manual conversation. Each ContentFlow job gets its own target.
+  const created = await client.send("Target.createTarget", { url: CHATGPT_NEW_URL });
+  const target = { targetId: created.targetId };
   const { sessionId } = await client.send("Target.attachToTarget", {
     targetId: target.targetId,
     flatten: true,

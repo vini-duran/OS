@@ -59,6 +59,8 @@ No macOS, a ponte CDP do plugin é limitada ao loopback (`127.0.0.1`) e permite 
 
 Um Método local pode usar um perfil Chrome existente por `chromeUserDataDir` + `chromeProfileDirectory`; esses caminhos não devem ser exportados nem commitados. Feche completamente o Chrome que usa esse perfil antes da execução: o plugin nunca copia cookies, tokens ou o perfil.
 
+Cada job abre uma conversa nova em aba própria. O plugin nunca reutiliza a aba de Thumbnail, Pesquisa ou uma conversa manual anterior.
+
 ## Dados, efeitos e custos
 
 - Provedor: OpenAI / ChatGPT web.
