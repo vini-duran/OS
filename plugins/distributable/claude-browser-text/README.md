@@ -1,6 +1,10 @@
 # Claude Browser Studio
 
-Versão **0.3.0**.
+Versão **0.3.1**.
+
+Quando um Método não serializar `promptTemplate`, o plugin constrói o prompt com as
+instruções do bloco e o contexto de entrada. Isso impede a execução de enviar apenas
+a instrução de formato ao Claude.
 
 Plugin independente para ContentFlow OS que converte a lógica operacional de `gerar_roteiros.py` e `extrair_cookies_chrome.py` em seis capabilities pela interface web do Claude: texto/roteiros, pesquisa, escolha, validação, visão e análise de documentos.
 

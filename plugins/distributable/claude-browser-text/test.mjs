@@ -114,6 +114,20 @@ test("monta uma resposta genérica", () => {
   assert.match(parts[0], /texto puro/i);
 });
 
+test("usa instruções e contexto quando o método não serializa promptTemplate", () => {
+  const parts = __test.buildParts(
+    request({
+      configuration: { promptTemplate: "" },
+      inputs: { content: "Rascunho para aprimorar" },
+      context: { block: { instructions: "Reescreva o rascunho com mais clareza." } },
+    }),
+  );
+  assert.equal(parts.length, 1);
+  assert.match(parts[0], /Reescreva o rascunho com mais clareza/);
+  assert.match(parts[0], /Rascunho para aprimorar/);
+  assert.equal((parts[0].match(/INSTRUÇÃO OBRIGATÓRIA DE FORMATO/g) ?? []).length, 1);
+});
+
 test("preserva o roteiro legado em três partes", () => {
   const parts = __test.buildParts(
     request({ configuration: { generationMode: "legacy_script_3_parts" } }),

@@ -165,7 +165,24 @@ function plainTextInstruction(enabled) {
 
 function buildParts(request) {
   const configuration = request?.configuration ?? {};
-  const base = expandTemplate(configuration.promptTemplate, request);
+  const configuredTemplate = String(configuration.promptTemplate ?? "").trim();
+  const base = configuredTemplate
+    ? expandTemplate(configuredTemplate, request)
+    : [
+        "TAREFA:",
+        String(request?.context?.block?.instructions ?? "").trim(),
+        "CONTEXTO DE ENTRADA:",
+        serializeInputs(request?.inputs),
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
+  if (!base) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "O bloco não possui instruções nem contexto para criar o prompt.",
+    );
+  }
   const style = String(configuration.languageInstruction ?? "").trim();
   const format = plainTextInstruction(configuration.plainTextOnly !== false);
   const suffix = [format, style].filter(Boolean).join("\n\n");
