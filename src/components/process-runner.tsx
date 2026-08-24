@@ -5,12 +5,14 @@ import {
   Bot,
   Check,
   CheckCircle2,
+  ClipboardCopy,
   Code2,
   LoaderCircle,
   Play,
   RotateCcw,
   Square,
   UserRound,
+  ZoomIn,
 } from "lucide-react";
 import { RuntimeFieldsForm } from "@/components/runtime-fields-form";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
@@ -19,6 +21,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   PROCESS_META,
   PROCESS_ORDER,
@@ -234,7 +243,7 @@ export function ProcessRunner({
               <AlertTriangle className="mr-1.5 size-3.5" /> Configurar método
             </Button>
           ) : !execution ? (
-            <Button size="sm" onClick={start} className="gradient-brand text-white">
+            <Button size="sm" onClick={start} className="gradient-brand text-primary-foreground">
               <Play className="mr-1.5 size-3.5 fill-current" /> Executar processo
             </Button>
           ) : (
@@ -324,7 +333,7 @@ export function ProcessRunner({
   );
 }
 
-function ProjectDeliveriesPanel({ executions }: { executions: ProcessExecution[] }) {
+export function ProjectDeliveriesPanel({ executions }: { executions: ProcessExecution[] }) {
   const deliveries = activeProjectDeliveries(executions).sort((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
@@ -382,6 +391,23 @@ function ProjectDeliveriesPanel({ executions }: { executions: ProcessExecution[]
                   value={deliveryRuntimeValue(delivery)}
                   compact
                 />
+                {(["text", "textarea", "url"] as HumanFieldType[]).includes(delivery.type) &&
+                typeof deliveryRuntimeValue(delivery) === "string" ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(deliveryRuntimeValue(delivery) as string);
+                      toast.success("Entrega copiada", {
+                        description: "O conteúdo foi copiado para a área de transferência.",
+                      });
+                    }}
+                  >
+                    <ClipboardCopy className="size-3.5" /> Copiar
+                  </Button>
+                ) : null}
                 <div className="space-y-1">
                   {delivery.items.map((item) => (
                     <div
@@ -931,6 +957,7 @@ function ValidationChoiceField({
   values: Record<string, RuntimeValue>;
   onChange: (values: Record<string, RuntimeValue>) => void;
 }) {
+  const [preview, setPreview] = useState<StoredFile | null>(null);
   const config = block.validation;
   const targetBlock = execution.methodSnapshot.blocks.find(
     (candidate) => candidate.id === config?.targetBlockId,
@@ -993,10 +1020,64 @@ function ValidationChoiceField({
         {fieldRequired && <span className="ml-1 text-destructive">*</span>}
       </Label>
       {options.length ? (
-        <div className="grid gap-2 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {options.map((option) => {
             const key = validationOptionKey(option);
             const selected = selectedKeys.has(key);
+            const isImage =
+              isStoredFileOption(option) && option.mimeType.startsWith("image/") && option.url;
+
+            if (isImage) {
+              return (
+                <div
+                  key={key}
+                  className={cn(
+                    "overflow-hidden rounded-xl border bg-background/30 transition",
+                    selected
+                      ? "border-brand/70 ring-2 ring-brand/20"
+                      : "border-border/70 hover:border-brand/40",
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setPreview(option)}
+                    className="group relative block w-full overflow-hidden bg-black/20 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                    aria-label={`Ampliar ${option.name}`}
+                  >
+                    <img
+                      src={option.url}
+                      alt={option.name}
+                      className="aspect-video w-full object-contain transition duration-200 group-hover:scale-[1.015]"
+                      loading="lazy"
+                    />
+                    <span className="absolute inset-x-0 bottom-0 flex items-center justify-end bg-gradient-to-t from-black/70 via-black/10 to-transparent p-3 text-xs text-white opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                      <ZoomIn className="mr-1.5 size-3.5" /> Ampliar
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggle(option)}
+                    className="flex w-full items-center gap-2 border-t border-border/60 px-3 py-2.5 text-left text-xs transition hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  >
+                    <span
+                      className={cn(
+                        "grid size-4 shrink-0 place-items-center border",
+                        multiple ? "rounded" : "rounded-full",
+                        selected
+                          ? "border-brand bg-brand text-primary-foreground"
+                          : "border-border",
+                      )}
+                    >
+                      {selected && <Check className="size-3" />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium">{option.name}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {selected ? "Selecionada" : "Selecionar"}
+                    </span>
+                  </button>
+                </div>
+              );
+            }
             return (
               <button
                 key={key}
@@ -1014,7 +1095,7 @@ function ValidationChoiceField({
                     className={cn(
                       "mt-0.5 grid size-4 shrink-0 place-items-center border",
                       multiple ? "rounded" : "rounded-full",
-                      selected ? "border-brand bg-brand text-white" : "border-border",
+                      selected ? "border-brand bg-brand text-primary-foreground" : "border-border",
                     )}
                   >
                     {selected && <Check className="size-3" />}
@@ -1036,6 +1117,23 @@ function ValidationChoiceField({
           O bloco validado não produziu opções nesta saída.
         </p>
       )}
+      <Dialog open={!!preview} onOpenChange={(open) => !open && setPreview(null)}>
+        <DialogContent className="max-h-[94vh] max-w-[min(96vw,1280px)] overflow-y-auto p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>{preview?.name ?? "Visualização ampliada"}</DialogTitle>
+            <DialogDescription>
+              Compare em tamanho amplo antes de selecionar a thumbnail final.
+            </DialogDescription>
+          </DialogHeader>
+          {preview?.url ? (
+            <img
+              src={preview.url}
+              alt={preview.name}
+              className="mx-auto max-h-[76vh] w-full rounded-lg bg-black/20 object-contain"
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

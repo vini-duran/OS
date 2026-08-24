@@ -17,6 +17,9 @@ test("aceita somente um plano diário limitado e com capability explícita", () 
     region: "MX",
     minDurationSeconds: 180,
     maxResults: 20,
+    maxSearchCalls: 10,
+    maxPagesPerQuery: 1,
+    targetRawVideos: 200,
     maxCommentVideoSamples: 10,
     maxEstimatedQuotaUnits: 1100,
     queries: [

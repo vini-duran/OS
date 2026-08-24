@@ -376,7 +376,11 @@ function EditCollection({ collection }: { collection: StrategicCollection }) {
 
           <CollectionFieldEditor fields={fields} onChange={setFields} onUpdate={updateField} />
 
-          <Button className="w-full gradient-brand text-white" disabled={!valid} onClick={save}>
+          <Button
+            className="w-full gradient-brand text-primary-foreground"
+            disabled={!valid}
+            onClick={save}
+          >
             Salvar alterações
           </Button>
         </div>
@@ -424,7 +428,7 @@ function NewCollection({ channelId }: { channelId: string }) {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" className="gap-1.5 gradient-brand text-white">
+        <Button size="sm" className="gap-1.5 gradient-brand text-primary-foreground">
           <Plus className="size-4" /> Adicionar coleção
         </Button>
       </DialogTrigger>
@@ -517,7 +521,11 @@ function NewCollection({ channelId }: { channelId: string }) {
             </div>
           </div>
 
-          <Button className="w-full gradient-brand text-white" disabled={!valid} onClick={save}>
+          <Button
+            className="w-full gradient-brand text-primary-foreground"
+            disabled={!valid}
+            onClick={save}
+          >
             Criar coleção
           </Button>
         </div>
@@ -777,7 +785,11 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
               </div>
             );
           })}
-          <Button className="w-full gradient-brand text-white" disabled={!valid} onClick={save}>
+          <Button
+            className="w-full gradient-brand text-primary-foreground"
+            disabled={!valid}
+            onClick={save}
+          >
             Adicionar item
           </Button>
         </div>

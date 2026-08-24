@@ -1077,7 +1077,7 @@ function PluginSourceDialog({ plugin }: { plugin: DiscoveredPlugin }) {
                 ))}
               </div>
             </aside>
-            <div className="min-w-0 bg-[#080d18]">
+            <div className="min-w-0 bg-[#161420]">
               <div className="border-b border-white/10 px-4 py-2 font-mono text-xs text-slate-400">
                 {selected?.path}
               </div>

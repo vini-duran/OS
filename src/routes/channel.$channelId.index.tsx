@@ -5,8 +5,6 @@ import {
   MoreHorizontal,
   Search,
   ArrowRight,
-  Calendar,
-  AlertTriangle,
   LayoutGrid,
   Table as TableIcon,
   FolderKanban,
@@ -39,8 +37,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { PROCESS_META, type Channel, type Project } from "@/lib/domain";
-import { removeProject, syncChannelFromYouTube, useChannel, useProjects } from "@/lib/store";
+import { PROCESS_META, type Channel, type ProcessExecution, type Project } from "@/lib/domain";
+import {
+  removeProject,
+  syncChannelFromYouTube,
+  useChannel,
+  useChannelExecutions,
+  useProjects,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/channel/$channelId/")({ component: ChannelWorkspace });
@@ -49,6 +53,7 @@ function ChannelWorkspace() {
   const { channelId } = Route.useParams();
   const channel = useChannel(channelId);
   const projects = useProjects(channelId);
+  const executions = useChannelExecutions(channelId);
   const [view, setView] = useState<"cards" | "table">("cards");
   const [search, setSearch] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
@@ -58,6 +63,22 @@ function ChannelWorkspace() {
     const q = search.toLowerCase();
     return projects.filter((p) => p.title.toLowerCase().includes(q));
   }, [projects, search]);
+  const productionSummary = useMemo(
+    () => ({
+      running: projects.filter((project) =>
+        ["processing", "configuring"].includes(liveProjectState(project, executions)),
+      ).length,
+      waiting: projects.filter((project) =>
+        ["awaiting_human", "awaiting_review"].includes(liveProjectState(project, executions)),
+      ).length,
+      blocked: projects.filter((project) =>
+        ["blocked", "error"].includes(liveProjectState(project, executions)),
+      ).length,
+      idle: projects.filter((project) => liveProjectState(project, executions) === "not_started")
+        .length,
+    }),
+    [executions, projects],
+  );
 
   if (!channel) return null;
 
@@ -200,27 +221,60 @@ function ChannelWorkspace() {
           </div>
         </div>
 
+        <section
+          aria-label="Resumo da produção"
+          className="overflow-hidden rounded-xl border border-border/70 bg-card"
+        >
+          <div className="grid sm:grid-cols-4">
+            <ProductionMetric label="Em execução" value={productionSummary.running} tone="brand" />
+            <ProductionMetric
+              label="Aguardando você"
+              value={productionSummary.waiting}
+              tone="warning"
+            />
+            <ProductionMetric label="Bloqueadas" value={productionSummary.blocked} tone="error" />
+            <ProductionMetric
+              label="Sem produção iniciada"
+              value={productionSummary.idle}
+              tone="muted"
+            />
+          </div>
+          <p
+            className="border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground"
+            aria-live="polite"
+          >
+            {productionSummaryText(productionSummary)}
+          </p>
+        </section>
+
         {filtered.length === 0 ? (
           <EmptyProjects channelId={channel.id} channelName={channel.name} />
         ) : view === "cards" ? (
-          <ProjectGrid projects={filtered} channel={channel} />
+          <ProjectGrid projects={filtered} executions={executions} />
         ) : (
-          <ProjectTable projects={filtered} channel={channel} />
+          <ProjectTable projects={filtered} channel={channel} executions={executions} />
         )}
       </main>
     </AppShell>
   );
 }
 
-function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Channel }) {
+function ProjectGrid({
+  projects,
+  executions,
+}: {
+  projects: Project[];
+  executions: ProcessExecution[];
+}) {
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       {projects.map((p) => {
         const stage = PROCESS_META[p.currentStage];
+        const state = liveProjectState(p, executions);
         return (
           <div
             key={p.id}
-            className="group relative overflow-hidden rounded-lg bg-card transition-colors hover:bg-surface-2"
+            className="group relative overflow-hidden rounded-xl border border-border/70 bg-card transition-colors hover:border-brand/40 hover:bg-surface-2"
           >
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -246,62 +300,24 @@ function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Chan
               </DropdownMenuContent>
             </DropdownMenu>
             <Link to="/project/$projectId" params={{ projectId: p.id }} className="block">
-              <div
-                className="relative aspect-video overflow-hidden"
-                style={{ backgroundColor: `oklch(0.28 0.025 ${p.thumbHue})` }}
-              >
-                <div className="absolute left-2 top-2">
-                  <ChannelAvatar channel={channel} size="sm" />
+              <div className="flex min-h-32 items-start gap-3 p-4">
+                <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-brand/12 text-brand-soft">
+                  <stage.icon className="size-5" />
                 </div>
-                <div className="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-white">
-                  {p.duration}
+                <div className="min-w-0 flex-1 pr-6">
+                  <h3 className="line-clamp-2 text-sm font-semibold leading-tight">{p.title}</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">Etapa atual: {stage.label}</p>
+                  <p className="mt-3 text-xs text-muted-foreground">{projectNextAction(state)}</p>
                 </div>
-                {p.isLate && (
-                  <div className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-sm bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive">
-                    <AlertTriangle className="size-3" />
-                    Atrasado
-                  </div>
-                )}
+                <ProcessStatus state={state} className="shrink-0" />
               </div>
 
-              <div className="p-3">
-                <h3 className="line-clamp-2 min-h-[2.5rem] text-sm font-semibold leading-tight">
-                  {p.title}
-                </h3>
-
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-1.5 text-xs">
-                    <stage.icon className="size-3.5 text-brand-soft" />
-                    <span className="truncate">{stage.label}</span>
-                  </div>
-                  <ProcessStatus state={p.state} />
+              <div className="border-t border-border/50 px-4 py-3">
+                <div className="mb-1.5 flex justify-between text-[10px] text-muted-foreground">
+                  <span>Progresso da produção</span>
+                  <span className="font-mono text-foreground">{p.progress}%</span>
                 </div>
-
-                <div className="mt-3">
-                  <div className="mb-1 flex justify-between text-[10px] text-muted-foreground">
-                    <span>Progresso</span>
-                    <span className="font-mono text-foreground">{p.progress}%</span>
-                  </div>
-                  <Progress value={p.progress} className="h-1" />
-                </div>
-
-                <footer className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-[11px] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span
-                      className="grid size-5 place-items-center rounded-full bg-secondary font-mono text-[9px] font-bold text-foreground"
-                      title={p.assignee.name}
-                    >
-                      {p.assignee.initials}
-                    </span>
-                    <span className="truncate">{p.assignee.name.split(" ")[0]}</span>
-                  </span>
-                  <span
-                    className={cn("inline-flex items-center gap-1", p.isLate && "text-destructive")}
-                  >
-                    <Calendar className="size-3" />
-                    {p.deadline}
-                  </span>
-                </footer>
+                <Progress value={p.progress} className="h-1.5" />
               </div>
             </Link>
           </div>
@@ -311,7 +327,15 @@ function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Chan
   );
 }
 
-function ProjectTable({ projects, channel }: { projects: Project[]; channel: Channel }) {
+function ProjectTable({
+  projects,
+  channel,
+  executions,
+}: {
+  projects: Project[];
+  channel: Channel;
+  executions: ProcessExecution[];
+}) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border/70 bg-card">
       <Table>
@@ -320,14 +344,15 @@ function ProjectTable({ projects, channel }: { projects: Project[]; channel: Cha
             <TableHead className="text-[11px] uppercase tracking-wider">Projeto</TableHead>
             <TableHead className="text-[11px] uppercase tracking-wider">Etapa</TableHead>
             <TableHead className="text-[11px] uppercase tracking-wider">Progresso</TableHead>
-            <TableHead className="text-[11px] uppercase tracking-wider">Prazo</TableHead>
-            <TableHead className="text-[11px] uppercase tracking-wider">Responsável</TableHead>
+            <TableHead className="text-[11px] uppercase tracking-wider">Estado</TableHead>
+            <TableHead className="text-[11px] uppercase tracking-wider">Próxima ação</TableHead>
             <TableHead className="w-16" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {projects.map((p) => {
             const stage = PROCESS_META[p.currentStage];
+            const state = liveProjectState(p, executions);
             return (
               <TableRow key={p.id} className="border-border/50">
                 <TableCell>
@@ -348,18 +373,11 @@ function ProjectTable({ projects, channel }: { projects: Project[]; channel: Cha
                     <span className="font-mono text-xs text-muted-foreground">{p.progress}%</span>
                   </div>
                 </TableCell>
-                <TableCell
-                  className={cn("text-xs", p.isLate ? "text-destructive" : "text-muted-foreground")}
-                >
-                  {p.deadline}
-                </TableCell>
                 <TableCell>
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span className="grid size-5 place-items-center rounded-full bg-secondary font-mono text-[9px] font-bold text-foreground">
-                      {p.assignee.initials}
-                    </span>
-                    {p.assignee.name.split(" ")[0]}
-                  </span>
+                  <ProcessStatus state={state} />
+                </TableCell>
+                <TableCell className="max-w-64 text-xs text-muted-foreground">
+                  {projectNextAction(state)}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center justify-end gap-1">
@@ -395,6 +413,95 @@ function ProjectTable({ projects, channel }: { projects: Project[]; channel: Cha
   );
 }
 
+function ProductionMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "brand" | "warning" | "muted" | "error";
+}) {
+  const toneClass = {
+    brand: "bg-brand",
+    warning: "bg-warning",
+    muted: "bg-muted-foreground/50",
+    error: "bg-destructive",
+  }[tone];
+  return (
+    <div className="flex items-center gap-3 border-b border-border/60 px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <span className={cn("size-2 rounded-full", toneClass)} />
+      <div>
+        <p className="text-lg font-semibold tabular-nums">{value}</p>
+        <p className="text-[11px] text-muted-foreground">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+function projectNextAction(state: Project["state"]) {
+  switch (state) {
+    case "processing":
+    case "configuring":
+      return "A automação está executando esta etapa.";
+    case "awaiting_human":
+    case "awaiting_review":
+      return "Há uma decisão ou revisão pendente para continuar.";
+    case "not_started":
+      return "Nenhuma produção foi iniciada.";
+    case "blocked":
+      return "Falta conectar ou configurar o executor desta etapa.";
+    case "error":
+      return "A etapa precisa de correção antes de continuar.";
+    case "done":
+    case "approved":
+      return "Esta etapa está concluída; abra o projeto para avançar.";
+    default:
+      return "Abra o projeto para verificar a próxima etapa.";
+  }
+}
+
+function liveProjectState(project: Project, executions: ProcessExecution[]): Project["state"] {
+  const execution = executions.find(
+    (item) => item.projectId === project.id && item.processType === project.currentStage,
+  );
+  if (!execution) return project.state;
+  switch (execution.status) {
+    case "running":
+      return "processing";
+    case "awaiting_human":
+    case "awaiting_output":
+      return "awaiting_human";
+    case "blocked_executor":
+      return "blocked";
+    case "failed":
+      return "error";
+    default:
+      return project.state;
+  }
+}
+
+function productionSummaryText({
+  running,
+  waiting,
+  blocked,
+  idle,
+}: {
+  running: number;
+  waiting: number;
+  blocked: number;
+  idle: number;
+}) {
+  const parts = [];
+  if (running) parts.push(`${running} produção${running === 1 ? "" : "ões"} em execução`);
+  if (waiting) parts.push(`${waiting} aguardando sua ação`);
+  if (blocked) parts.push(`${blocked} bloqueada${blocked === 1 ? "" : "s"} por configuração`);
+  if (idle) parts.push(`${idle} sem iniciar`);
+  return parts.length
+    ? `Resumo atual: ${parts.join(" · ")}.`
+    : "Nenhum projeto de produção ativo no momento.";
+}
+
 function EmptyProjects({ channelId, channelName }: { channelId: string; channelName: string }) {
   return (
     <div className="mx-auto flex max-w-md flex-col items-center py-16 text-center">
@@ -409,7 +516,7 @@ function EmptyProjects({ channelId, channelName }: { channelId: string; channelN
         <NewProjectDialog
           channelId={channelId}
           trigger={
-            <Button className="gap-1.5 gradient-brand text-white">
+            <Button className="gap-1.5 gradient-brand text-primary-foreground">
               <Plus className="size-4" />
               Novo projeto
             </Button>

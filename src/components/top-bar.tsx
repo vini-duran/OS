@@ -42,7 +42,7 @@ export function TopBar({
           {actions}
 
           {showNewProject && (
-            <Button size="sm" className="h-9 gap-1.5 text-white">
+            <Button size="sm" className="h-9 gap-1.5 text-primary-foreground">
               <Plus className="size-4" />
               Novo projeto
             </Button>

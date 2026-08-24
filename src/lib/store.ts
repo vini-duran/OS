@@ -156,6 +156,25 @@ async function hydrate() {
 
 void hydrate();
 
+// Mantém painéis, cards e rotas sincronizados enquanto há produção ativa.
+// Não recarrega a página: atualiza somente as execuções em curso pela API local.
+const LIVE_EXECUTION_STATUSES = new Set<ProcessExecution["status"]>([
+  "running",
+  "blocked_executor",
+  "awaiting_human",
+]);
+
+function refreshLiveExecutions() {
+  const executionIds = db.executions
+    .filter((execution) => LIVE_EXECUTION_STATUSES.has(execution.status))
+    .map((execution) => execution.id);
+  void Promise.all(executionIds.map((executionId) => refreshProcessExecution(executionId)));
+}
+
+if (typeof window !== "undefined") {
+  window.setInterval(refreshLiveExecutions, 3_000);
+}
+
 export function useDatabaseReady() {
   const storeVersion = useClientStoreVersion();
   return storeVersion >= 0 && db.ready;
@@ -217,6 +236,7 @@ export function useProjectExecutions(projectId: string) {
   return db.executions.filter((execution) => execution.projectId === projectId);
 }
 
+/** Read-only channel view for dashboards that need the actual execution state. */
 export function useChannelExecutions(channelId: string) {
   const storeVersion = useClientStoreVersion();
   if (storeVersion < 0) return [];
@@ -506,6 +526,7 @@ export function createProject(input: NewProjectInput): Project {
     stages,
     assignee: { name: "Não atribuído", initials: "—" },
     thumbHue: Math.round(Math.random() * 360),
+    purpose: "production",
   };
   db.projects.unshift(project);
   const channel = db.channels.find((item) => item.id === input.channelId);

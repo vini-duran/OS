@@ -203,8 +203,16 @@ export type ChannelResearchConfig = {
   region: string;
   minDurationSeconds: number;
   maxResults: number;
+  maxSearchCalls: number;
+  maxPagesPerQuery: number;
+  targetRawVideos: number;
   maxCommentVideoSamples: number;
   maxEstimatedQuotaUnits: number;
+  /** Janela móvel em dias: 90 para semanal; menor para diária. */
+  windowDays?: number;
+  /** Janela opcional ISO-8601 para presets semanal/diário. */
+  publishedAfter?: string;
+  publishedBefore?: string;
   queries: ChannelResearchQuery[];
 };
 
@@ -236,6 +244,8 @@ export type ChannelResearchRun = {
   completedAt?: string;
   planSnapshot: ChannelResearchConfig;
   videos: Array<Record<string, RuntimeValue>>;
+  /** Base factual completa quando a prévia inline é limitada para manter o runner estável. */
+  artifacts?: StoredFile[];
   preflight?: string;
   usage?: Record<string, unknown>;
   logs?: string[];
@@ -281,6 +291,8 @@ export type Project = {
   assignee: { name: string; initials: string };
   isLate?: boolean;
   thumbHue: number;
+  /** Projects created for technical validation stay out of the operator inbox. */
+  purpose?: "production" | "technical_test";
   createdAt: string;
 };
 

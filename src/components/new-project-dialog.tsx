@@ -61,7 +61,7 @@ export function NewProjectDialog({
         {trigger ?? (
           <Button
             size="sm"
-            className="h-9 gap-1.5 px-2.5 text-white sm:px-3"
+            className="h-9 gap-1.5 px-2.5 text-primary-foreground sm:px-3"
             aria-label="Novo projeto"
           >
             <Plus className="size-4" />
@@ -118,7 +118,7 @@ export function NewProjectDialog({
             <Button
               type="submit"
               disabled={!canSubmit}
-              className="gap-1.5 gradient-brand text-white"
+              className="gap-1.5 gradient-brand text-primary-foreground"
             >
               <Plus className="size-4" />
               Criar projeto

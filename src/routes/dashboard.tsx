@@ -83,7 +83,7 @@ function EmptyState() {
       <div className="mt-5">
         <NewChannelDialog
           trigger={
-            <Button className="gap-1.5 gradient-brand text-white">
+            <Button className="gap-1.5 gradient-brand text-primary-foreground">
               <Plus className="size-4" />
               Adicionar canal
             </Button>

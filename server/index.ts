@@ -220,6 +220,15 @@ database.exec(`
     id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS channel_research_briefs_channel_id ON channel_research_briefs(channel_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS channel_research_faceless_selections (
+    channel_id TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(channel_id, video_id)
+  );
+  CREATE INDEX IF NOT EXISTS channel_research_faceless_selections_channel_id ON channel_research_faceless_selections(channel_id, updated_at DESC);
   CREATE TABLE IF NOT EXISTS app_preferences (
     id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
@@ -752,12 +761,12 @@ async function processPluginJob(
   const storedSecrets = await pluginSecretsForJob(plugin.id, plugin.manifest.secretKeys ?? []);
   const secrets = { ...storedSecrets, ...transientSecrets };
   const workspaceDirectory = executionWorkspaceForPlugin(plugin);
-  // Browser-driven capabilities legitimately need more than two minutes for
-  // page loading, model generation and UI transitions. Honor the capability's
-  // declared bound while never exceeding the persistent job deadline.
+  // Immediate plugins keep the worker alive until their declared job deadline.
+  // The 120 s slice is only useful for async start/resume polling; applying it
+  // to browser TTS or local rendering restarts real side effects mid-operation.
   const invocationTimeout = Math.max(
     1_000,
-    Math.min(remainingMs, capability.execution.defaultTimeoutMs ?? 120_000),
+    capability.execution.mode === "immediate" ? remainingMs : Math.min(remainingMs, 120_000),
   );
 
   try {
@@ -2041,6 +2050,13 @@ app.post("/api/execute-block", async (request, response) => {
     const currentExecution = executionById(execution.id) ?? execution;
     const currentProject = readPayload<Project>("projects", project.id) ?? project;
     const pending = ["starting", "pending", "cancel_requested"].includes(existingJob.status);
+    // Reopening the app or refreshing the renderer must not create a second
+    // browser/media run. Resume the one persisted job only when it has no
+    // active lease; the job identity and its existing artifacts stay intact.
+    if (pending) {
+      // claim() is atomic and becomes a no-op while another worker owns the lease.
+      void processPluginJob(existingJob.id).catch(() => undefined);
+    }
     response.status(pending ? 202 : existingJob.status === "completed" ? 200 : 409).json({
       ok: pending || existingJob.status === "completed",
       pending,
@@ -2588,6 +2604,39 @@ function researchError(response: PluginExecutionResponse) {
   return { code: response.code, message: response.message, retryable: response.retryable };
 }
 
+// Seleção curta feita pelo mentor: selecionar implica transcrever; os demais não entram na fila.
+app.get("/api/channels/:id/research/faceless-selections", (request, response) => {
+  const rows = database
+    .prepare(
+      "SELECT payload FROM channel_research_faceless_selections WHERE channel_id = ? ORDER BY updated_at DESC",
+    )
+    .all(request.params.id) as { payload: string }[];
+  response.json({ selections: rows.map((row) => JSON.parse(row.payload)) });
+});
+
+app.post("/api/channels/:id/research/faceless-selections", (request, response) => {
+  const videoId = typeof request.body?.videoId === "string" ? request.body.videoId.trim() : "";
+  if (!videoId) return response.status(400).json({ error: "videoId é obrigatório." });
+  const now = new Date().toISOString();
+  const payload = {
+    channelId: request.params.id,
+    videoId,
+    url:
+      typeof request.body?.url === "string"
+        ? request.body.url
+        : `https://www.youtube.com/watch?v=${videoId}`,
+    decision: "transcribe",
+    selectedAt: now,
+  };
+  database
+    .prepare(
+      `INSERT INTO channel_research_faceless_selections (channel_id, video_id, payload, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(channel_id, video_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+    )
+    .run(request.params.id, videoId, JSON.stringify(payload), now, now);
+  response.json({ selection: payload });
+});
+
 app.get("/api/channels/:id/research/weekly/briefs", (request, response) => {
   const channel = readPayload<Channel>("channels", request.params.id);
   if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
@@ -2738,8 +2787,14 @@ app.post("/api/channels/:id/research/daily/runs", async (request, response) => {
       language: channel.research.language,
       minDurationSeconds: channel.research.minDurationSeconds,
       maxResults: channel.research.maxResults,
+      maxSearchCalls: channel.research.maxSearchCalls,
+      maxPagesPerQuery: channel.research.maxPagesPerQuery,
+      targetRawVideos: channel.research.targetRawVideos,
       maxCommentVideoSamples: channel.research.maxCommentVideoSamples,
       maxEstimatedQuotaUnits: channel.research.maxEstimatedQuotaUnits,
+      windowDays: channel.research.windowDays,
+      publishedAfter: channel.research.publishedAfter,
+      publishedBefore: channel.research.publishedBefore,
       dryRun: false,
     },
     settings: {},
@@ -2792,6 +2847,7 @@ app.post("/api/channels/:id/research/daily/runs", async (request, response) => {
         typeof pluginResponse.values.preflight === "string"
           ? pluginResponse.values.preflight
           : undefined;
+      run.artifacts = pluginResponse.storedArtifacts;
       saveResearchRun(run);
       response.status(201).json({ run: publicResearchRun(run) });
       return;

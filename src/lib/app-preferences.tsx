@@ -904,7 +904,7 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     document.documentElement.classList.toggle("dark", preferences.theme === "dark");
     document.documentElement.lang = preferences.language;
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#18191B");
+    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#1B1926");
   }, [preferences]);
 
   useEffect(() => {

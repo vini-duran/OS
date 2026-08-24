@@ -123,6 +123,41 @@ async function startDesktop() {
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    // Electron can reserve Command+number before the page receives keydown on
+    // macOS. Capture it natively so project navigation works consistently.
+    if (
+      process.platform !== "darwin" ||
+      input.type !== "keyDown" ||
+      !input.meta ||
+      input.alt ||
+      input.control ||
+      input.shift
+    ) {
+      return;
+    }
+    const destinations = {
+      1: "theme",
+      2: "title",
+      3: "thumbnail",
+      4: "script",
+      5: "narration",
+      6: "assets",
+      7: "edit",
+      8: "publish",
+      0: "deliveries",
+    };
+    const destination = destinations[input.key];
+    if (!destination) return;
+    const currentUrl = new URL(mainWindow.webContents.getURL());
+    const projectMatch = currentUrl.pathname.match(/^\/project\/([^/]+)/);
+    if (!projectMatch) return;
+    event.preventDefault();
+    currentUrl.pathname = `/project/${projectMatch[1]}/${destination}`;
+    currentUrl.search = "";
+    currentUrl.hash = "";
+    void mainWindow.loadURL(currentUrl.toString());
+  });
   await mainWindow.loadURL(`http://127.0.0.1:${webPort}/dashboard`);
 }
 

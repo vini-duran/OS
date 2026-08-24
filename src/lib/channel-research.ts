@@ -83,11 +83,17 @@ export function isDailyResearchConfig(value: unknown): value is ChannelResearchC
     typeof config.region === "string" &&
     Number.isInteger(config.minDurationSeconds) &&
     Number.isInteger(config.maxResults) &&
+    Number.isInteger(config.maxSearchCalls) &&
+    Number.isInteger(config.maxPagesPerQuery) &&
+    Number.isInteger(config.targetRawVideos) &&
     Number.isInteger(config.maxCommentVideoSamples) &&
     Number.isInteger(config.maxEstimatedQuotaUnits) &&
+    (config.windowDays === undefined || Number.isInteger(config.windowDays)) &&
+    (config.publishedAfter === undefined || typeof config.publishedAfter === "string") &&
+    (config.publishedBefore === undefined || typeof config.publishedBefore === "string") &&
     Array.isArray(config.queries) &&
     config.queries.length >= 1 &&
-    config.queries.length <= 10 &&
+    config.queries.length <= 100 &&
     config.queries.every(
       (query: ChannelResearchQuery) =>
         typeof query?.id === "string" &&

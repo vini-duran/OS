@@ -147,7 +147,7 @@ export function NewChannelDialog({
           {trigger ?? (
             <Button
               size="sm"
-              className="h-9 gap-1.5 px-2.5 text-white sm:px-3"
+              className="h-9 gap-1.5 px-2.5 text-primary-foreground sm:px-3"
               aria-label="Novo canal"
             >
               <Plus className="size-4" />
@@ -279,7 +279,7 @@ export function NewChannelDialog({
             <Button
               type="submit"
               disabled={!canSubmit}
-              className="gap-1.5 gradient-brand text-white"
+              className="gap-1.5 gradient-brand text-primary-foreground"
             >
               {isLoading ? (
                 <LoaderCircle className="size-4 animate-spin" />

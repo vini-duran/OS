@@ -1,0 +1,23 @@
+{
+  "executionId": "fixture-flow-thumbnail-import-001",
+  "traceId": "fixture-flow-thumbnail-import-001",
+  "blockId": "thumbnail-import-flow-variants",
+  "capabilityId": "import-flow-thumbnail-variants",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": { "expectedLayouts": 6, "expectedVariantsPerLayout": 4 },
+  "inputs": {},
+  "inputContract": [],
+  "outputContract": [
+    { "portKey": "thumbnail_variants", "label": "Variantes de thumbnail do Flow", "key": "thumbnail_variants", "type": "files", "required": true },
+    { "portKey": "thumbnail_import_report", "label": "Relatório da importação", "key": "thumbnail_import_report", "type": "textarea", "required": true }
+  ],
+  "context": {
+    "channel": { "id": "spanish-prelaunch", "name": "Spanish — Pre-lanzamiento", "language": "ES", "niche": "proyecto propio" },
+    "project": { "id": "fixture-project", "title": "Teste de importação Flow" },
+    "processType": "thumbnail",
+    "block": { "type": "CRIAR", "name": "Importar variantes do Flow", "instructions": "Importa arquivos locais já organizados." },
+    "previousProcessOutputs": [],
+    "previousBlockOutputs": []
+  }
+}

@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import {
   CheckCircle2,
+  Download,
   ExternalLink,
   File as FileIcon,
   FileAudio,
@@ -331,22 +332,35 @@ function FileListRenderer({ value }: PresentationRendererProps) {
   return (
     <div className="space-y-2">
       {files.map((file) => (
-        <a
+        <div
           key={file.id}
-          href={file.url || undefined}
-          target={file.url ? "_blank" : undefined}
-          rel="noreferrer"
-          className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/40 p-3 text-xs transition hover:border-brand/40"
+          className="flex items-center gap-3 rounded-lg border border-border/60 bg-background/40 p-3 text-xs"
         >
           <FileTypeIcon file={file} />
-          <span className="min-w-0 flex-1">
+          <a
+            href={file.url || undefined}
+            target={file.url ? "_blank" : undefined}
+            rel="noreferrer"
+            className="min-w-0 flex-1 hover:text-brand-soft"
+          >
             <span className="block truncate font-medium">{file.name}</span>
             <span className="text-[10px] text-muted-foreground">
               {file.mimeType} · {formatBytes(file.size)}
             </span>
-          </span>
+          </a>
+          {file.url ? (
+            <a
+              href={file.url}
+              download={file.name}
+              aria-label={`Baixar ${file.name}`}
+              title="Baixar arquivo"
+              className="rounded p-1.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+            >
+              <Download className="size-3.5" />
+            </a>
+          ) : null}
           {file.url && <ExternalLink className="size-3.5 text-muted-foreground" />}
-        </a>
+        </div>
       ))}
     </div>
   );

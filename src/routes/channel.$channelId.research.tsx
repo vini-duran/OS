@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { CircleAlert, ExternalLink, LoaderCircle, Play, RefreshCw } from "lucide-react";
+import { CircleAlert, Copy, ExternalLink, LoaderCircle, Play, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
@@ -33,6 +33,7 @@ function ChannelResearchPage() {
   const [briefing, setBriefing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [selectedTranscriptIds, setSelectedTranscriptIds] = useState<string[]>([]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -48,6 +49,15 @@ function ChannelResearchPage() {
       );
       const briefBody = (await briefResponse.json()) as { briefs?: ChannelResearchBrief[] };
       if (briefResponse.ok) setBriefs(briefBody.briefs ?? []);
+      const selectionResponse = await fetch(
+        `/api/channels/${encodeURIComponent(channelId)}/research/faceless-selections`,
+      );
+      if (selectionResponse.ok) {
+        const selectionBody = (await selectionResponse.json()) as {
+          selections?: { videoId: string }[];
+        };
+        setSelectedTranscriptIds((selectionBody.selections ?? []).map((item) => item.videoId));
+      }
     } catch (error) {
       toast.error("Não foi possível carregar a pesquisa", {
         description: error instanceof Error ? error.message : undefined,
@@ -61,6 +71,12 @@ function ChannelResearchPage() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    if (!runs.some((run) => run.status === "running")) return undefined;
+    const timer = window.setInterval(() => void reload(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [reload, runs]);
+
   const latest = runs[0];
   const completed = useMemo(() => runs.filter((run) => run.status === "completed"), [runs]);
 
@@ -69,7 +85,7 @@ function ChannelResearchPage() {
     const quota = channel.research.maxEstimatedQuotaUnits;
     if (
       !window.confirm(
-        `Executar a pesquisa factual agora? O pré-flight limita esta rodada a ${quota.toLocaleString("pt-BR")} unidades estimadas de quota do YouTube. Ela não gera tema, roteiro, mídia nem brief aprovado.`,
+        `Executar a pesquisa factual V2 agora? Até ${channel.research.targetRawVideos.toLocaleString("pt-BR")} registros brutos, ${channel.research.maxSearchCalls} páginas de busca e ${quota.toLocaleString("pt-BR")} requests estimados. Ela não gera tema, roteiro, mídia nem brief aprovado.`,
       )
     )
       return;
@@ -137,6 +153,25 @@ function ChannelResearchPage() {
     }
   }
 
+  async function selectForTranscript(videoId: string, url?: string) {
+    const response = await fetch(
+      `/api/channels/${encodeURIComponent(channelId)}/research/faceless-selections`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId, url }),
+      },
+    );
+    if (!response.ok) {
+      toast.error("Não foi possível salvar a seleção para transcrição.");
+      return;
+    }
+    setSelectedTranscriptIds((current) =>
+      current.includes(videoId) ? current : [...current, videoId],
+    );
+    toast.success("Vídeo selecionado como referência para transcrição.");
+  }
+
   if (!channel) return null;
   const plan = channel.research;
 
@@ -192,8 +227,8 @@ function ChannelResearchPage() {
               />
               <Metric
                 label="Teto da rodada"
-                value={`${compact(plan.maxEstimatedQuotaUnits)} quota`}
-                detail={`${plan.maxResults} resultados por consulta · até ${plan.maxCommentVideoSamples} amostras de comentários`}
+                value={`${compact(plan.targetRawVideos)} vídeos brutos`}
+                detail={`${plan.maxSearchCalls ?? plan.queries.length} páginas · até ${plan.maxCommentVideoSamples ?? 0} amostras de comentários · ${compact(plan.maxEstimatedQuotaUnits)} requests estimados`}
               />
             </section>
 
@@ -308,7 +343,12 @@ function ChannelResearchPage() {
               ) : (
                 <div className="divide-y divide-border">
                   {runs.map((run) => (
-                    <ResearchRunCard key={run.id} run={run} />
+                    <ResearchRunCard
+                      key={run.id}
+                      run={run}
+                      selectedTranscriptIds={selectedTranscriptIds}
+                      onSelectForTranscript={selectForTranscript}
+                    />
                   ))}
                 </div>
               )}
@@ -330,7 +370,15 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
-function ResearchRunCard({ run }: { run: ChannelResearchRun }) {
+function ResearchRunCard({
+  run,
+  selectedTranscriptIds,
+  onSelectForTranscript,
+}: {
+  run: ChannelResearchRun;
+  selectedTranscriptIds: string[];
+  onSelectForTranscript: (videoId: string, url?: string) => Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
   const estimated =
     typeof run.usage?.estimatedQuotaUnits === "number" ? run.usage.estimatedQuotaUnits : undefined;
@@ -357,7 +405,7 @@ function ResearchRunCard({ run }: { run: ChannelResearchRun }) {
             <span className="text-sm font-medium">{dateTime(run.startedAt)}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {run.videos.length} vídeos factuais ·{" "}
+            {run.videos.length} vídeos na prévia ·{" "}
             {estimated ? `${compact(estimated)} quota estimada` : "pré-flight indisponível"}
           </p>
           {run.error && (
@@ -367,9 +415,18 @@ function ResearchRunCard({ run }: { run: ChannelResearchRun }) {
           )}
         </div>
         {run.status === "completed" && (
-          <Button variant="outline" size="sm" onClick={() => setOpen((value) => !value)}>
-            {open ? "Ocultar dados" : "Ver dados"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {run.artifacts?.map((artifact) => (
+              <Button key={artifact.id} variant="outline" size="sm" asChild>
+                <a href={artifact.url} download={artifact.name}>
+                  Baixar base completa
+                </a>
+              </Button>
+            ))}
+            <Button variant="outline" size="sm" onClick={() => setOpen((value) => !value)}>
+              {open ? "Ocultar dados" : "Ver dados"}
+            </Button>
+          </div>
         )}
       </div>
       {open && (
@@ -383,36 +440,80 @@ function ResearchRunCard({ run }: { run: ChannelResearchRun }) {
                 <th className="px-3 py-2">Inscritos</th>
                 <th className="px-3 py-2">Comentários</th>
                 <th className="px-3 py-2">Consulta</th>
+                <th className="px-3 py-2">Faceless</th>
               </tr>
             </thead>
             <tbody>
-              {run.videos.slice(0, 50).map((video, index) => (
+              {run.videos.slice(0, 5).map((video, index) => (
                 <tr
                   key={`${String(video.video_id)}-${index}`}
                   className="border-t border-border/60"
                 >
                   <td className="max-w-72 px-3 py-2">
-                    <a
-                      className="inline-flex items-center gap-1 hover:underline"
-                      href={typeof video.video_url === "string" ? video.video_url : undefined}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {String(video.title ?? "—").slice(0, 90)} <ExternalLink className="size-3" />
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <a
+                        className="inline-flex items-center gap-1 hover:underline"
+                        href={typeof video.video_url === "string" ? video.video_url : undefined}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {String(video.title ?? "—").slice(0, 90)}{" "}
+                        <ExternalLink className="size-3" />
+                      </a>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label="Copiar URL do vídeo"
+                        title="Copiar URL"
+                        onClick={() => {
+                          const url = typeof video.video_url === "string" ? video.video_url : "";
+                          if (!url || !navigator.clipboard) {
+                            toast.error("A URL deste vídeo não está disponível.");
+                            return;
+                          }
+                          void navigator.clipboard.writeText(url).then(
+                            () => toast.success("URL copiada."),
+                            () => toast.error("Não foi possível copiar a URL."),
+                          );
+                        }}
+                      >
+                        <Copy className="size-3.5" />
+                      </Button>
+                    </div>
                   </td>
                   <td className="px-3 py-2">{String(video.channel_title ?? "—")}</td>
                   <td className="px-3 py-2">{compact(video.view_count)}</td>
                   <td className="px-3 py-2">{compact(video.subscriber_count)}</td>
                   <td className="px-3 py-2">{compact(video.comment_count)}</td>
                   <td className="px-3 py-2">{String(video.search_query ?? "—")}</td>
+                  <td className="px-3 py-2">
+                    <Button
+                      size="sm"
+                      variant={
+                        selectedTranscriptIds.includes(String(video.video_id))
+                          ? "default"
+                          : "outline"
+                      }
+                      onClick={() =>
+                        void onSelectForTranscript(
+                          String(video.video_id),
+                          String(video.video_url ?? ""),
+                        )
+                      }
+                    >
+                      {selectedTranscriptIds.includes(String(video.video_id))
+                        ? "Selecionado"
+                        : "Usar como referência"}
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           <p className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
-            Mostrando até 50 registros. A classificação faceless, niche bending e aprovação do brief
-            continuam em revisão posterior.
+            Mostrando os 5 melhores registros. Se o vídeo tiver um mecanismo, gancho ou estrutura
+            útil, clique em “Usar como referência”. Ele entra na fila de transcrição; ser faceless
+            não é obrigatório. Os demais não entram na fila.
           </p>
         </div>
       )}

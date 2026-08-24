@@ -303,7 +303,7 @@ function SortableChannelCard({
         <Link
           to="/channel/$channelId"
           params={{ channelId: channel.id }}
-          className="flex min-h-11 w-full shrink-0 items-center justify-between gap-2 border-t border-border px-5 text-xs font-semibold text-muted-foreground transition hover:bg-brand hover:text-white"
+          className="flex min-h-11 w-full shrink-0 items-center justify-between gap-2 border-t border-border px-5 text-xs font-semibold text-muted-foreground transition hover:bg-brand hover:text-primary-foreground"
         >
           <span>Abrir canal</span>
           <ArrowRight className="size-4" />

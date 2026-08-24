@@ -724,7 +724,7 @@ export function MethodBuilder({
               size="sm"
               onClick={() => void persistMethod(true)}
               disabled={!isDirty || saveStatus === "saving"}
-              className="gradient-brand text-white"
+              className="gradient-brand text-primary-foreground"
             >
               Salvar agora
             </Button>

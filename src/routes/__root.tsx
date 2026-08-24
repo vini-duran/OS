@@ -81,7 +81,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
           "Gerenciador estratégico de métodos para a produção completa de canais do YouTube: tema, roteiro, narração, edição e publicação.",
       },
       { name: "author", content: "ContentFlow OS" },
-      { name: "theme-color", content: "#08111F" },
+      { name: "theme-color", content: "#1B1926" },
       { property: "og:title", content: "ContentFlow OS" },
       {
         property: "og:description",

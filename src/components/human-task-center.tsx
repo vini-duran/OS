@@ -6,9 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { PROCESS_META } from "@/lib/domain";
 import { PROCESS_ROUTE_SEGMENT } from "@/lib/human-workflow";
-import { useHumanTasks } from "@/lib/store";
+import { useHumanTasks, type HumanTask } from "@/lib/store";
 
 const SEEN_KEY = "contentflow.seen-human-tasks";
+
+/**
+ * The inbox is for actions that move a real publication forward. Older local
+ * QA projects predate `purpose`, so their explicit technical-test titles are
+ * kept out of the inbox without deleting their evidence.
+ */
+function isProductionProject(project: HumanTask["project"]) {
+  if (project.purpose) return project.purpose === "production";
+  return !/^teste (técnico|prático)\b/i.test(project.title.trim());
+}
 
 function ageLabel(value?: string) {
   if (!value) return "Agora";
@@ -21,7 +31,7 @@ function ageLabel(value?: string) {
 }
 
 export function HumanTaskCenter() {
-  const tasks = useHumanTasks();
+  const tasks = useHumanTasks().filter((task) => isProductionProject(task.project));
   const [open, setOpen] = useState(false);
   const [seenIds, setSeenIds] = useState<string[]>([]);
   const taskIds = useMemo(
@@ -54,7 +64,7 @@ export function HumanTaskCenter() {
           variant="ghost"
           size="icon"
           className="relative size-9 text-muted-foreground"
-          aria-label={`${tasks.length} tarefas humanas pendentes`}
+          aria-label={`${tasks.length} ações humanas da produção pendentes`}
         >
           <Bell className="size-4" />
           {tasks.length > 0 && (
@@ -70,13 +80,13 @@ export function HumanTaskCenter() {
       <PopoverContent align="end" className="w-[min(92vw,420px)] p-0">
         <header className="flex items-center justify-between border-b border-border/60 px-4 py-3">
           <div>
-            <h2 className="text-sm font-semibold">Pendências humanas</h2>
+            <h2 className="text-sm font-semibold">Ações da produção</h2>
             <p className="text-[11px] text-muted-foreground">
-              A tarefa sai daqui somente depois que o operador conclui a ação.
+              Só aparecem ações que avançam uma produção real. Testes técnicos ficam no histórico.
             </p>
           </div>
           <Badge variant="outline" className="border-warning/40 text-warning">
-            {tasks.length} {tasks.length === 1 ? "pendente" : "pendentes"}
+            {tasks.length} {tasks.length === 1 ? "ação" : "ações"}
           </Badge>
         </header>
         {tasks.length ? (
@@ -125,9 +135,10 @@ export function HumanTaskCenter() {
         ) : (
           <div className="px-6 py-12 text-center">
             <Inbox className="mx-auto size-7 text-muted-foreground" />
-            <p className="mt-3 text-sm font-medium">Nenhuma ação humana aguardando</p>
+            <p className="mt-3 text-sm font-medium">Nenhuma ação da produção aguardando</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              As tarefas aparecerão aqui quando um processo chegar a um bloco Humano.
+              Testes técnicos não entram neste painel. Você só será chamado quando uma produção real
+              precisar de decisão.
             </p>
           </div>
         )}
