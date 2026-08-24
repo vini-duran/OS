@@ -73,6 +73,17 @@ test("isola contas por alias e porta", () => {
   assert.notEqual(__test.profilePort(9544, "canal-a"), __test.profilePort(9544, "canal-b"));
 });
 
+test("aceita um perfil Chrome existente somente para o alias local default", () => {
+  assert.deepEqual(
+    __test.launchProfileFor({}, { chromeUserDataDir: "/tmp/chrome", chromeProfileDirectory: "Profile 1" }, "default"),
+    { userDataDir: "/tmp/chrome", profileDirectory: "Profile 1", shared: true },
+  );
+  assert.throws(
+    () => __test.launchProfileFor({}, { chromeUserDataDir: "/tmp/chrome" }, "default"),
+    /exige chromeUserDataDir/,
+  );
+});
+
 test("expande placeholders ContentFlow e legados", () => {
   assert.equal(
     __test.expandTemplate("{{TEMA}} | {{NICHO}} | {{PROJECT_TITLE}}", request()),

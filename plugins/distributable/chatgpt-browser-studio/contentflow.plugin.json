@@ -163,6 +163,18 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$",
             "default": "default"
           },
+          "chromeUserDataDir": {
+            "type": "string",
+            "title": "Dados locais do Chrome",
+            "default": "",
+            "description": "Opcional e local: diretório-raiz do Chrome autenticado. Exige também o diretório do perfil e Chrome fechado."
+          },
+          "chromeProfileDirectory": {
+            "type": "string",
+            "title": "Diretório do perfil Chrome",
+            "default": "",
+            "description": "Opcional e local: por exemplo, Profile 1."
+          },
           "promptTemplate": {
             "type": "string",
             "title": "Template do prompt",

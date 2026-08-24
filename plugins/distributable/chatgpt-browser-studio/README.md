@@ -57,6 +57,8 @@ O Chrome abre em `https://chatgpt.com/`. A permissão `process` inicia esse Chro
 
 No macOS, a ponte CDP do plugin é limitada ao loopback (`127.0.0.1`) e permite apenas as origens locais necessárias para o runner se anexar ao Chrome iniciado pelo próprio plugin. Não expõe a porta à rede.
 
+Um Método local pode usar um perfil Chrome existente por `chromeUserDataDir` + `chromeProfileDirectory`; esses caminhos não devem ser exportados nem commitados. Feche completamente o Chrome que usa esse perfil antes da execução: o plugin nunca copia cookies, tokens ou o perfil.
+
 ## Dados, efeitos e custos
 
 - Provedor: OpenAI / ChatGPT web.

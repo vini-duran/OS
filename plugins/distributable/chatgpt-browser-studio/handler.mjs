@@ -473,6 +473,20 @@ function normalizeAccountProfile(value) {
 function profilePathFor(settings, name) {
   return join(settings?.profilesBasePath?.trim?.() || defaultProfilesBasePath(), name);
 }
+function launchProfileFor(settings, configuration, name) {
+  const userDataDir = configuration?.chromeUserDataDir?.trim?.() || "";
+  const profileDirectory = configuration?.chromeProfileDirectory?.trim?.() || "";
+  if (!userDataDir && !profileDirectory)
+    return { userDataDir: profilePathFor(settings, name), profileDirectory: "", shared: false };
+  if (!userDataDir || !profileDirectory || name !== "default")
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "O perfil Chrome existente exige chromeUserDataDir e chromeProfileDirectory somente com accountProfile default.",
+    );
+  if (!/^[A-Za-z0-9][A-Za-z0-9 _-]{0,80}$/.test(profileDirectory))
+    throw codedError("INVALID_CONFIGURATION", "Diretório de perfil Chrome inválido.");
+  return { userDataDir, profileDirectory, shared: true };
+}
 function profilePort(basePort, name) {
   if (name === "default") return basePort;
   let hash = 2166136261;
@@ -606,7 +620,8 @@ async function fetchBrowserVersion(port, timeoutMs = 1500) {
 
 async function launchOrReuseChrome({
   executables,
-  profilePath,
+  userDataDir,
+  profileDirectory,
   port,
   startMinimized,
   keepBrowserOpen,
@@ -621,11 +636,12 @@ async function launchOrReuseChrome({
     // endpoint remains bound to loopback; this only permits the local plugin
     // runner to attach to the browser it just launched.
     "--remote-allow-origins=http://localhost,http://127.0.0.1",
-    `--user-data-dir=${profilePath}`,
+    `--user-data-dir=${userDataDir}`,
     "--no-first-run",
     "--no-default-browser-check",
     CHATGPT_NEW_URL,
   ];
+  if (profileDirectory) args.splice(3, 0, `--profile-directory=${profileDirectory}`);
   if (startMinimized) args.unshift("--start-minimized");
   const failures = [];
   for (const executable of executables) {
@@ -1145,13 +1161,13 @@ export async function execute(request, services) {
   let client, child;
   try {
     const profileName = normalizeAccountProfile(configuration.accountProfile),
-      profilePath = profilePathFor(settings, profileName),
+      launchProfile = launchProfileFor(settings, configuration, profileName),
       port = profilePort(
         clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000),
         profileName,
       );
     const attachments = await resolveAttachments(request, services);
-    assertDedicatedProfilePath(profilePath);
+    if (!launchProfile.shared) assertDedicatedProfilePath(launchProfile.userDataDir);
     const trace =
       settings.diagnosticTrace === true
         ? (message) => process.stderr.write(`[ChatGPT Browser] ${message}\n`)
@@ -1160,7 +1176,8 @@ export async function execute(request, services) {
     step(`Preparando perfil ${profileName} para ${parts.length} etapa(s).`);
     const launched = await launchOrReuseChrome({
       executables: await resolveChromeExecutables(settings),
-      profilePath,
+      userDataDir: launchProfile.userDataDir,
+      profileDirectory: launchProfile.profileDirectory,
       port,
       startMinimized: settings.startMinimized === true,
       keepBrowserOpen: settings.keepBrowserOpen !== false,
@@ -1294,6 +1311,7 @@ export const __test = {
   parseSelectedItemId,
   parseValidationValues,
   profilePathFor,
+  launchProfileFor,
   profilePort,
   searchResponseValues,
   generationResponseValues,
