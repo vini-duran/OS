@@ -1,6 +1,6 @@
 # Gemini Browser Studio
 
-Versão **0.1.0** para ContentFlow OS Plugin API v1.
+Versão **0.1.1** para ContentFlow OS Plugin API v1.
 
 Super plugin independente que usa a interface web do Gemini em um Google Chrome real com perfil persistente dedicado. Não usa a API oficial do Gemini, não pede chave e não exporta cookies, tokens ou storage.
 
@@ -22,6 +22,8 @@ O plugin reconhece os modos atualmente expostos pelo Gemini: 3.5 Flash Lite, 3.6
 Cada execução começa em uma nova conversa; todas as partes daquela execução permanecem na mesma conversa. `outline_sequence` usa cada item recebido como um envio independente, aceitando 8, 12 ou até 32 blocos. `result` une o roteiro e a saída opcional `parts` preserva cada resposta.
 
 Também existem `single`, `legacy_script_3_parts` e `custom_parts`, separados por `---PARTE---`.
+
+Quando um bloco não define `promptTemplate`, o plugin monta o envio com as instruções do bloco e suas entradas. Isso impede que um bloco de texto envie apenas o sufixo de formato obrigatório ao Gemini.
 
 ## Perfis dedicados por canal
 
