@@ -176,16 +176,16 @@ export async function executeRegisteredPlugin(
         safeSegment(plugin.id),
       ),
   );
+  mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(workspaceDirectory, { recursive: true });
+  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const outputDirectory = path.resolve(
-    workspaceDirectory,
+    realWorkspaceDirectory,
     ".contentflow-output",
     safeSegment(request.executionId),
     safeSegment(request.traceId),
   );
-  mkdirSync(uploadsDirectory, { recursive: true });
-  mkdirSync(workspaceDirectory, { recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
-  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const permissions = new Set(plugin.manifest.permissions);
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],

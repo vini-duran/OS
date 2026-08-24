@@ -1,0 +1,32 @@
+{
+  "executionId": "heygen-browser-fixture",
+  "traceId": "heygen-browser-fixture-trace",
+  "blockId": "heygen-browser-fixture-block",
+  "capabilityId": "generate-browser-tts",
+  "attempt": 1,
+  "invocation": { "mode": "start" },
+  "configuration": {
+    "voiceId": "0d95c364a470438f9ec4952f84a7df72",
+    "rate": 1,
+    "pitch": 0,
+    "bridgePort": 10002
+  },
+  "settings": { "diagnosticMockAudioBase64": "SUQzZml4dHVyZS1hdWRpbw==" },
+  "inputs": { "script": "Roteiro fictício usado somente para validar o sandbox local." },
+  "inputContract": [
+    { "id": "fixture-input", "portKey": "script", "label": "Roteiro aprovado", "type": "textarea" }
+  ],
+  "outputContract": [
+    { "portKey": "narration", "label": "Narração", "key": "narration", "type": "audio", "required": true }
+  ],
+  "context": {
+    "locale": "pt-BR",
+    "timeZone": "America/Porto_Velho",
+    "channel": { "id": "norte-magnata", "name": "Norte Magnata", "language": "pt-BR", "niche": "Desenvolvimento pessoal" },
+    "project": { "id": "fixture-project", "title": "Produção fictícia" },
+    "processType": "narration",
+    "block": { "type": "CRIAR", "name": "Gerar narração", "instructions": "Narrar o roteiro aprovado." },
+    "previousProcessOutputs": [],
+    "previousBlockOutputs": []
+  }
+}

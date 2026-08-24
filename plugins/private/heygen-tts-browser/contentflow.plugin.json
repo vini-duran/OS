@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow-os/main/docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.viniduran.heygen-tts-browser",
+  "name": "HeyGen TTS Browser Bridge",
+  "version": "0.1.0",
+  "description": "Gera narração no HeyGen autenticado no navegador e entrega o áudio como artefato do ContentFlow OS.",
+  "author": "Vini Duran",
+  "license": "Proprietary",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.2",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network", "filesystem:read", "filesystem:write"],
+  "networkHosts": ["resource2.heygen.ai"],
+  "secretKeys": [],
+  "deliveryTypes": ["audio", "processing"],
+  "capabilities": [
+    {
+      "id": "generate-browser-tts",
+      "operator": "Código",
+      "blockTypes": ["CRIAR"],
+      "processTypes": ["narration"],
+      "inputPorts": [
+        {
+          "key": "script",
+          "label": "Roteiro aprovado",
+          "description": "Texto final que será narrado.",
+          "acceptedTypes": ["text", "textarea"],
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputPorts": [
+        {
+          "key": "narration",
+          "label": "Narração",
+          "description": "Áudio final materializado localmente.",
+          "producedTypes": ["audio"],
+          "required": true,
+          "presentation": {
+            "renderer": "audio-player",
+            "itemType": "audio",
+            "acceptedMimeTypes": ["audio/mpeg", "audio/wav", "audio/ogg"]
+          }
+        }
+      ],
+      "acceptedInputTypes": ["text", "textarea"],
+      "producedOutputTypes": ["audio"],
+      "execution": {
+        "mode": "immediate",
+        "defaultTimeoutMs": 900000,
+        "supportsCancellation": false,
+        "maxConcurrency": 1
+      },
+      "sideEffects": ["external_write", "local_artifact"],
+      "cost": { "model": "unknown", "estimateSupported": false },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["HeyGen"],
+        "retentionPolicyUrl": "https://www.heygen.com/privacy"
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "voiceId": {
+            "type": "string",
+            "title": "ID da voz HeyGen",
+            "default": "0d95c364a470438f9ec4952f84a7df72",
+            "minLength": 8
+          },
+          "rate": { "type": "number", "title": "Velocidade", "minimum": 0.5, "maximum": 2, "default": 1 },
+          "pitch": { "type": "number", "title": "Tom", "minimum": -50, "maximum": 50, "default": 0 },
+          "bridgePort": { "type": "integer", "title": "Porta local da ponte", "minimum": 1024, "maximum": 65535, "default": 10002 }
+        },
+        "required": ["voiceId", "rate", "pitch", "bridgePort"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "narration": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "mimeType": { "type": "string", "enum": ["audio/mpeg", "audio/wav", "audio/ogg"] },
+              "size": { "type": "integer", "minimum": 1 },
+              "url": { "type": "string", "pattern": "^artifact://" }
+            },
+            "required": ["id", "name", "mimeType", "size", "url"]
+          }
+        },
+        "required": ["narration"]
+      }
+    }
+  ]
+}
