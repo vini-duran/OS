@@ -55,6 +55,8 @@ Na geração de imagem, os bytes são recuperados pela própria sessão autentic
 
 O Chrome abre em `https://chatgpt.com/`. A permissão `process` inicia esse Chrome dedicado; `network` acessa o ChatGPT; `filesystem:read` alcança apenas arquivos liberados; `filesystem:write` produz artifacts e mantém o workspace autorizado.
 
+No macOS, a ponte CDP do plugin é limitada ao loopback (`127.0.0.1`) e permite apenas as origens locais necessárias para o runner se anexar ao Chrome iniciado pelo próprio plugin. Não expõe a porta à rede.
+
 ## Dados, efeitos e custos
 
 - Provedor: OpenAI / ChatGPT web.

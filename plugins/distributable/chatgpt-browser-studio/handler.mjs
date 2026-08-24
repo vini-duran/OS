@@ -617,6 +617,10 @@ async function launchOrReuseChrome({
   const args = [
     `--remote-debugging-port=${port}`,
     "--remote-debugging-address=127.0.0.1",
+    // Chrome accepts CDP only from explicitly allowed origins. The debugging
+    // endpoint remains bound to loopback; this only permits the local plugin
+    // runner to attach to the browser it just launched.
+    "--remote-allow-origins=http://localhost,http://127.0.0.1",
     `--user-data-dir=${profilePath}`,
     "--no-first-run",
     "--no-default-browser-check",

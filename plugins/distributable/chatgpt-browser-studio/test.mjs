@@ -7,6 +7,12 @@ const manifest = JSON.parse(
   await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
 );
 
+test("mantém a ponte CDP restrita ao loopback e às origens locais", async () => {
+  const handler = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+  assert.match(handler, /--remote-debugging-address=127\.0\.0\.1/);
+  assert.match(handler, /--remote-allow-origins=http:\/\/localhost,http:\/\/127\.0\.0\.1/);
+});
+
 function request(overrides = {}) {
   return {
     capabilityId: overrides.capabilityId ?? "generate-text-in-browser",
