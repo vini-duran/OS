@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "com.viniduran.heygen-tts-browser",
   "name": "HeyGen TTS Browser Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Gera narração no HeyGen autenticado no navegador e entrega o áudio como artefato do ContentFlow OS.",
   "author": "Vini Duran",
   "license": "Proprietary",
@@ -32,7 +32,7 @@
       ],
       "outputPorts": [
         {
-          "key": "narration",
+          "key": "audio",
           "label": "Narração",
           "description": "Áudio final materializado localmente.",
           "producedTypes": ["audio"],
@@ -79,7 +79,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "narration": {
+          "audio": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
@@ -92,7 +92,7 @@
             "required": ["id", "name", "mimeType", "size", "url"]
           }
         },
-        "required": ["narration"]
+        "required": ["audio"]
       }
     }
   ]

@@ -40,9 +40,9 @@ socket.onmessage = (event) => {
 
 const result = await execution;
 assert.equal(result.status, "success");
-assert.equal(result.values.narration.mimeType, "audio/mpeg");
-assert.ok(result.values.narration.size > 0);
-assert.match((await readFile(join(directory, result.values.narration.name))).toString(), /contentflow-offline-test/);
+assert.equal(result.values.audio.mimeType, "audio/mpeg");
+assert.ok(result.values.audio.size > 0);
+assert.match((await readFile(join(directory, result.values.audio.name))).toString(), /contentflow-offline-test/);
 socket.close();
 await rm(directory, { recursive: true, force: true });
 console.log("heygen-tts-browser: ok");

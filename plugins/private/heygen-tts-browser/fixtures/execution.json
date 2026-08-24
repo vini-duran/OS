@@ -17,7 +17,7 @@
     { "id": "fixture-input", "portKey": "script", "label": "Roteiro aprovado", "type": "textarea" }
   ],
   "outputContract": [
-    { "portKey": "narration", "label": "Narração", "key": "narration", "type": "audio", "required": true }
+    { "portKey": "audio", "label": "Narração", "key": "audio", "type": "audio", "required": true }
   ],
   "context": {
     "locale": "pt-BR",

@@ -238,7 +238,7 @@ export async function execute(request, services) {
       const artifact = { id: "narration", name, mimeType: "audio/mpeg", size: info.size };
       return {
         status: "success",
-        values: { narration: { ...artifact, url: "artifact://narration" } },
+        values: { audio: { ...artifact, url: "artifact://narration" } },
         artifacts: [{ ...artifact, source: { kind: "path", path: name } }],
         usage: { provider: "diagnostic", voiceId: config.voiceId, blocks: 1 },
       };
@@ -284,7 +284,7 @@ export async function execute(request, services) {
     const artifact = { id: "narration", name, mimeType: format.mimeType, size: info.size };
     return {
       status: "success",
-      values: { narration: { ...artifact, url: "artifact://narration" } },
+      values: { audio: { ...artifact, url: "artifact://narration" } },
       artifacts: [{ ...artifact, source: { kind: "path", path: name } }],
       usage: { provider: "HeyGen", voiceId: config.voiceId, blocks: ordered.length },
     };
