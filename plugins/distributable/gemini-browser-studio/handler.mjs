@@ -141,12 +141,24 @@ function outlinePrompt(t, r, b, i, n, base) {
 }
 function buildParts(r) {
   const c = r?.configuration ?? {},
-    base = expand(c.promptTemplate, r),
+    configuredTemplate = String(c.promptTemplate ?? "").trim(),
+    base = configuredTemplate
+      ? expand(configuredTemplate, r)
+      : [
+          "TAREFA:",
+          String(r?.context?.block?.instructions || r?.context?.block?.name || "").trim(),
+          "CONTEXTO DE ENTRADA:",
+          serializeInputs(r?.inputs),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
     mode = c.generationMode ?? "single",
     suffix =
       c.plainTextOnly === false
         ? ""
         : "\n\nFORMATO OBRIGATÓRIO: entregue diretamente como texto; não crie Canvas nem arquivos.";
+  if (!base.trim())
+    throw err("INVALID_INPUT", "O bloco exige instruções ou um promptTemplate.");
   let parts;
   if (mode === "legacy_script_3_parts")
     parts = [

@@ -73,6 +73,15 @@ test("gera texto simples", () => {
   assert.match(p[0], /Tema principal/);
   assert.match(p[0], /FORMATO OBRIGATÓRIO/);
 });
+test("usa instruções e entradas quando o método não define promptTemplate", () => {
+  const p = __test.buildParts(
+    req({ configuration: { promptTemplate: undefined } }),
+  );
+  assert.match(p[0], /TAREFA:/);
+  assert.match(p[0], /Escreva com clareza/);
+  assert.match(p[0], /Tema principal/);
+  assert.equal((p[0].match(/FORMATO OBRIGATÓRIO/g) ?? []).length, 1);
+});
 test("mantém roteiro legado em três partes", () => {
   const p = __test.buildParts(req({ configuration: { generationMode: "legacy_script_3_parts" } }));
   assert.equal(p.length, 3);
