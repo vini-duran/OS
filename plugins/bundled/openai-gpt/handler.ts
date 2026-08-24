@@ -62,10 +62,15 @@ function parseOutput(text: string, type: string | undefined) {
     } catch {
       // A resposta em linhas continua sendo aceita para modelos sem saída estruturada.
     }
-    return text
-      .split("\n")
-      .map((item) => item.replace(/^[-*•\d.)\s]+/, "").trim())
-      .filter(Boolean);
+    return (
+      text
+        .split("\n")
+        // Remove apenas marcadores reais. A expressão anterior apagava qualquer
+        // número no início do conteúdo (por exemplo, `7 días...` virava
+        // `días...`), alterando títulos e outras entregas legítimas.
+        .map((item) => item.replace(/^\s*(?:[-*•]\s+|\d+[.)]\s+)/, "").trim())
+        .filter(Boolean)
+    );
   }
   if (type === "records") {
     try {
@@ -75,7 +80,44 @@ function parseOutput(text: string, type: string | undefined) {
       return [{ content: text }];
     }
   }
-  return text.trim();
+  const trimmed = text.trim();
+  if (type === "textarea") {
+    const wrapped = trimmed.match(/^<textarea(?:\s+[^>]*)?>\s*([\s\S]*?)\s*<\/textarea>$/i);
+    if (wrapped) return wrapped[1].trim();
+  }
+  return trimmed;
+}
+
+function removeSingleListHeader(value: unknown, field: OutputField | undefined) {
+  if (!Array.isArray(value) || !field) return value;
+  const headerAliases = [field.key, field.label].map((item) =>
+    item
+      .trim()
+      .toLocaleLowerCase()
+      .replace(/[\s:_-]+/g, ""),
+  );
+  return value
+    .map((item) => {
+      if (typeof item !== "string") return item;
+      const trimmed = item.trim().replace(/,\s*$/, "");
+      if (
+        trimmed.length >= 2 &&
+        ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+          (trimmed.startsWith("'") && trimmed.endsWith("'")))
+      ) {
+        return trimmed.slice(1, -1).trim();
+      }
+      return trimmed;
+    })
+    .filter((item) => {
+      if (typeof item !== "string") return true;
+      const normalized = item
+        .trim()
+        .replace(/[:：]\s*$/, "")
+        .toLocaleLowerCase()
+        .replace(/[\s:_-]+/g, "");
+      return normalized.length > 0 && !headerAliases.includes(normalized);
+    });
 }
 
 function responseText(body: OpenAIResponse) {
@@ -105,7 +147,32 @@ function outputInstructions(fields: OutputField[]) {
 function valuesFromResponse(text: string, fields: OutputField[]) {
   if (fields.length <= 1) {
     const field = fields[0];
-    return { [field?.key ?? "result"]: parseOutput(text, field?.type) };
+    const key = field?.key ?? "result";
+    // Modelos às vezes devolvem {"chave":[...]} mesmo quando o contrato tem
+    // uma só saída. Aceitar esse envelope estrito evita que chaves, colchetes
+    // e JSON virem candidatos visuais em uma lista, sem aceitar campos
+    // arbitrários ou esconder um formato inválido.
+    try {
+      const parsed = JSON.parse(stripCodeFence(text));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && key in parsed) {
+        const value = (parsed as Record<string, unknown>)[key];
+        return {
+          [key]: typeof value === "string" ? parseOutput(value, field?.type) : value,
+        };
+      }
+      if (Array.isArray(parsed) && (field?.type === "list" || field?.type === "multiselect")) {
+        return { [key]: parsed };
+      }
+    } catch {
+      // O formato em linhas continua sendo aceito por parseOutput.
+    }
+    const value = parseOutput(text, field?.type);
+    return {
+      [key]:
+        field?.type === "list" || field?.type === "multiselect"
+          ? removeSingleListHeader(value, field)
+          : value,
+    };
   }
   let parsed: Record<string, unknown>;
   try {
@@ -159,6 +226,8 @@ export async function execute(
       "Execute as instruções do bloco usando o contexto disponível e respeite exatamente o contrato de saída.",
   );
   const temperature = Number(request.configuration.temperature ?? 0.7);
+  const reasoningEffort = String(request.configuration.reasoning_effort ?? "medium").trim();
+  const maxOutputTokens = Number(request.configuration.max_output_tokens ?? 3000);
   const inputText = Object.entries(request.inputs)
     .map(([key, value]) => `${key}:\n${serialize(value)}`)
     .join("\n\n");
@@ -197,6 +266,12 @@ export async function execute(
     input: userPrompt,
     store: false,
   };
+  if (["low", "medium", "high", "xhigh"].includes(reasoningEffort)) {
+    payload.reasoning = { effort: reasoningEffort };
+  }
+  if (Number.isInteger(maxOutputTokens) && maxOutputTokens >= 256 && maxOutputTokens <= 20000) {
+    payload.max_output_tokens = maxOutputTokens;
+  }
   if (Number.isFinite(temperature)) payload.temperature = Math.min(2, Math.max(0, temperature));
   if (request.context.block.type === "BUSCAR") payload.tools = [{ type: "web_search" }];
 

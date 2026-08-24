@@ -1,4 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
@@ -7,19 +14,29 @@ const projectRoot = process.cwd();
 const runtimeDirectory = path.join(projectRoot, "desktop-runtime");
 const desktopBuildDirectory = path.join(projectRoot, "desktop-dist");
 const nodeMajor = Number(process.versions.node.split(".")[0]);
+const runtimeNodeName = process.platform === "win32" ? "node.exe" : "node";
+const targetArch = process.env.CONTENTFLOW_DESKTOP_TARGET_ARCH;
 
 if (nodeMajor !== 26) {
   throw new Error(`A V0 precisa ser montada com Node 26; versão atual: ${process.versions.node}.`);
 }
+if (targetArch && targetArch !== process.arch) {
+  throw new Error(
+    `O runtime Node privado precisa ser montado na arquitetura nativa. Solicitado: ${targetArch}; atual: ${process.arch}.`,
+  );
+}
 
 mkdirSync(runtimeDirectory, { recursive: true });
 mkdirSync(desktopBuildDirectory, { recursive: true });
-const bundledNodePath = path.join(runtimeDirectory, "node.exe");
+const bundledNodePath = path.join(runtimeDirectory, runtimeNodeName);
+if (process.platform !== "win32" && existsSync(bundledNodePath)) chmodSync(bundledNodePath, 0o755);
 const bundledNodeVersion = existsSync(bundledNodePath)
   ? execFileSync(bundledNodePath, ["--version"], { encoding: "utf8" }).trim()
   : undefined;
-if (bundledNodeVersion !== `v${process.versions.node}`)
+if (bundledNodeVersion !== `v${process.versions.node}`) {
   copyFileSync(process.execPath, bundledNodePath);
+  if (process.platform !== "win32") chmodSync(bundledNodePath, 0o755);
+}
 
 const nodeLicenseCandidates = [
   path.join(path.dirname(process.execPath), "LICENSE"),
@@ -57,6 +74,8 @@ writeFileSync(
     {
       version: packageJson.version,
       node: process.versions.node,
+      platform: process.platform,
+      architecture: process.arch,
       builtAt: new Date().toISOString(),
     },
     null,

@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "official-openai-gpt",
   "name": "OpenAI Models",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Executa qualquer bloco baseado em linguagem com um modelo de texto compatível com a Responses API da OpenAI.",
   "author": "ContentFlow OS",
   "license": "LicenseRef-ContentFlow-Source-Available-1.0",
@@ -141,6 +141,21 @@
             "title": "Prompt de sistema",
             "format": "textarea",
             "default": "Execute as instruções do bloco usando o contexto disponível e respeite exatamente o contrato de saída."
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "title": "Esforço de raciocínio",
+            "description": "Use baixo para classificação ou reparos, médio para criação normal e alto para decisões editoriais, tema ou roteiro.",
+            "enum": ["low", "medium", "high", "xhigh"],
+            "default": "medium"
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "title": "Limite máximo de tokens de saída",
+            "description": "Teto por chamada, incluindo a saída necessária para concluir o bloco.",
+            "minimum": 256,
+            "maximum": 20000,
+            "default": 3000
           },
           "temperature": {
             "type": "number",

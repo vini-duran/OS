@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { RuntimeValue, StoredFile } from "../src/lib/domain";
 import type { PluginExecutionRequest } from "../src/lib/plugin-contract";
+import type { PluginUsage } from "../src/lib/plugin-contract";
 
 export type PluginJobStatus =
   "starting" | "pending" | "cancel_requested" | "completed" | "failed" | "cancelled" | "abandoned";
@@ -24,6 +25,7 @@ export type PersistentPluginJob = {
   message?: string;
   partialValues: Record<string, RuntimeValue>;
   partialArtifacts: StoredFile[];
+  usage?: PluginUsage;
   cancelRequested: boolean;
   error?: string;
   retryCount: number;

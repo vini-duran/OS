@@ -183,23 +183,52 @@ function collectCandidates({
   }
 
   const currentProcessIndex = PROCESS_ORDER.indexOf(execution.processType);
-  const completedProcesses = projectExecutions
+  const explicitPreviousProcessRefs = new Set(
+    (block.inputs ?? [])
+      .filter(
+        (input) =>
+          input.source === "previous_process" &&
+          input.sourceProcessType &&
+          input.blockId &&
+          input.sourceKey,
+      )
+      .map(
+        (input) =>
+          `${input.sourceProcessType as string}:${input.blockId as string}:${input.sourceKey as string}`,
+      ),
+  );
+  const previousProcesses = projectExecutions
     .filter(
       (item) =>
-        item.outputStatus === "completed" &&
-        PROCESS_ORDER.indexOf(item.processType) < currentProcessIndex,
+        PROCESS_ORDER.indexOf(item.processType) < currentProcessIndex &&
+        (item.outputStatus === "completed" ||
+          [...explicitPreviousProcessRefs].some((reference) =>
+            reference.startsWith(`${item.processType}:`),
+          )),
     )
     .sort(
       (left, right) =>
         PROCESS_ORDER.indexOf(right.processType) - PROCESS_ORDER.indexOf(left.processType),
     );
-  for (const rawProcessExecution of completedProcesses) {
+  for (const rawProcessExecution of previousProcesses) {
     const processExecution = normalizeExecutionDeliveries(rawProcessExecution);
+    const processIsComplete = processExecution.outputStatus === "completed";
+    const completedBlockIds = new Set(
+      processExecution.blocks
+        .filter((blockExecution) => blockExecution.status === "completed")
+        .map((blockExecution) => blockExecution.blockId),
+    );
     const processBlocks = new Map(
       processExecution.methodSnapshot.blocks.map((item) => [item.id, item] as const),
     );
     for (const delivery of (processExecution.deliveries ?? []).filter(
-      (item) => item.status !== "invalidated",
+      (item) =>
+        item.status !== "invalidated" &&
+        (processIsComplete ||
+          (completedBlockIds.has(item.blockId) &&
+            explicitPreviousProcessRefs.has(
+              `${processExecution.processType}:${item.blockId}:${item.outputKey}`,
+            ))),
     )) {
       const sourceBlock = processBlocks.get(delivery.blockId);
       candidates.push({
@@ -218,6 +247,7 @@ function collectCandidates({
         deliveryItemIds: delivery.items.map((item) => item.id),
       });
     }
+    if (!processIsComplete) continue;
     for (const output of createProcessOutputFields(processExecution.processType)) {
       const value = processExecution.output?.values[output.key];
       if (value === undefined || isEmptyRuntimeValue(value)) continue;
