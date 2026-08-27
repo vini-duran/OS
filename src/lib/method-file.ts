@@ -159,6 +159,12 @@ const validationSchema = z.object({
   maxAttempts: z.number().int().min(1).max(20),
 });
 
+const pluginBindingSchema = z.object({
+  pluginId: z.string().min(1).max(200),
+  capabilityId: z.string().min(1).max(200),
+  configuration: z.record(z.union([z.string(), z.number(), z.boolean()])),
+});
+
 const actionBlockSchema = z.object({
   id: z.string(),
   type: z.enum(["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"]),
@@ -169,6 +175,7 @@ const actionBlockSchema = z.object({
   inputs: z.array(inputSchema).max(100).optional(),
   outputs: z.array(outputSchema).max(100).optional(),
   validation: validationSchema.optional(),
+  plugin: pluginBindingSchema.optional(),
   parameters: z.array(parameterSchema).max(100),
   order: z.number().int().nonnegative(),
 });
