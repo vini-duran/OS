@@ -24,9 +24,13 @@ export function getMethodConfigurationIssue(method?: ProcessMethod) {
     if (new Set(keys).size !== keys.length) {
       return `As chaves das entregas do bloco “${block.name ?? block.type}” precisam ser únicas.`;
     }
-    for (const structuredField of [...(block.inputs ?? []), ...(block.outputs ?? [])].filter(
-      (field) => field.type === "records",
-    )) {
+    const structuredFields = [
+      ...(block.outputs ?? []),
+      ...(block.inputs ?? []).filter(
+        (field) => field.type !== "records" || field.source !== "previous_block" || !field.sourceKey,
+      ),
+    ].filter((field) => field.type === "records");
+    for (const structuredField of structuredFields) {
       const recordKeys = (structuredField.recordFields ?? [])
         .map((field) => field.key.trim())
         .filter(Boolean);
