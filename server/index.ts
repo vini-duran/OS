@@ -34,8 +34,13 @@ import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
 } from "../src/lib/presentation";
-import type { PluginExecutionRequest, PluginExecutionResponse, PluginFieldContract } from "../src/lib/plugin-contract";
+import type {
+  PluginExecutionRequest,
+  PluginExecutionResponse,
+  PluginFieldContract,
+} from "../src/lib/plugin-contract";
 import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
+import { normalizeProjectCleanupStatuses } from "../src/lib/project-cleanup";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import {
   activeProjectDeliveries,
@@ -333,6 +338,138 @@ function executionFor(projectId: string, processType: string) {
     .prepare("SELECT payload FROM process_executions WHERE project_id = ? AND process_type = ?")
     .get(projectId, processType) as { payload: string } | undefined;
   return row ? (JSON.parse(row.payload) as ProcessExecution) : undefined;
+}
+
+const activeProjectCleanupRuns = new Set<string>();
+
+function isStoredFile(value: unknown): value is StoredFile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.mimeType === "string" &&
+    typeof candidate.size === "number" &&
+    typeof candidate.url === "string"
+  );
+}
+
+function projectExecutionsForCleanup(projectId: string) {
+  return (
+    database
+      .prepare(
+        "SELECT payload FROM process_executions WHERE project_id = ? ORDER BY updated_at ASC",
+      )
+      .all(projectId) as { payload: string }[]
+  ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+}
+
+async function executeProjectCleanupAction(input: {
+  phase: "preview" | "apply";
+  project: Project;
+  channel: Channel;
+  inputs: Record<string, RuntimeValue>;
+}) {
+  const config = input.channel.projectCleanup;
+  if (!config) throw new Error("Este canal não possui uma ação de limpeza configurada.");
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(config.pluginId);
+  if (!plugin) throw new Error("O plugin configurado para limpeza não foi encontrado.");
+  if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+    throw new Error("Ative o plugin de limpeza e confirme suas permissões na Central de Plugins.");
+  }
+  const capabilityId =
+    input.phase === "preview" ? config.previewCapabilityId : config.applyCapabilityId;
+  const capability = plugin.manifest.capabilities.find((item) => item.id === capabilityId);
+  const expectedBlockType = input.phase === "preview" ? "BUSCAR" : "CRIAR";
+  if (
+    !capability ||
+    capability.execution.mode !== "immediate" ||
+    !capability.blockTypes.includes(expectedBlockType) ||
+    (capability.processTypes && !capability.processTypes.includes("publishing"))
+  ) {
+    throw new Error("A capacidade configurada não é compatível com a limpeza manual de projeto.");
+  }
+  const executions = projectExecutionsForCleanup(input.project.id);
+  const outputContract: PluginFieldContract[] = capability.outputPorts.map((port) => ({
+    label: port.label,
+    key: port.key,
+    portKey: port.key,
+    type: port.producedTypes[0],
+    required: port.required,
+    presentation: port.presentation,
+  }));
+  const inputContract = Object.entries(input.inputs).map(([key, value]) => ({
+    id: `project-cleanup-${key.replaceAll("_", "-")}`,
+    portKey: key,
+    label: capability.inputPorts.find((port) => port.key === key)?.label ?? key,
+    type:
+      key === "retention_preview"
+        ? ("file" as const)
+        : key === "cleanup_confirmation"
+          ? ("boolean" as const)
+          : typeof value === "boolean"
+            ? ("boolean" as const)
+            : ("select" as const),
+  }));
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `project-cleanup:${input.project.id}:${input.phase}`,
+    traceId: randomUUID(),
+    blockId: `project-cleanup-${input.phase}`,
+    capabilityId,
+    attempt: 1,
+    invocation: { mode: "start" },
+    configuration: config.configuration,
+    settings: {},
+    inputs: input.inputs,
+    inputContract,
+    inputDeliveries: [],
+    outputContract,
+    context: {
+      locale: input.channel.language || "pt-BR",
+      timeZone: "America/Porto_Velho",
+      channel: {
+        id: input.channel.id,
+        name: input.channel.name,
+        language: input.channel.language,
+        niche: input.channel.niche,
+      },
+      project: { id: input.project.id, title: input.project.title },
+      processType: "publishing",
+      block: {
+        type: expectedBlockType,
+        name: input.phase === "preview" ? "Prévia manual de limpeza" : "Limpeza manual confirmada",
+        instructions:
+          input.phase === "preview"
+            ? "Inventarie somente o projeto aberto; não remova arquivos."
+            : "Aplique somente o recibo aprovado para o projeto aberto.",
+      },
+      previousProcessOutputs: executions
+        .filter((execution) => execution.outputStatus === "completed" && execution.output)
+        .map((execution) => execution.output!),
+      previousBlockOutputs: executions.flatMap((execution) =>
+        execution.blocks
+          .filter((block) => block.status === "completed")
+          .map((block) => ({ blockId: block.blockId, values: block.values })),
+      ),
+      previousDeliveries: activeProjectDeliveries(executions),
+    },
+  };
+  const secrets = await pluginSecretsForJob(plugin.id, plugin.manifest.secretKeys ?? []);
+  const result = await executeRegisteredPlugin(
+    plugin,
+    pluginRequest,
+    capability.execution.defaultTimeoutMs ?? 60_000,
+    secrets,
+    { workspaceDirectory: readPluginWorkspace(plugin.id) },
+  );
+  if (result.status === "error") throw new Error(result.message);
+  if (result.status === "pending") {
+    throw new Error(
+      "A limpeza manual exige uma capacidade imediata; o plugin devolveu um job pendente.",
+    );
+  }
+  return result;
 }
 
 function valuesForPluginResponse(
@@ -2598,6 +2735,84 @@ app.get("/api/projects/:id/deliveries", (request, response) => {
     ? executions.flatMap((execution) => execution.deliveries ?? [])
     : activeProjectDeliveries(executions);
   response.json({ deliveries });
+});
+
+app.post("/api/projects/:id/cleanup/preview", async (request, response) => {
+  const project = readPayload<Project>("projects", request.params.id);
+  const channel = project ? readPayload<Channel>("channels", project.channelId) : undefined;
+  if (!project || !channel) {
+    response.status(404).json({ error: "Projeto ou canal não encontrado." });
+    return;
+  }
+  const runKey = `${project.id}:preview`;
+  if (activeProjectCleanupRuns.has(runKey)) {
+    response.status(409).json({ error: "A prévia desta produção já está em execução." });
+    return;
+  }
+  activeProjectCleanupRuns.add(runKey);
+  try {
+    const statuses = normalizeProjectCleanupStatuses(request.body?.statuses);
+    const inputs = Object.fromEntries(
+      Object.entries(statuses).filter(([, value]) => Boolean(value)),
+    ) as Record<string, RuntimeValue>;
+    const result = await executeProjectCleanupAction({
+      phase: "preview",
+      project,
+      channel,
+      inputs,
+    });
+    response.json({ values: result.values, logs: result.logs });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível gerar a prévia de limpeza.",
+    });
+  } finally {
+    activeProjectCleanupRuns.delete(runKey);
+  }
+});
+
+app.post("/api/projects/:id/cleanup/apply", async (request, response) => {
+  const project = readPayload<Project>("projects", request.params.id);
+  const channel = project ? readPayload<Channel>("channels", project.channelId) : undefined;
+  if (!project || !channel) {
+    response.status(404).json({ error: "Projeto ou canal não encontrado." });
+    return;
+  }
+  if (request.body?.cleanupConfirmation !== true || !isStoredFile(request.body?.preview)) {
+    response.status(400).json({
+      error: "A limpeza exige a prévia válida desta produção e confirmação humana explícita.",
+    });
+    return;
+  }
+  const runKey = `${project.id}:apply`;
+  if (activeProjectCleanupRuns.has(runKey)) {
+    response.status(409).json({ error: "A limpeza desta produção já está em execução." });
+    return;
+  }
+  activeProjectCleanupRuns.add(runKey);
+  try {
+    const statuses = normalizeProjectCleanupStatuses(request.body?.statuses);
+    const statusInputs = Object.fromEntries(
+      Object.entries(statuses).filter(([, value]) => Boolean(value)),
+    ) as Record<string, RuntimeValue>;
+    const result = await executeProjectCleanupAction({
+      phase: "apply",
+      project,
+      channel,
+      inputs: {
+        ...statusInputs,
+        retention_preview: request.body.preview,
+        cleanup_confirmation: true,
+      },
+    });
+    response.json({ values: result.values, logs: result.logs });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível aplicar a limpeza.",
+    });
+  } finally {
+    activeProjectCleanupRuns.delete(runKey);
+  }
 });
 
 app.get("/api/deliveries/:deliveryId", (request, response) => {

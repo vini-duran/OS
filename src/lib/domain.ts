@@ -221,6 +221,13 @@ export type ChannelResearchBrief = {
   approvedLibraryItemId?: string;
 };
 
+export type ProjectCleanupConfig = {
+  pluginId: string;
+  previewCapabilityId: string;
+  applyCapabilityId: string;
+  configuration: Record<string, string | number | boolean>;
+};
+
 export type Channel = {
   id: string;
   youtubeChannelId?: string;
@@ -242,6 +249,7 @@ export type Channel = {
   trend: number[];
   methods: Record<UniversalProcess, ProcessMethod>;
   research?: ChannelResearchConfig;
+  projectCleanup?: ProjectCleanupConfig;
   createdAt: string;
 };
 

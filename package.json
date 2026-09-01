@@ -39,8 +39,9 @@
     "test:credential-vault": "tsx --test server/credential-vault.test.ts",
     "test:method-file": "tsx --test src/lib/method-file.test.ts",
     "test:human-workflow": "tsx --test src/lib/human-workflow.test.ts",
+    "test:project-cleanup": "tsx --test src/lib/project-cleanup.test.ts",
     "plugin:kit": "tsx tools/plugin-kit.ts",
-    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:automatic-execution && npm run test:plugin-kit && npm run test:credential-vault && npm run test:method-file && npm run test:human-workflow && npm run build",
+    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:automatic-execution && npm run test:plugin-kit && npm run test:credential-vault && npm run test:method-file && npm run test:human-workflow && npm run test:project-cleanup && npm run build",
     "format": "prettier --write ."
   },
   "dependencies": {

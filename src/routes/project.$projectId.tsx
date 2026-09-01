@@ -2,6 +2,7 @@ import { createFileRoute, Link, Outlet, useLocation } from "@tanstack/react-rout
 import { LockKeyhole, UserRound } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
+import { ProjectCleanupDialog } from "@/components/project-cleanup-dialog";
 import { Button } from "@/components/ui/button";
 import { PROCESS_META, PROCESS_ORDER, type ProcessId } from "@/lib/domain";
 import { useChannel, useHumanTasks, useProject } from "@/lib/store";
@@ -49,6 +50,7 @@ function ProjectLayout() {
       <TopBar
         title={project.title}
         subtitle={channel.name}
+        actions={<ProjectCleanupDialog project={project} channel={channel} />}
         breadcrumbs={[
           { label: "Canais", to: "/dashboard" },
           { label: channel.name, to: `/channel/${channel.id}` as never },
