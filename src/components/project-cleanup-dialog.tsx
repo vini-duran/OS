@@ -41,6 +41,8 @@ const DESTINATIONS: Array<{ key: ProjectCleanupStatusKey; label: string }> = [
 
 const STATUS_OPTIONS: Array<{ value: ProjectCleanupFinalStatus | "detected"; label: string }> = [
   { value: "detected", label: "Usar estado detectado" },
+  { value: "scheduled", label: "Agendado" },
+  { value: "published", label: "Publicado" },
   { value: "deleted", label: "Apagado pelo operador" },
   { value: "rejected", label: "Reprovado pelo operador" },
   { value: "private", label: "Mantido privado" },

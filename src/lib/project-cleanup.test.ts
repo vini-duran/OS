@@ -12,13 +12,13 @@ test("normaliza somente estados finais permitidos pelo operador", () => {
       cutmotions_final_status: "REJECTED",
       instagram_final_status: "deleted",
       facebook_final_status: "published",
-      youtube_final_status: " private ",
+      youtube_final_status: " scheduled ",
     }),
     {
       cutmotions_final_status: "rejected",
       instagram_final_status: "deleted",
-      facebook_final_status: "",
-      youtube_final_status: "private",
+      facebook_final_status: "published",
+      youtube_final_status: "scheduled",
     },
   );
   assert.deepEqual(normalizeProjectCleanupStatuses(null), EMPTY_PROJECT_CLEANUP_STATUSES);

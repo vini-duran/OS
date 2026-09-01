@@ -13,7 +13,8 @@ export const PROJECT_CLEANUP_STATUS_KEYS = [
 ] as const;
 
 export type ProjectCleanupStatusKey = (typeof PROJECT_CLEANUP_STATUS_KEYS)[number];
-export type ProjectCleanupFinalStatus = "" | "rejected" | "deleted" | "private";
+export type ProjectCleanupFinalStatus =
+  "" | "scheduled" | "published" | "rejected" | "deleted" | "private";
 export type ProjectCleanupStatuses = Record<ProjectCleanupStatusKey, ProjectCleanupFinalStatus>;
 
 export const EMPTY_PROJECT_CLEANUP_STATUSES: ProjectCleanupStatuses = {
@@ -35,7 +36,14 @@ export type ProjectCleanupResponse = {
   logs?: string[];
 };
 
-const allowedStatuses = new Set<ProjectCleanupFinalStatus>(["", "rejected", "deleted", "private"]);
+const allowedStatuses = new Set<ProjectCleanupFinalStatus>([
+  "",
+  "scheduled",
+  "published",
+  "rejected",
+  "deleted",
+  "private",
+]);
 
 export function normalizeProjectCleanupStatuses(value: unknown): ProjectCleanupStatuses {
   const candidate = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
