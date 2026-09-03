@@ -1,14 +1,14 @@
 # Claude Browser Studio
 
-Versão **1.0.3** para ContentFlow Plugin API v1.
+Versão **1.0.5** para ContentFlow Plugin API v1.
 
 Plugin independente para ContentFlow que converte a lógica operacional de `gerar_roteiros.py` e `extrair_cookies_chrome.py` em seis capabilities pela interface web do Claude: texto/roteiros, pesquisa, escolha, validação, visão e análise de documentos.
 
-Ele não usa a API oficial da Anthropic. O plugin abre um Google Chrome real com perfil persistente dedicado, inicia uma conversa nova, faz um único envio e lê a resposta visível do Claude. Cookies e tokens permanecem sob controle do Chrome e nunca são exportados para TXT, manifesto, logs, outputs ou artifacts.
+Ele não usa a API oficial da Anthropic. O plugin abre um Google Chrome real com perfil persistente dedicado, inicia ou retoma uma conversa e lê a resposta visível do Claude. Cookies e tokens permanecem sob controle do Chrome e nunca são exportados para TXT, manifesto, logs, outputs ou artifacts.
 
 ## Contrato simplificado
 
-O plugin usa a instrução resolvida do bloco como único prompt editável. As entradas conectadas são acrescentadas automaticamente como contexto. No Método, ele expõe apenas o perfil da conta. Configurações antigas de templates, modos, partes, retries e fallback continuam aceitas silenciosamente para não quebrar Métodos salvos, mas são ignoradas.
+O plugin usa a instrução resolvida do bloco como único prompt editável. As entradas conectadas são acrescentadas automaticamente como contexto. No Método, ele expõe o perfil principal e os perfis de fallback. Configurações antigas de templates, modos, partes e retries continuam aceitas silenciosamente para não quebrar Métodos salvos, mas são ignoradas.
 
 ## Mudança de segurança na autenticação
 
@@ -50,7 +50,7 @@ A espera de respostas combina `MutationObserver` com polling de segurança e tim
 ### Criar — `generate-text-in-browser`
 
 - Entrada opcional `content`: briefing, tema, regras, referências e outros valores universais serializáveis.
-- Entrada opcional `outline`: `records` ou `list`; cada item dispara uma mensagem e produz uma resposta na mesma conversa.
+- Entrada opcional `outline`: `records` ou `list`; o núcleo executa cada item sequencialmente, persiste a resposta e reaproveita a mesma conversa.
 - Entrada opcional `attachments`: imagens ou documentos usados como referência na primeira mensagem.
 - Saída `result`: `textarea` com o texto final unido e, por padrão, limpo.
 - Saída opcional `parts`: lista que preserva cada resposta capturada separadamente na mesma conversa.
@@ -100,7 +100,7 @@ O ContentFlow v0.3 ainda envia `settings: {}` para plugins comunitários, portan
 
 ## Execução
 
-Cada bloco realiza um único envio. A instrução define a tarefa e o contexto das entradas é anexado automaticamente. A saída opcional `parts`, quando ainda conectada por um Método antigo, contém somente a resposta dessa chamada.
+Sem `outline`, cada bloco realiza um único envio. Quando `outline` recebe mais de um item, `itemOrchestration` faz uma chamada atômica por item, em ordem. O contexto fixo e os blocos já concluídos são anexados em todas as chamadas, `parts` é persistido parcialmente após cada resposta e a conversa retornada pelo Claude é reutilizada no item seguinte. Se o núcleo mudar para outro perfil preparado após uma falha, ele abre uma conversa nova com o contexto e as partes já concluídas, sem repetir os itens persistidos.
 
 ## Segurança e dados
 

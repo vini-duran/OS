@@ -44,6 +44,7 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
       runtime: { kind: "node", version: ">=26 <27", module: "esm" },
       entrypoint: "handler.mjs",
       permissions: [],
+      supportsConversationContinuation: true,
       profileSetup: {
         configurationKey: "accountProfile",
         fallbackConfigurationKey: "fallbackAccountProfiles",
@@ -66,6 +67,12 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
           ],
           outputPorts: [
             { key: "results", label: "Resultados", producedTypes: ["list"], required: true },
+            {
+              key: "combined",
+              label: "Resultado unido",
+              producedTypes: ["textarea"],
+              required: false,
+            },
           ],
           execution: {
             mode: "immediate",
@@ -73,6 +80,7 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
             itemOrchestration: {
               inputPort: "prompts",
               outputPort: "results",
+              combinedOutputPort: "combined",
               mode: "sequential",
             },
           },
@@ -90,7 +98,7 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
           outputSchema: {
             type: "object",
             additionalProperties: false,
-            properties: { results: { type: "array" } },
+            properties: { results: { type: "array" }, combined: { type: "string" } },
             required: ["results"],
           },
         },
@@ -106,7 +114,16 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
       if (profile === "primary" && prompt === "two") {
         return { status: "error", code: "UPSTREAM_UNAVAILABLE", message: "temporary", retryable: true };
       }
-      return { status: "success", values: { results: [profile + ":" + prompt] } };
+      const mode = request.conversation?.mode ?? "none";
+      if (profile === "backup" && prompt === "two" && !request.conversation?.fallbackContext?.includes("primary:new:one")) {
+        return { status: "error", code: "INVALID_INPUT", message: "missing fallback context", retryable: false };
+      }
+      const value = profile + ":" + mode + ":" + prompt;
+      return {
+        status: "success",
+        values: { results: [value], combined: value },
+        conversation: { id: "https://provider.test/chat/" + profile },
+      };
     }`,
   );
 
@@ -199,6 +216,13 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
       ],
       outputs: [
         { id: "results", label: "Resultados", key: "results", type: "list", required: true },
+        {
+          id: "combined",
+          label: "Resultado unido",
+          key: "combined",
+          type: "textarea",
+          required: true,
+        },
       ],
       plugin: {
         pluginId: "test.contentflow.browser-fallback",
@@ -251,10 +275,14 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
 
     assert.equal(execution?.blocks[0]?.status, "completed", output.join("\n"));
     assert.deepEqual(execution?.blocks[0]?.values.results, [
-      "primary:one",
-      "backup:two",
-      "backup:three",
+      "primary:new:one",
+      "backup:new:two",
+      "backup:reuse:three",
     ]);
+    assert.equal(
+      execution?.blocks[0]?.values.combined,
+      "primary:new:one\n\nbackup:new:two\n\nbackup:reuse:three",
+    );
   } finally {
     if (server.exitCode === null) {
       server.kill();

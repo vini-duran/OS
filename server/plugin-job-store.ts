@@ -36,6 +36,7 @@ export type PersistentPluginJob = {
   itemOrchestration?: {
     inputPort: string;
     outputPort: string;
+    combinedOutputPort?: string;
     items: RuntimeValue[];
     itemIds: string[];
     currentIndex: number;

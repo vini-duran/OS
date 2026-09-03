@@ -4,8 +4,10 @@ import type { PluginCapability, PluginExecutionRequest } from "../src/lib/plugin
 import { createPersistentPluginJob } from "./plugin-job-store";
 import {
   appendOrchestratedOutput,
+  combineOrchestratedTextOutput,
   declaredItemOrchestration,
   invocationRequestForJob,
+  requestForNextOrchestratedItem,
 } from "./plugin-item-orchestration";
 
 const request = {
@@ -19,7 +21,15 @@ const request = {
   settings: {},
   inputs: { prompts: ["one", "two", "three"] },
   inputContract: [],
-  outputContract: [],
+  outputContract: [
+    {
+      key: "generated_images",
+      portKey: "images",
+      label: "Imagens",
+      type: "list",
+      required: true,
+    },
+  ],
   context: {
     locale: "pt-BR",
     timeZone: "America/Sao_Paulo",
@@ -55,6 +65,7 @@ test("expande uma lista em chamadas atômicas com ID e posição", () => {
     },
   });
   job.itemOrchestration!.currentIndex = 1;
+  job.partialValues = { generated_images: ["image-a"] };
   const invocation = invocationRequestForJob(job, { mode: "start" });
   assert.equal(invocation.inputs.prompts, "two");
   assert.equal(invocation.configuration.accountProfile, "backup");
@@ -62,6 +73,7 @@ test("expande uma lista em chamadas atômicas com ID e posição", () => {
     itemId: job.itemOrchestration!.itemIds[1],
     index: 1,
     total: 3,
+    completedItems: ["image-a"],
   });
 });
 
@@ -69,6 +81,37 @@ test("acumula outputs parciais sem repetir itens anteriores", () => {
   const first = appendOrchestratedOutput({}, { images: ["image-a"] }, "images");
   const second = appendOrchestratedOutput(first, { images: ["image-b"] }, "images");
   assert.deepEqual(second.images, ["image-a", "image-b"]);
+});
+
+test("combina itens textuais em uma saída longa na ordem original", () => {
+  assert.deepEqual(
+    combineOrchestratedTextOutput(
+      { parts: ["Bloco um", "Bloco dois"], result: "Bloco dois" },
+      "parts",
+      "result",
+    ),
+    { parts: ["Bloco um", "Bloco dois"], result: "Bloco um\n\nBloco dois" },
+  );
+});
+
+test("continua a mesma conversa no item seguinte e preserva contexto para fallback", () => {
+  const job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request,
+    timeoutMs: 60_000,
+  });
+  const nextRequest = requestForNextOrchestratedItem(job, {
+    conversationId: "https://provider.test/chat/1",
+    sourceProfile: "primary",
+    fallbackContext: "Bloco 1 concluído",
+  });
+  assert.deepEqual(nextRequest.conversation, {
+    mode: "reuse",
+    id: "https://provider.test/chat/1",
+    sourceProfile: "primary",
+    fallbackContext: "Bloco 1 concluído",
+  });
 });
 
 test("incrementa a tentativa lógica ao repetir um job", () => {

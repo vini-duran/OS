@@ -9,8 +9,9 @@ const manifest = JSON.parse(
 const handlerSource = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
 
 test("manifesto prepara perfis antes da execução", () => {
-  assert.equal(manifest.version, "1.0.3");
+  assert.equal(manifest.version, "1.0.5");
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
+  assert.equal(manifest.supportsConversationContinuation, true);
   assert.equal(manifest.settingsSchema.properties.allowExistingChromeProfile.default, false);
 });
 
@@ -56,6 +57,7 @@ function request(overrides = {}) {
       ...overrides.context,
     },
     validation: overrides.validation,
+    batch: overrides.batch,
   };
 }
 
@@ -84,6 +86,12 @@ test("manifesto declara as seis capabilities do Claude Browser Studio", () => {
     capability.outputPorts.map((item) => item.key),
     ["result", "parts"],
   );
+  assert.deepEqual(capability.execution.itemOrchestration, {
+    inputPort: "outline",
+    outputPort: "parts",
+    combinedOutputPort: "result",
+    mode: "sequential",
+  });
   assert.deepEqual(
     manifest.capabilities.map((item) => item.id),
     [
@@ -248,6 +256,38 @@ test("não divide outlines em múltiplos envios", () => {
   assert.doesNotMatch(parts[0], /INÍCIO 1\/12/);
   assert.match(parts[0], /Ponto 1/);
   assert.match(parts[0], /Ponto 12/);
+});
+
+test("orienta cada item orquestrado sem reiniciar a narração", () => {
+  const middle = __test.buildParts(
+    request({
+      inputs: {
+        content: "Contexto geral",
+        outline: { block_number: 2, titulo_bloco: "Virada", target_characters: 1500 },
+      },
+      instructionContextInputs: {
+        content: "Tema, título, dossiê e estratégia",
+        outline: [
+          { block_number: 1, titulo_bloco: "Abertura" },
+          { block_number: 2, titulo_bloco: "Virada" },
+          { block_number: 3, titulo_bloco: "Fecho" },
+        ],
+      },
+      batch: {
+        itemId: "item-2",
+        index: 1,
+        total: 3,
+        completedItems: ["Primeiro bloco já escrito."],
+      },
+    }),
+  )[0];
+  assert.match(middle, /Tema, título, dossiê e estratégia/);
+  assert.match(middle, /Continue a mesma narração, sem reiniciar o gancho/);
+  assert.match(middle, /bloco narrativo 2\/3/);
+  assert.match(middle, /"block_number": 2/);
+  assert.match(middle, /"target_characters": 1500/);
+  assert.match(middle, /BLOCOS JÁ CONCLUÍDOS/);
+  assert.match(middle, /Primeiro bloco já escrito/);
 });
 
 test("ignora partes personalizadas", () => {

@@ -85,8 +85,10 @@ import {
 import { canAdvanceProfileFallback, orderedProfileCandidates } from "./plugin-account-fallback";
 import {
   appendOrchestratedOutput,
+  combineOrchestratedTextOutput,
   declaredItemOrchestration,
   invocationRequestForJob,
+  requestForNextOrchestratedItem,
 } from "./plugin-item-orchestration";
 import {
   findPluginConnectionDependencies,
@@ -1369,20 +1371,44 @@ async function processPluginJob(
       ...job.partialValues,
       ...mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
     };
+    const completedConversationId = pluginResponse.conversation?.id
+      ? normalizePluginConversationId(pluginResponse.conversation.id)
+      : undefined;
     const itemOrchestration = job.itemOrchestration;
     if (itemOrchestration) {
       const outputKey =
         job.request.outputContract.find((field) => field.portKey === itemOrchestration.outputPort)
           ?.key ?? itemOrchestration.outputPort;
-      const accumulated = appendOrchestratedOutput(
-        job.partialValues,
-        mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
+      const combinedOutputKey = itemOrchestration.combinedOutputPort
+        ? (job.request.outputContract.find(
+            (field) => field.portKey === itemOrchestration.combinedOutputPort,
+          )?.key ?? itemOrchestration.combinedOutputPort)
+        : undefined;
+      const accumulated = combineOrchestratedTextOutput(
+        appendOrchestratedOutput(
+          job.partialValues,
+          mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
+          outputKey,
+        ),
         outputKey,
+        combinedOutputKey,
       );
       if (itemOrchestration.currentIndex + 1 < itemOrchestration.items.length) {
         const nextIndex = itemOrchestration.currentIndex + 1;
+        const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
+        const activeProfile = job.profileFallback
+          ? job.profileFallback.candidates[job.profileFallback.activeIndex]
+          : profileConfigurationKey
+            ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
+            : undefined;
+        const nextRequest = requestForNextOrchestratedItem(job, {
+          conversationId: completedConversationId,
+          sourceProfile: activeProfile,
+          fallbackContext: pluginConversationFallbackContext(block, accumulated),
+        });
         const saved = pluginJobs.save(claim, {
           ...job,
+          request: nextRequest,
           status: "starting",
           nextPollAt: new Date().toISOString(),
           retryCount: 0,
@@ -1429,9 +1455,6 @@ async function processPluginJob(
     if (restrictionIssues.length) {
       throw new Error(`O plugin entregou valores incompatíveis: ${restrictionIssues.join("; ")}.`);
     }
-    const completedConversationId = pluginResponse.conversation?.id
-      ? normalizePluginConversationId(pluginResponse.conversation.id)
-      : undefined;
     const saved = pluginJobs.save(
       claim,
       {

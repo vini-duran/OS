@@ -221,8 +221,33 @@ function plainTextInstruction(enabled) {
     : "";
 }
 
+function batchOutlineInstruction(request) {
+  const batch = request?.batch;
+  const block = request?.inputs?.outline;
+  if (!batch || !block || Array.isArray(block) || typeof block !== "object") return "";
+  const number = batch.index + 1;
+  const position = `${number}/${batch.total}`;
+  const instruction =
+    number === 1
+      ? `Escreva somente o primeiro bloco narrativo (${position}). Comece a cumprir a promessa imediatamente e não antecipe os demais blocos.`
+      : number === batch.total
+        ? `Continue a mesma narração e escreva somente o último bloco narrativo (${position}). Encerre apenas este último bloco conforme o plano.`
+        : `Continue a mesma narração, sem reiniciar o gancho, e escreva somente o bloco narrativo ${position}. Não encerre o vídeo.`;
+  const completed = Array.isArray(batch.completedItems)
+    ? batch.completedItems.filter((item) => typeof item === "string" && item.trim())
+    : [];
+  const completedContext = completed.length
+    ? `\n\nBLOCOS JÁ CONCLUÍDOS — preserve a continuidade e não os reescreva:\n${completed
+        .map((item, index) => `[BLOCO ${index + 1}]\n${item}`)
+        .join("\n\n")}`
+    : "";
+  return `${instruction}${completedContext}\n\nITEM ATUAL DA OUTLINE:\n${serialize(block)}`;
+}
+
 function buildParts(request) {
-  return [buildInstructionPrompt(request, [plainTextInstruction(true)])];
+  return [
+    buildInstructionPrompt(request, [batchOutlineInstruction(request), plainTextInstruction(true)]),
+  ];
 }
 
 function expandCapabilityTemplate(template, replacements, request) {

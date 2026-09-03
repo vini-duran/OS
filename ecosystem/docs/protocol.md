@@ -265,7 +265,7 @@ No nível do manifesto, `deliveryTypes` classifica o plugin para descoberta na g
 - `acceptedInputTypes` e `producedOutputTypes` são resumos para descoberta rápida; portas são a autoridade para binding.
 - `execution` declara comportamento imediato ou assíncrono.
 - `execution.maxConcurrency` informa o teto seguro declarado pelo autor; o núcleo pode impor um valor menor.
-- `execution.itemOrchestration`, quando presente, permite que o núcleo expanda uma entrada em lista em chamadas atômicas sequenciais, acumule a saída correspondente e materialize entregas parciais com IDs estáveis.
+- `execution.itemOrchestration`, quando presente, permite que o núcleo expanda uma entrada em lista em chamadas atômicas sequenciais, acumule a saída correspondente e materialize entregas parciais com IDs estáveis. `combinedOutputPort` pode indicar uma segunda porta textual que recebe os itens unidos na mesma ordem.
 - `sideEffects` declara todos os efeitos observáveis fora da resposta do bloco.
 - `cost` informa se a capacidade é gratuita, tarifada ou de custo desconhecido e se consegue estimar o uso antes da confirmação.
 - `dataPolicy` informa se dados deixam a máquina, para quais provedores e onde consultar retenção e uso para treinamento.
@@ -402,7 +402,7 @@ Plugins que declaram `profileSetup` também podem receber `invocation.mode = "co
 
 Quando `fallbackConfigurationKey` estiver declarado, o usuário prepara explicitamente cada alias. O núcleo preserva a ordem configurada e avança para o próximo perfil quando a tentativa terminar com qualquer resposta de erro, independentemente de `code` ou `retryable`, inclusive `AUTHENTICATION_FAILED`, `RATE_LIMIT`, cota, permissão, bloqueio, upgrade e validação de output. `CANCELLED`, cancelamento já solicitado e esgotamento da lista nunca avançam o cursor. Respostas pendentes continuam no perfil atual.
 
-`execution.itemOrchestration` aceita `inputPort`, `outputPort` e `mode: "sequential"`. Se a entrada indicada for uma lista com mais de um item, o núcleo chama o plugin uma vez por item, inclui `request.batch` com ID, índice e total, acumula a saída indicada e persiste cada resultado antes de iniciar o seguinte. Assim, um erro ou fallback não repete itens já entregues.
+`execution.itemOrchestration` aceita `inputPort`, `outputPort`, `mode: "sequential"` e, opcionalmente, `combinedOutputPort`. Se a entrada indicada for uma lista com mais de um item, o núcleo chama o plugin uma vez por item, inclui `request.batch` com ID, índice, total e os itens já concluídos, acumula a saída indicada e persiste cada resultado antes de iniciar o seguinte. Quando `combinedOutputPort` aponta para uma porta textual, o núcleo também mantém nela os itens textuais unidos por uma linha em branco. Assim, um erro ou fallback não repete itens já entregues, e o plugin pode reapresentar o histórico necessário em cada chamada.
 
 ### 9.3 Execução assíncrona
 

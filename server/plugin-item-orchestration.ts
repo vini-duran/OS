@@ -17,6 +17,7 @@ export function declaredItemOrchestration(
   return {
     inputPort: policy.inputPort,
     outputPort: policy.outputPort,
+    combinedOutputPort: policy.combinedOutputPort,
     items: structuredClone(items) as RuntimeValue[],
     itemIds: items.map(() => randomUUID()),
     currentIndex: 0,
@@ -43,6 +44,11 @@ export function invocationRequestForJob(job: PersistentPluginJob, invocation: Pl
   const inputs = { ...job.request.inputs };
   const item = job.itemOrchestration;
   if (item) inputs[item.inputPort] = structuredClone(item.items[item.currentIndex]);
+  const itemOutputKey = item
+    ? (job.request.outputContract.find((field) => field.portKey === item.outputPort)?.key ??
+      item.outputPort)
+    : undefined;
+  const completedItems = itemOutputKey ? job.partialValues[itemOutputKey] : undefined;
   return {
     ...job.request,
     // A retry explícita é uma nova tentativa lógica. Avançar o número impede
@@ -58,8 +64,31 @@ export function invocationRequestForJob(job: PersistentPluginJob, invocation: Pl
           itemId: item.itemIds[item.currentIndex],
           index: item.currentIndex,
           total: item.items.length,
+          completedItems: Array.isArray(completedItems)
+            ? structuredClone(completedItems)
+            : undefined,
         }
       : undefined,
+  } satisfies PluginExecutionRequest;
+}
+
+export function requestForNextOrchestratedItem(
+  job: PersistentPluginJob,
+  input: {
+    conversationId?: string;
+    sourceProfile?: string;
+    fallbackContext?: string;
+  },
+) {
+  if (!input.conversationId) return job.request;
+  return {
+    ...job.request,
+    conversation: {
+      mode: "reuse" as const,
+      id: input.conversationId,
+      sourceProfile: input.sourceProfile,
+      fallbackContext: input.fallbackContext,
+    },
   } satisfies PluginExecutionRequest;
 }
 
@@ -77,4 +106,15 @@ export function appendOrchestratedOutput(
       : [incoming[outputKey]];
   next[outputKey] = [...priorItems, ...incomingItems] as RuntimeValue;
   return next;
+}
+
+export function combineOrchestratedTextOutput(
+  values: Record<string, RuntimeValue>,
+  itemOutputKey: string,
+  combinedOutputKey?: string,
+) {
+  if (!combinedOutputKey) return values;
+  const items = values[itemOutputKey];
+  if (!Array.isArray(items) || !items.every((item) => typeof item === "string")) return values;
+  return { ...values, [combinedOutputKey]: items.join("\n\n") };
 }

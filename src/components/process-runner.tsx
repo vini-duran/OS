@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { RuntimeFieldsForm } from "@/components/runtime-fields-form";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
+import { ImageGallery } from "@/components/image-gallery";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -975,7 +976,16 @@ function ValidationChoiceField({
         {fieldLabel}
         {fieldRequired && <span className="ml-1 text-destructive">*</span>}
       </Label>
-      {options.length ? (
+      {options.length > 0 &&
+      options.every(
+        (option) => isStoredFileOption(option) && option.mimeType.startsWith("image/"),
+      ) ? (
+        <ImageGallery
+          images={options as StoredFile[]}
+          selectedIds={selectedKeys}
+          onToggle={toggle}
+        />
+      ) : options.length ? (
         <div className="grid gap-2 md:grid-cols-2">
           {options.map((option) => {
             const key = validationOptionKey(option);

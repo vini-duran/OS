@@ -86,6 +86,8 @@ export type PluginExecutionPolicy = {
   itemOrchestration?: {
     inputPort: string;
     outputPort: string;
+    /** Optional text output that receives the ordered items joined with blank lines. */
+    combinedOutputPort?: string;
     mode: "sequential";
   };
 };
@@ -276,8 +278,13 @@ export type PluginExecutionRequest = {
         fallbackContext?: string;
         continuationMessage?: string;
       };
-  /** Core-owned position when a declared list input is executed item by item. */
-  batch?: { itemId: string; index: number; total: number };
+  /** Core-owned position and prior outputs when a declared list input is executed item by item. */
+  batch?: {
+    itemId: string;
+    index: number;
+    total: number;
+    completedItems?: Extract<RuntimeValue, unknown[]>;
+  };
   context: PluginExecutionContext;
 };
 
