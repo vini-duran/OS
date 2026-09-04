@@ -14,6 +14,27 @@ function realFunction(name, dependencies) {
 }
 const codedError = (code, message, retryable = false) => Object.assign(new Error(message), { code, retryable });
 
+test('automation activates only its own new page before writing', async () => {
+  const calls = [];
+  const client = { send: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'Target.getTargets') return { targetInfos: [{ type: 'page', targetId: 'original', url: 'https://claude.ai/chat/original' }] };
+    if (method === 'Target.createTarget') return { targetId: 'owned' };
+    if (method === 'Target.attachToTarget') return { sessionId: 'owned-session' };
+    return {};
+  } };
+  const fn = realFunction('attachClaudePage', {
+    CLAUDE_HOST: 'claude.ai', CLAUDE_NEW_URL: 'https://claude.ai/new',
+    evaluate: async () => ({ readyState: 'complete' }), codedError, Date,
+  });
+  const page = await fn(client, undefined, true, true);
+  assert.equal(page.targetId, 'owned');
+  assert.equal(calls.find(c => c.method === 'Target.createTarget').params.background, false);
+  assert.equal(calls.find(c => c.method === 'Target.activateTarget').params.targetId, 'owned');
+  assert.ok(calls.some(c => c.method === 'Page.bringToFront'));
+  assert.match(source, /const taskPage = await attachClaudePage\(\s*client,\s*services.signal,\s*true,/);
+});
+
 test('lost send acknowledgement never authorizes another send', async () => {
   let sends = 0;
   const lifecycle = { submitted: false };

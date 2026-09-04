@@ -202,7 +202,8 @@ function editorContainsExpected(actual, expected) {
 }
 
 async function stableEditorReadback(original, payload) {
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  // Background tabs may never produce animation frames. Yield for framework
+  // updates without waiting for paint, then still validate the actual editor.
   await new Promise((resolve) => setTimeout(resolve, 50));
   const current = original?.isConnected === false ? editableCandidate(payload) : original;
   return normalizeEditorText(readEditorText(current));

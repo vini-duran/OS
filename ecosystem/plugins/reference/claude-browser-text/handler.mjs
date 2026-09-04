@@ -1570,7 +1570,7 @@ export async function execute(request, services) {
     const taskPage = await attachClaudePage(
       client,
       services.signal,
-      false,
+      true,
       launched.startedByPlugin === false,
     );
     const { sessionId } = taskPage;

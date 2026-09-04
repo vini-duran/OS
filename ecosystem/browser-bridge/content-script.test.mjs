@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 
 const source = await readFile(new URL("./content-script.js", import.meta.url), "utf8");
 
-function fixture({ partialWrite = false, invisibleMarkers = false } = {}) {
+function fixture({ partialWrite = false, invisibleMarkers = false, suspendedFrames = false } = {}) {
   let listener;
   let selected;
   class FakeElement {
@@ -93,7 +93,7 @@ function fixture({ partialWrite = false, invisibleMarkers = false } = {}) {
     InputEvent: class InputEvent { constructor(type, options) { this.type = type; this.options = options; } },
     Event: class Event { constructor(type, options) { this.type = type; this.options = options; } },
     getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
-    requestAnimationFrame: (callback) => callback(),
+    requestAnimationFrame: (callback) => suspendedFrames ? 1 : callback(),
     setTimeout,
     clearTimeout,
     Date,
@@ -151,4 +151,19 @@ test("recusa escrita parcial e informa somente comprimentos", async () => {
   assert.equal(response.code, "EDITOR_WRITE_FAILED");
   assert.equal(response.expectedLength, text.length);
   assert.equal(response.readbackLength, 40);
+});
+
+test("aba em segundo plano confirma escrita sem depender de animation frames", { timeout: 2000 }, async () => {
+  const { listener, prompt } = fixture({ suspendedFrames: true });
+  const text = "Prompt em aba de fundo.";
+  const response = await setPrompt(listener, text);
+  assert.equal(response.ok, true);
+  assert.equal(prompt.textContent, text);
+});
+
+test("aba de fundo continua recusando escrita parcial", { timeout: 2000 }, async () => {
+  const { listener } = fixture({ suspendedFrames: true, partialWrite: true });
+  const response = await setPrompt(listener, "Texto completo.".repeat(30));
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "EDITOR_WRITE_FAILED");
 });

@@ -1,14 +1,29 @@
 # Claude Browser Studio
 
-## Candidata posterior à 1.0.10 — vínculo à aba exata
+## Candidata após 1.0.11 — teste real de dois turnos passou
+
+Instalado Claude 1.0.11 + Bridge 0.2.2 com backup. O teste revelou espera
+indefinida por animation frames na aba de fundo. Bridge local 0.2.3 remove essa
+dependência, conservando a leitura/validação do texto; não foi publicada.
+O teste seguinte confirmou escrita mas encontrou o botão oculto na aba de fundo.
+
+A candidata ativa somente a aba criada pela ferramenta e continua exigindo
+controle visível/habilitado. Teste real no sandbox do ContentFlow enviou e
+capturou duas respostas exatas, consecutivas, com o mesmo ID de conversa.
+O teste não alterou a produção. Roteiro completo e retomada do item 4 pendentes.
+Essa última mudança ainda não está instalada no plugin. O manifesto conserva
+1.0.11 como base: não redistribuir a candidata sob essa versão. Proposta de
+promoção local: 1.0.12, após autorização explícita do conjunto validado.
+
+## Histórico — versão local 1.0.11 + Bridge 0.2.2
 
 Diagnóstico real encontrou Bridge 0.2.0 em uso e várias abas `claude.ai/new`.
 O transporte escolhia a primeira URL compatível, diferente da aba observada pelo
 plugin. Atualizar a cópia ativa para 0.2.1 não resolve o direcionamento por URL.
 A candidata exige `supportsTabBinding`, usa marcador efêmero da aba para vinculá-la
 na Bridge e recusa extensão antiga antes de preencher/enviar. Não amplia permissões.
-Não instalada/versionada: exige pacote novo do plugin e da Browser Bridge;
-não distribuir esta fonte sob 1.0.10. 54 testes locais passaram; E2E pendente.
+Instalação local do par autorizada em 2026-09-04. Não é release pública.
+54 testes locais passaram; E2E pendente. Não distribuir sob versões anteriores.
 
 `inspect-send.mjs` é entrada explícita de diagnóstico pelo sandbox: não navega,
 escreve ou envia prompts. Uma solicitação explícita `reloadBridgeId` pode recarregar
@@ -47,7 +62,7 @@ de envio da 1.0.8 e rejeita respostas antigas como resultado de um novo envio.
 e resposta antiga que não deve contar como novo bloco, sem prompts externos.
 A geração completa dos oito blocos continua não validada no provedor.
 
-Versão **1.0.10** para ContentFlow Plugin API v1; seção abaixo registra a 1.0.9.
+Versão **1.0.11** para ContentFlow Plugin API v1; seção abaixo registra a 1.0.9.
 
 ## Correção do editor
 
