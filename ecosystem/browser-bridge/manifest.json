@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ContentFlow Browser Bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ponte comum dos plugins de automação de navegador compatíveis com o ContentFlow.",
   "permissions": ["tabs", "storage"],
   "host_permissions": [

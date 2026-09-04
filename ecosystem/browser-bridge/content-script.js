@@ -97,7 +97,23 @@ function editableCandidate(payload) {
     'input[type="text"]',
     '[role="textbox"]',
   ]);
-  return elementsFor(selectors).find(isEditable) || null;
+  const candidates = elementsFor(selectors).filter(isEditable);
+  if (!candidates.length) return null;
+  const terms = (Array.isArray(payload?.textIncludes) ? payload.textIncludes : [])
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 30);
+  const preferred = terms.length
+    ? candidates.filter((element) => terms.some((term) => textOf(element).includes(term)))
+    : [];
+  const pool = preferred.length ? preferred : candidates;
+  return (
+    [...pool].sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return rightRect.bottom - leftRect.bottom || rightRect.width - leftRect.width;
+    })[0] || null
+  );
 }
 
 function clickableCandidate(payload) {
@@ -128,6 +144,29 @@ function clickableCandidate(payload) {
   );
 }
 
+function normalizeEditorText(value) {
+  return String(value ?? "")
+    .normalize("NFC")
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function readEditorText(element) {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    return element.value;
+  }
+  return element.innerText || element.textContent || "";
+}
+
+function dispatchEditorEvents(element, value) {
+  element.dispatchEvent(
+    new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }),
+  );
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function replaceText(element, value) {
   element.focus({ preventScroll: true });
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -137,10 +176,7 @@ function replaceText(element, value) {
         : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
     setter?.call(element, value);
-    element.dispatchEvent(
-      new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }),
-    );
-    element.dispatchEvent(new Event("change", { bubbles: true }));
+    dispatchEditorEvents(element, value);
     return element.value;
   }
   const selection = document.getSelection();
@@ -149,11 +185,27 @@ function replaceText(element, value) {
   selection.removeAllRanges();
   selection.addRange(range);
   document.execCommand("insertText", false, value);
-  element.dispatchEvent(
-    new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }),
+  dispatchEditorEvents(element, value);
+  return readEditorText(element);
+}
+
+function editorContainsExpected(actual, expected) {
+  if (!expected) return true;
+  if (actual === expected) return true;
+  const prefixLength = Math.min(120, expected.length);
+  const suffixLength = Math.min(120, expected.length);
+  return (
+    actual.includes(expected.slice(0, prefixLength)) &&
+    actual.includes(expected.slice(-suffixLength)) &&
+    actual.length >= Math.floor(expected.length * 0.9)
   );
-  element.dispatchEvent(new Event("change", { bubbles: true }));
-  return element.innerText || element.textContent || "";
+}
+
+async function stableEditorReadback(original, payload) {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const current = original?.isConnected === false ? editableCandidate(payload) : original;
+  return normalizeEditorText(readEditorText(current));
 }
 
 async function dispatchAction(action, payload) {
@@ -165,6 +217,7 @@ async function dispatchAction(action, payload) {
       url: location.href,
       title: document.title,
       editableReady: Boolean(editableCandidate(payload)),
+      ...(payload?.includeTabMarker ? { tabMarker: document.documentElement.getAttribute('data-contentflow-tab-marker') } : {}),
     };
   }
   if (action === "setText" || action === "setPrompt") {
@@ -172,18 +225,17 @@ async function dispatchAction(action, payload) {
     if (!editable) {
       return { ok: false, code: "EDITOR_NOT_FOUND", message: "Editor não encontrado." };
     }
-    const expected = String(payload?.text || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const actual = String(replaceText(editable, String(payload?.text || "")))
-      .replace(/\uFEFF/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (expected && actual !== expected && !actual.includes(expected.slice(0, 80))) {
+    const text = String(payload?.text || "");
+    const expected = normalizeEditorText(text);
+    replaceText(editable, text);
+    const actual = await stableEditorReadback(editable, payload);
+    if (!editorContainsExpected(actual, expected)) {
       return {
         ok: false,
         code: "EDITOR_WRITE_FAILED",
         message: "O texto não permaneceu no editor.",
+        expectedLength: expected.length,
+        readbackLength: actual.length,
       };
     }
     return { ok: true, readbackLength: actual.length };

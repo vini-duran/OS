@@ -1711,6 +1711,80 @@ export async function execute(request, services) {
   }
 }
 
+// Development diagnostic: no provider navigation, text mutation or send.
+// An explicit reloadBridgeId refreshes only the verified companion extension.
+export async function inspectSendControls(request, services) {
+  const profileName = normalizeAccountProfile(request.configuration?.accountProfile);
+  const profilePath = runtimeProfilePath({}, profileName, services);
+  if (!await profileIsPrepared(profilePath, profileName)) return resultError('INVALID_CONFIGURATION', 'Perfil não preparado.');
+  const version = await fetchBrowserVersion(profilePort(DEFAULT_PORT, profileName));
+  if (!version) return resultError('NOT_FOUND', 'Navegador dedicado não está aberto.');
+  const client = await new CdpClient(version.webSocketDebuggerUrl).connect(services.signal);
+  try {
+    if (request.configuration?.reloadBridgeId) {
+      const id = request.configuration.reloadBridgeId;
+      if (!/^[a-p]{32}$/.test(id)) throw codedError('INVALID_INPUT', 'ID de extensão inválido.');
+      const pages = await client.send('Target.getTargets');
+      const page = pages.targetInfos.find(t => t.type === 'page' && /^https:\/\/claude\.ai\//.test(t.url));
+      if (!page) throw codedError('NOT_FOUND', 'Nenhuma aba Claude disponível.');
+      const attached = await client.send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
+      await client.send('ServiceWorker.enable', {}, attached.sessionId);
+      await client.send('ServiceWorker.startWorker', { scopeURL: `chrome-extension://${id}/` }, attached.sessionId);
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const { targetInfos } = await client.send('Target.getTargets');
+        const target = targetInfos.find(t => t.type === 'service_worker' && t.url === `chrome-extension://${id}/service-worker.js`);
+        if (target) {
+          const { sessionId } = await client.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+          const identity = await evaluate(client, sessionId, 'globalThis.contentFlowBridge?.identity');
+          if (identity?.bridgeId !== 'com.contentflow.browser-bridge') throw codedError('INVALID_INPUT', 'Extensão não é a Browser Bridge.');
+          // Refresh only this verified extension; never reload provider pages.
+          await client.send('Runtime.evaluate', { expression: 'chrome.runtime.reload()', returnByValue: true }, sessionId).catch(() => {});
+          return { status: 'success', values: { result: JSON.stringify({ reloadRequested: true, previousVersion: identity.extensionVersion }) } };
+        }
+        await sleep(250, services.signal);
+      }
+      throw codedError('NOT_FOUND', 'Worker da Bridge não disponível para recarga.');
+    }
+    const { targetInfos = [] } = await client.send('Target.getTargets');
+    const pages = targetInfos.filter(t => t.type === 'page' && /^https:\/\/claude\.ai\//.test(t.url));
+    const results = [];
+    for (const worker of targetInfos.filter(t => t.type === 'service_worker' && /^chrome-extension:\/\//.test(t.url))) {
+      const { sessionId } = await client.send('Target.attachToTarget', { targetId: worker.targetId, flatten: true });
+      try {
+        const identity = await evaluate(client, sessionId, 'globalThis.contentFlowBridge?.identity');
+        if (identity) results.push({ bridgeIdentity: identity });
+      } finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+    }
+    for (const target of pages) {
+      const { sessionId } = await client.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+      try {
+        const result = await evaluate(client, sessionId, `(() => { ${PAGE_HELPERS};
+          const p=cfPrompt(); const s=cfResponseState();
+          return {pagePath:location.pathname, promptCharacters:s.promptText?.length??0,
+            promptReady:s.promptReady, generating:s.generating, sendReady:s.sendReady,
+            editors:[...document.querySelectorAll('[contenteditable],textarea,[role="textbox"]')].filter(cfVisible).map(el=>({
+              tag:el.tagName, role:el.getAttribute('role'), editable:el.getAttribute('contenteditable'),
+              className:el.className, label:el.getAttribute('aria-label'), placeholder:el.getAttribute('data-placeholder'),
+              characters:(el.value??el.innerText??'').length, selected:el===p,
+            })),
+            buttons:[...document.querySelectorAll('button')].filter(el=>el.getAttribute('data-testid')==='chat-input-send'||/^(send message|enviar mensagem)$/i.test(el.getAttribute('aria-label')||'')).map(el=>({
+              visible:cfVisible(el), bounds:{width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,
+                bottom:el.getBoundingClientRect().bottom,right:el.getBoundingClientRect().right},
+              style:{display:getComputedStyle(el).display,visibility:getComputedStyle(el).visibility,opacity:getComputedStyle(el).opacity},
+              label:el.getAttribute('aria-label'), title:el.getAttribute('title'),
+              testId:el.getAttribute('data-testid'), type:el.getAttribute('type'),
+              className:el.getAttribute('data-testid')==='chat-input-send'?el.className:undefined,
+              disabled:!!el.disabled, ariaDisabled:el.getAttribute('aria-disabled'),
+              svgLabels:[...el.querySelectorAll('svg')].map(x=>({label:x.getAttribute('aria-label'),'data-icon':x.getAttribute('data-icon')})),
+              nearEditor:!!p&&!!el.parentElement?.contains(p)
+            }))}; })()`);
+        results.push(result);
+      } finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+    }
+    return { status: 'success', values: { result: JSON.stringify(results) } };
+  } finally { client.close(); }
+}
+
 export const __test = {
   buildParts,
   buildChoosePrompt,

@@ -1,5 +1,20 @@
 # Claude Browser Studio
 
+## Candidata posterior à 1.0.10 — vínculo à aba exata
+
+Diagnóstico real encontrou Bridge 0.2.0 em uso e várias abas `claude.ai/new`.
+O transporte escolhia a primeira URL compatível, diferente da aba observada pelo
+plugin. Atualizar a cópia ativa para 0.2.1 não resolve o direcionamento por URL.
+A candidata exige `supportsTabBinding`, usa marcador efêmero da aba para vinculá-la
+na Bridge e recusa extensão antiga antes de preencher/enviar. Não amplia permissões.
+Não instalada/versionada: exige pacote novo do plugin e da Browser Bridge;
+não distribuir esta fonte sob 1.0.10. 54 testes locais passaram; E2E pendente.
+
+`inspect-send.mjs` é entrada explícita de diagnóstico pelo sandbox: não navega,
+escreve ou envia prompts. Uma solicitação explícita `reloadBridgeId` pode recarregar
+somente a extensão cuja identidade foi verificada. O uso rotineiro permanece em
+`handler.mjs`. Dados de diagnóstico são locais, nunca tokens/cookies.
+
 ## Versão local 1.0.10 — sincronização de turnos, E2E pendente
 
 Versionamento e instalação local de teste autorizados após apresentação dos
