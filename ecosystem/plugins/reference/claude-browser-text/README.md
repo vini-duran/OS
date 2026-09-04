@@ -1,10 +1,10 @@
 # Claude Browser Studio
 
-## Candidata local — sincronização de turnos (não instalada)
+## Versão local 1.0.10 — sincronização de turnos, E2E pendente
 
-Fonte de desenvolvimento posterior à instalação 1.0.9; não distribuir nem
-substituir o pacote instalado sob a mesma versão. Nenhum manifesto, permissão,
-conta, Método ou campo de saída foi alterado.
+Versionamento e instalação local de teste autorizados após apresentação dos
+testes da candidata. Não é release pública nem comprovação E2E. Permissões,
+contas, Métodos e campos de saída permanecem iguais; manifesto apenas versionado.
 
 - Antes de escrever, aguarda editor disponível e resposta estável/ociosa.
 - Antes do clique pela ContentFlow Browser Bridge, aguarda envio habilitado.
@@ -32,7 +32,7 @@ de envio da 1.0.8 e rejeita respostas antigas como resultado de um novo envio.
 e resposta antiga que não deve contar como novo bloco, sem prompts externos.
 A geração completa dos oito blocos continua não validada no provedor.
 
-Versão **1.0.9** para ContentFlow Plugin API v1.
+Versão **1.0.10** para ContentFlow Plugin API v1; seção abaixo registra a 1.0.9.
 
 ## Correção do editor
 
