@@ -1721,6 +1721,18 @@ export async function inspectSendControls(request, services) {
   if (!version) return resultError('NOT_FOUND', 'Navegador dedicado não está aberto.');
   const client = await new CdpClient(version.webSocketDebuggerUrl).connect(services.signal);
   try {
+    if (request.configuration?.inspectConversationUrl) {
+      const url = validateConversationUrl(request.configuration.inspectConversationUrl);
+      const { targetInfos } = await client.send('Target.getTargets');
+      const existing = targetInfos.find(t => t.type === 'page' && t.url === url);
+      if (!existing) {
+        // Explicit read-only reconciliation opens the saved conversation, never sends.
+        const created = await client.send('Target.createTarget', { url, background: false });
+        const { sessionId } = await client.send('Target.attachToTarget', { targetId: created.targetId, flatten: true });
+        try { await waitForPrompt(client, sessionId, 60_000, services.signal); }
+        finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+      }
+    }
     if (request.configuration?.reloadBridgeId) {
       const id = request.configuration.reloadBridgeId;
       if (!/^[a-p]{32}$/.test(id)) throw codedError('INVALID_INPUT', 'ID de extensão inválido.');
@@ -1760,7 +1772,9 @@ export async function inspectSendControls(request, services) {
       try {
         const result = await evaluate(client, sessionId, `(() => { ${PAGE_HELPERS};
           const p=cfPrompt(); const s=cfResponseState();
-          return {pagePath:location.pathname, promptCharacters:s.promptText?.length??0,
+          return {pagePath:location.pathname, responseTexts:s.texts,
+            userMessageCount:document.querySelectorAll('[data-testid="user-message"]').length,
+            promptCharacters:s.promptText?.length??0,
             promptReady:s.promptReady, generating:s.generating, sendReady:s.sendReady,
             editors:[...document.querySelectorAll('[contenteditable],textarea,[role="textbox"]')].filter(cfVisible).map(el=>({
               tag:el.tagName, role:el.getAttribute('role'), editable:el.getAttribute('contenteditable'),
@@ -1778,6 +1792,11 @@ export async function inspectSendControls(request, services) {
               svgLabels:[...el.querySelectorAll('svg')].map(x=>({label:x.getAttribute('aria-label'),'data-icon':x.getAttribute('data-icon')})),
               nearEditor:!!p&&!!el.parentElement?.contains(p)
             }))}; })()`);
+        result.responses = (result.responseTexts ?? []).map(text => ({
+          characters: text.length,
+          sha256: createHash('sha256').update(String(text).replace(/\s+/gu, ' ').trim()).digest('hex'),
+        }));
+        delete result.responseTexts;
         results.push(result);
       } finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
     }

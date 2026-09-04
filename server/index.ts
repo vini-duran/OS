@@ -3997,6 +3997,53 @@ app.post("/api/executions/:id/cancel", (request, response) => {
   response.status(202).json({ ok: true, execution, project });
 });
 
+// Recovery preserves orchestration state; never reuse the destructive full retry path.
+app.post('/api/executions/:id/resume-items', (request, response) => {
+  const body = request.body ?? {};
+  if (body.confirmedNoUncapturedOutput !== true || typeof body.jobId !== 'string' ||
+      typeof body.expectedUpdatedAt !== 'string' || typeof body.reconciliationNote !== 'string') {
+    response.status(400).json({ error: 'Reconcilie a tentativa externa antes de retomar os itens salvos.' });
+    return;
+  }
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>('projects', execution.projectId) : undefined;
+  const job = pluginJobs.get(body.jobId);
+  const blockExecution = execution?.blocks.find(b => b.blockId === job?.blockId);
+  const block = execution?.methodSnapshot.blocks.find(b => b.id === job?.blockId);
+  const plugin = job ? getRegisteredPlugin(job.pluginId) : undefined;
+  const capability = plugin?.manifest.capabilities.find(c => c.id === job?.capabilityId);
+  const policy = capability?.execution.itemOrchestration;
+  if (!execution || !project || !job || job.executionId !== execution.id ||
+      execution.status !== 'failed' || blockExecution?.status !== 'failed' ||
+      (blockExecution.attempt ?? 1) !== job.attempt || block?.plugin?.pluginId !== job.pluginId ||
+      block.plugin.capabilityId !== job.capabilityId || !plugin?.executable || !pluginConsentIsCurrent(plugin) ||
+      !policy || policy.inputPort !== job.itemOrchestration?.inputPort ||
+      policy.outputPort !== job.itemOrchestration?.outputPort ||
+      policy.combinedOutputPort !== job.itemOrchestration?.combinedOutputPort ||
+      JSON.stringify(blockExecution.values) !== JSON.stringify(job.partialValues)) {
+    response.status(409).json({ error: 'Execução, contrato, consentimento ou entregas mudaram; recuperação recusada sem apagar dados.' });
+    return;
+  }
+  try {
+    const saved = pluginJobs.resumeFailedItems(job.id, body.expectedUpdatedAt, {
+      pluginVersion: plugin.manifest.version,
+      timeoutMs: capability.execution.defaultTimeoutMs ?? 60_000,
+      reconciliationNote: body.reconciliationNote,
+    }, next => {
+      blockExecution.status = 'in_progress';
+      blockExecution.error = undefined;
+      blockExecution.progressMessage = next.message;
+      execution.status = 'running';
+      execution.error = undefined;
+      persistPluginExecution(execution, project);
+    });
+    response.status(202).json({ ok: true, job: publicPluginJob(saved), execution, project });
+    void processDuePluginJobs();
+  } catch (error) {
+    response.status(409).json({ error: error instanceof Error ? error.message : 'Não foi possível retomar.' });
+  }
+});
+
 app.post("/api/executions", (request, response) => {
   const execution = request.body as StoredPayload;
   if (!execution?.id || !execution.projectId || !execution.processType || !execution.updatedAt) {
