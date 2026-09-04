@@ -1,6 +1,27 @@
 # Claude Browser Studio
 
-## Candidata após 1.0.11 — teste real de dois turnos passou
+## Versão local 1.0.13 — pacote de recuperação reproduzível
+
+Mesma execução de escrita da 1.0.12, que concluiu oito itens no teste real.
+Acrescenta somente diagnóstico explícito: reabrir conversa informada sem enviar,
+contar mensagens e comparar hashes das respostas. Esses recursos foram usados
+na reconciliação antes da retomada pelo Core e agora integram o pacote instalado.
+Sem novos hosts/permissões, sem automação de aprovação editorial. A escrita não
+mudou; não reexecutar produção concluída para testar um diagnóstico de leitura.
+
+## Versão local 1.0.12 instalada — continuidade real confirmada
+
+Promoção local autorizada em 2026-09-04. Plugin instalado repetiu com sucesso
+o teste de duas respostas consecutivas na mesma conversa, usando Bridge 0.2.3.
+O Core ganhou recuperação explícita de cursor após reconciliação externa,
+preservando partes, conversa e histórico; não usa retry integral do bloco.
+Produção retomou do quarto item, concluiu oito e avançou ao QA automaticamente.
+Parou na aprovação humana; QA reprovou extensão, não segmentação/automação.
+Status final/editorial pertence ao registro da produção, não ao manifesto.
+Ativa somente sua própria aba para disponibilizar o controle do Claude; pode
+trazê-la à frente. Não exige extensão ChatGPT ou envio/cópia manual do operador.
+
+## Histórico — candidata posterior à 1.0.11
 
 Instalado Claude 1.0.11 + Bridge 0.2.2 com backup. O teste revelou espera
 indefinida por animation frames na aba de fundo. Bridge local 0.2.3 remove essa
