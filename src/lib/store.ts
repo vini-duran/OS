@@ -161,11 +161,8 @@ async function hydrate() {
     db.libraryItems.splice(0, db.libraryItems.length, ...libraryItems);
     db.libraryCollections.splice(0, db.libraryCollections.length, ...libraryCollections);
     db.orchestrators.splice(0, db.orchestrators.length, ...orchestrators);
-    for (const channel of db.channels) {
-      for (const processType of PROCESS_ORDER) {
-        synchronizeOpenExecutionsWithMethod(channel.id, processType, channel.methods[processType]);
-      }
-    }
+    // Loading is not a Method edit or retry. Preserve execution snapshots,
+    // failed jobs, human decisions and reserved attempt identities on reload.
   } catch (error) {
     console.error(error);
   } finally {
@@ -503,6 +500,7 @@ function synchronizeOpenExecutionsWithMethod(
   );
 
   for (const execution of executions) {
+    if (JSON.stringify(execution.methodSnapshot) === JSON.stringify(method)) continue;
     const previousExecutions = new Map(execution.blocks.map((block) => [block.blockId, block]));
     const previousBlocks = new Map(
       execution.methodSnapshot.blocks.map((block) => [block.id, block]),
@@ -530,12 +528,21 @@ function synchronizeOpenExecutionsWithMethod(
           blockId: block.id,
           status: block.operator === "Humano" ? "awaiting_human" : "blocked_executor",
           values,
-          attempt: previousExecution?.attempt ?? 1,
+          attempt: previousExecution
+            ? (attemptAfterRetryInvalidation(previousExecution) ?? 1)
+            : 1,
           startedAt: previousExecution?.startedAt ?? new Date().toISOString(),
         };
       }
 
-      return { blockId: block.id, status: "pending", values: {} };
+      return {
+        blockId: block.id,
+        status: "pending",
+        values: {},
+        attempt: previousExecution
+          ? (attemptAfterRetryInvalidation(previousExecution) ?? 1)
+          : 1,
+      };
     });
 
     const activeExecution = execution.blocks.find((block) => block.status !== "completed");
