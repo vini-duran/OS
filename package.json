@@ -27,6 +27,7 @@
     "start": "concurrently -k \"npm run api:start\" \"vite preview --host 127.0.0.1 --port 8080\"",
     "desktop:prepare": "npm run build && node desktop/validate-native-dependencies.mjs && node desktop/prepare-desktop.mjs",
     "desktop:run": "npm run desktop:prepare && electron .",
+    "desktop:mac:arm64": "CONTENTFLOW_DESKTOP_TARGET_ARCH=arm64 npm run desktop:prepare && electron-builder --mac dir --arm64",
     "desktop:portable": "npm run desktop:prepare && electron-builder --win portable --x64",
     "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis --x64",
     "desktop:v0": "npm run desktop:prepare && electron-builder --win portable nsis --x64",
@@ -56,8 +57,10 @@
     "test:updater": "node --test desktop/updater.test.cjs",
     "test:distribution-boundaries": "node --test desktop/distribution-boundaries.test.cjs",
     "test:data-migration": "tsx --test server/data-directory-migration.test.ts",
+    "test:execution-hydration": "tsx --test server/execution-hydration.test.ts",
+    "test:project-cleanup": "tsx --test src/lib/project-cleanup.test.ts",
     "plugin:kit": "tsx ecosystem/plugin-kit/cli.ts",
-    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:channel-history && npm run test:instructions && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:plugin-fallback && npm run test:plugin-inputs && npm run test:automatic-execution && npm run test:orchestrator && npm run test:plugin-kit && npm run test:plugin-branding && npm run test:plugin-dependencies && npm run test:method-file && npm run test:plugin-connections && npm run test:plugin-connection-runtime && npm run test:plugin-conversation && npm run test:plugin-package && npm run test:updater && npm run test:distribution-boundaries && npm run test:data-migration && npm run build",
+    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:channel-history && npm run test:instructions && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:plugin-fallback && npm run test:plugin-inputs && npm run test:automatic-execution && npm run test:orchestrator && npm run test:plugin-kit && npm run test:plugin-branding && npm run test:plugin-dependencies && npm run test:method-file && npm run test:plugin-connections && npm run test:plugin-connection-runtime && npm run test:plugin-conversation && npm run test:plugin-package && npm run test:updater && npm run test:distribution-boundaries && npm run test:data-migration && npm run test:execution-hydration && npm run test:project-cleanup && npm run build",
     "format": "prettier --write ."
   },
   "dependencies": {
@@ -195,5 +198,12 @@
     "portable": {
       "artifactName": "ContentFlow-V0-${version}-${arch}-Portable.${ext}"
     }
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "electron@41.10.3": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
+    "electron-winstaller": false
   }
 }

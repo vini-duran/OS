@@ -99,27 +99,29 @@ if (probe.status !== "success" || !String(probe.values.result).includes("ERR_ACC
   throw new Error(`A sandbox não bloqueou a leitura externa: ${JSON.stringify(probe)}.`);
 }
 
-const chromeExecutable = path.join(
-  executableDiscoveryRoot,
-  "Google",
-  "Chrome",
-  "Application",
-  "chrome.exe",
-);
-mkdirSync(path.dirname(chromeExecutable), { recursive: true });
-writeFileSync(chromeExecutable, "probe", "utf8");
-const executableProbe = await executeRegisteredPlugin(
-  registered("executable-read-probe.mjs", ["process"]),
-  request({ executablePath: chromeExecutable }),
-  30_000,
-);
-if (
-  executableProbe.status !== "success" ||
-  executableProbe.values.result !== "EXECUTABLE_READ_ALLOWED"
-) {
-  throw new Error(
-    `A sandbox bloqueou a descoberta autorizada do executável: ${JSON.stringify(executableProbe)}.`,
+if (process.platform === "win32") {
+  const chromeExecutable = path.join(
+    executableDiscoveryRoot,
+    "Google",
+    "Chrome",
+    "Application",
+    "chrome.exe",
   );
+  mkdirSync(path.dirname(chromeExecutable), { recursive: true });
+  writeFileSync(chromeExecutable, "probe", "utf8");
+  const executableProbe = await executeRegisteredPlugin(
+    registered("executable-read-probe.mjs", ["process"]),
+    request({ executablePath: chromeExecutable }),
+    30_000,
+  );
+  if (
+    executableProbe.status !== "success" ||
+    executableProbe.values.result !== "EXECUTABLE_READ_ALLOWED"
+  ) {
+    throw new Error(
+      `A sandbox bloqueou a descoberta autorizada do executável: ${JSON.stringify(executableProbe)}.`,
+    );
+  }
 }
 
 const localServer = createServer((_incoming, outgoing) => outgoing.end("reachable"));

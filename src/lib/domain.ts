@@ -199,6 +199,13 @@ export type ProcessMethod = {
   blocks: ActionBlock[];
 };
 
+export type ProjectCleanupConfig = {
+  pluginId: string;
+  previewCapabilityId: string;
+  applyCapabilityId: string;
+  configuration: Record<string, string | number | boolean>;
+};
+
 export type Channel = {
   id: string;
   youtubeChannelId?: string;
@@ -219,6 +226,7 @@ export type Channel = {
   status: "healthy" | "attention" | "paused";
   trend: number[];
   methods: Record<UniversalProcess, ProcessMethod>;
+  projectCleanup?: ProjectCleanupConfig;
   createdAt: string;
 };
 

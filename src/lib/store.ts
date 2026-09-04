@@ -528,9 +528,7 @@ function synchronizeOpenExecutionsWithMethod(
           blockId: block.id,
           status: block.operator === "Humano" ? "awaiting_human" : "blocked_executor",
           values,
-          attempt: previousExecution
-            ? (attemptAfterRetryInvalidation(previousExecution) ?? 1)
-            : 1,
+          attempt: previousExecution ? (attemptAfterRetryInvalidation(previousExecution) ?? 1) : 1,
           startedAt: previousExecution?.startedAt ?? new Date().toISOString(),
         };
       }
@@ -539,9 +537,7 @@ function synchronizeOpenExecutionsWithMethod(
         blockId: block.id,
         status: "pending",
         values: {},
-        attempt: previousExecution
-          ? (attemptAfterRetryInvalidation(previousExecution) ?? 1)
-          : 1,
+        attempt: previousExecution ? (attemptAfterRetryInvalidation(previousExecution) ?? 1) : 1,
       };
     });
 

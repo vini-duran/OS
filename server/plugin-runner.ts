@@ -202,16 +202,17 @@ export async function executeRegisteredPlugin(
         safeSegment(plugin.id),
       ),
   );
+  mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(workspaceDirectory, { recursive: true });
+  const realUploadsDirectory = realpathSync(uploadsDirectory);
+  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const outputDirectory = path.resolve(
-    workspaceDirectory,
+    realWorkspaceDirectory,
     ".contentflow-output",
     safeSegment(request.executionId),
     safeSegment(request.traceId),
   );
-  mkdirSync(uploadsDirectory, { recursive: true });
-  mkdirSync(workspaceDirectory, { recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
-  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const permissions = new Set(plugin.manifest.permissions);
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
@@ -221,7 +222,10 @@ export async function executeRegisteredPlugin(
     args.push(`--allow-fs-read=${readable}`);
   }
   if (permissions.has("filesystem:read")) {
-    args.push(`--allow-fs-read=${uploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
+    args.push(
+      `--allow-fs-read=${realUploadsDirectory}`,
+      `--allow-fs-read=${realWorkspaceDirectory}`,
+    );
   }
   if (permissions.has("filesystem:write")) {
     args.push(`--allow-fs-write=${realWorkspaceDirectory}`);
@@ -290,7 +294,7 @@ export async function executeRegisteredPlugin(
           void importPluginArtifacts(
             pluginResponse,
             outputDirectory,
-            uploadsDirectory,
+            realUploadsDirectory,
             plugin.manifest,
             { existingArtifacts: options.existingArtifacts },
           )
@@ -313,7 +317,7 @@ export async function executeRegisteredPlugin(
         secrets: authorizedSecrets,
         sandbox: {
           permissions: [...permissions],
-          uploadsDirectory,
+          uploadsDirectory: realUploadsDirectory,
           workspaceDirectory: realWorkspaceDirectory,
           outputDirectory,
           networkEnforced: nodeMajor >= 26,

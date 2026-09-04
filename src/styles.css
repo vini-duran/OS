@@ -4,6 +4,8 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ContentFlow: authorized Dracula mode on this fork. */
+
 /* ContentFlow: graphite surfaces, restrained blue accents, editorial hierarchy. */
 
 @theme inline {
@@ -93,7 +95,7 @@
   --brand-foreground: #282a36;
 
   --primary: var(--brand);
-  --primary-foreground: oklch(0.99 0 0);
+  --primary-foreground: var(--brand-foreground);
   --secondary: #44475a;
   --secondary-foreground: #f8f8f2;
   --muted: #343746;
@@ -123,7 +125,7 @@
   --sidebar: #21222c;
   --sidebar-foreground: #f8f8f2;
   --sidebar-primary: var(--brand);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-primary-foreground: #282a36;
   --sidebar-accent: #44475a;
   --sidebar-accent-foreground: #f8f8f2;
   --sidebar-border: rgb(248 248 242 / 0.1);
