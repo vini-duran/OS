@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { providerError, failedTurn, cleanupPolicy } from "./response-guard.mjs";
+import {
+  providerError,
+  preSendProviderError,
+  failedTurn,
+  cleanupPolicy,
+} from "./response-guard.mjs";
 test("não confunde anúncio, texto editorial ou instrução com cota", () => {
   for (const notice of [
     "Faça upgrade",
@@ -22,6 +27,16 @@ test("somente avisos explícitos de cota ou verificação são erros", () => {
   ])
     assert.equal(providerError([notice])?.code, "RATE_LIMIT");
   assert.equal(providerError(["Verify you are human"])?.code, "AUTHENTICATION_FAILED");
+});
+test("cota explícita anterior ao envio pausa sem fallback automático", () => {
+  assert.deepEqual(preSendProviderError(["You've reached your usage limit"]), {
+    code: "RATE_LIMIT",
+    message:
+      "O provedor exibiu um aviso explícito de limite de uso. A execução foi pausada; nenhum reenvio automático.",
+    retryable: false,
+  });
+  assert.equal(preSendProviderError(["Verify you are human"])?.retryable, false);
+  assert.equal(preSendProviderError(["Faça upgrade"]), undefined);
 });
 test("depois de tentar enviar, timeout não autoriza outro envio ou conta", () => {
   const fault = failedTurn({ code: "TIMEOUT", message: "Sem confirmação", retryable: true }, true);

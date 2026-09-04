@@ -54,6 +54,14 @@ export function providerError(notices = []) {
   return undefined;
 }
 
+// Provider quota and authentication notices pause for reconciliation, even
+// before send. A ready profile is not evidence that switching is appropriate.
+export function preSendProviderError(notices = []) {
+  const fault = providerError(notices);
+  if (!fault) return undefined;
+  return { ...fault, retryable: false };
+}
+
 // A send click may succeed even when its acknowledgement is lost.
 export function failedTurn(error, submitted) {
   return {

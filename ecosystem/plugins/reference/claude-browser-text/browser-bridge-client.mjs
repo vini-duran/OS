@@ -191,11 +191,13 @@ export async function attachContentFlowBridge({
           response?.message || "A extensão instalada é incompatível.",
         );
       }
-      throw codedError(
+      const fault = codedError(
         "OUTPUT_VALIDATION_FAILED",
         response?.message || `A extensão recusou a ação ${action}.`,
         true,
       );
+      fault.bridgeCode = code;
+      throw fault;
     }
     return response;
   };

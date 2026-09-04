@@ -1,6 +1,29 @@
 # Claude Browser Studio
 
-Versão **1.0.6** para ContentFlow Plugin API v1.
+## Correção local 1.0.9 — validação E2E pendente
+
+Atualização local autorizada em 2026-09-04. Corrige a regressão de confirmação
+de envio da 1.0.8 e rejeita respostas antigas como resultado de um novo envio.
+`send-safety.test.mjs` cobre confirmação perdida do clique, controle ausente
+e resposta antiga que não deve contar como novo bloco, sem prompts externos.
+A geração completa dos oito blocos continua não validada no provedor.
+
+Versão **1.0.9** para ContentFlow Plugin API v1.
+
+## Correção do editor
+
+A versão 1.0.7 informa à Browser Bridge os rótulos esperados da caixa de mensagem
+do Claude. Em conjunto com a Browser Bridge 0.2.1, a seleção favorece o editor de
+chat mais baixo e valida o texto após a interface estabilizar, normalizando apenas
+caracteres invisíveis. A confirmação exige início, fim e pelo menos 90% do conteúdo;
+uma escrita parcial continua sendo recusada.
+
+## Retificação da proteção de envio
+
+A versão 1.0.9 marca a tentativa antes de despachar o clique: confirmação perdida
+mantém `retryable=false`. Só a recusa inequívoca `CONTROL_NOT_FOUND` permite
+aguardar e procurar o controle novamente. Avisos de cota pausam para reconciliação;
+outro perfil pronto não comprova causa nem resolve a falha.
 
 ## Correção de espera e repetição
 
@@ -12,7 +35,7 @@ confirmação. Conferir a conversa antes de repetir: não há recuperação auto
 de respostas abandonadas em execuções antigas.
 
 Usar em conjunto com a correção `plugin-account-fallback` do fork do Core,
-que respeita `retryable` e não troca conta por cota/autenticação. Em Core antigo
+que respeita `retryable`. A versão 1.0.9 não marca cota como repetível. Em Core antigo
 que ignora esse sinal, desabilitar fallback antes de executar. Não requer novos
 logins, permissões nem alteração dos Métodos.
 
@@ -31,7 +54,10 @@ O plugin usa a instrução resolvida do bloco como único prompt editável. As e
 
 O antigo extrator Selenium gravava cookies de sessão e o gerador chamava endpoints internos de `claude.ai`. O plugin substitui somente essa fronteira: usa a interface real e um perfil Chrome dedicado, no mesmo padrão operacional do plugin Google Flow Browser Images.
 
-Não há rotação automática de contas. Limite de uso, cobrança, reautenticação, verificação e CAPTCHA pausam a operação para intervenção manual. O plugin não tenta contornar controles do provedor.
+Não há rotação indiscriminada de contas. Cobrança, reautenticação, verificação e
+CAPTCHA pausam a operação para intervenção manual. Um limite de uso explícito
+pausa para reconciliação, inclusive antes do envio. O plugin
+não tenta contornar controles do provedor.
 
 ## Instalação
 

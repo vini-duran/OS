@@ -5,7 +5,13 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
-import { providerNotices, providerError, failedTurn, cleanupPolicy } from "./response-guard.mjs";
+import {
+  providerNotices,
+  providerError,
+  preSendProviderError,
+  failedTurn,
+  cleanupPolicy,
+} from "./response-guard.mjs";
 
 const PLUGIN_ID = "local.contentflow.claude-browser-text";
 const CLAUDE_HOST = "claude.ai";
@@ -1209,6 +1215,7 @@ async function setPrompt(bridge, prompt, operationKey) {
         '[contenteditable="true"]',
         '[role="textbox"]',
       ],
+      textIncludes: ["message", "prompt", "reply", "mensagem", "pergunte", "talk to claude"],
       text: prompt,
     },
     operationKey,
@@ -1228,7 +1235,8 @@ async function clickSend(bridge, operationKey, signal) {
       break;
     } catch (error) {
       clickError = error;
-      if (error?.code !== "OUTPUT_VALIDATION_FAILED" || attempt === 19) throw error;
+      // Only a confirmed missing control proves that no click happened.
+      if (error?.bridgeCode !== "CONTROL_NOT_FOUND" || attempt === 19) throw error;
       await sleep(250, signal);
     }
   }
@@ -1252,7 +1260,7 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId);
     const texts = Array.isArray(state?.texts) ? state.texts : [];
-    newest = texts.length > baselineCount ? texts.at(-1) : (texts.at(-1) ?? "");
+    newest = texts.length > baselineCount ? (texts.at(-1) ?? "") : "";
     if (newest && newest === previous) stablePolls += 1;
     else stablePolls = 0;
     previous = newest;
@@ -1268,7 +1276,7 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       const confirmedNewest =
         confirmedTexts.length > baselineCount
           ? confirmedTexts.at(-1)
-          : (confirmedTexts.at(-1) ?? "");
+          : "";
       if (confirmedNewest === newest && !confirmedState?.stop) {
         const entry = Array.isArray(confirmedState?.entries)
           ? confirmedState.entries.at(-1)
@@ -1305,9 +1313,11 @@ async function generatePart(
 ) {
   const before = await responseState(client, sessionId);
   const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
-  const preflight = providerError(before?.notices);
-  if (preflight) throw codedError(preflight.code, preflight.message, false);
+  const preflight = preSendProviderError(before?.notices);
+  if (preflight) throw codedError(preflight.code, preflight.message, preflight.retryable);
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
+  // Dispatch may click successfully and lose its acknowledgement. Mark the
+  // attempt before dispatch; never turn that uncertainty into a safe retry.
   lifecycle.submitted = true;
   await clickSend(bridge, `send:${operationKey}`, signal);
   const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
