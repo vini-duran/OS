@@ -1,6 +1,23 @@
 # Gemini Browser Studio
 
-Versão **1.0.3** para ContentFlow Plugin API v1.
+Versão **1.0.4** para ContentFlow Plugin API v1.
+
+## Correção de espera e repetição
+
+Avisos de cota/verificação são reconhecidos somente em superfícies de erro
+visíveis, fora do editor e das respostas. Palavras soltas no corpo da página
+não encerram a espera. Em falhas, a guia criada permanece aberta; após uma
+tentativa de envio o plugin retorna `retryable: false`, inclusive se perder a
+confirmação. Conferir a conversa antes de repetir: não há recuperação automática
+de respostas abandonadas em execuções antigas.
+
+Usar em conjunto com a correção `plugin-account-fallback` do fork do Core,
+que respeita `retryable` e não troca conta por cota/autenticação. Em Core antigo
+que ignora esse sinal, desabilitar fallback antes de executar. Não requer novos
+logins, permissões nem alteração dos Métodos.
+
+Testado por contrato/sandbox, loops reais com respostas simuladas e DOM local;
+validação de geração real no provedor ainda pendente. Não é release oficial.
 
 ## Contrato simplificado
 

@@ -5,6 +5,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
+import { providerNotices, providerError, failedTurn, cleanupPolicy } from "./response-guard.mjs";
 
 const PLUGIN_ID = "local.contentflow.gemini-browser-studio";
 const URL_NEW = "https://gemini.google.com/app",
@@ -897,12 +898,19 @@ async function send(c, s, bridge, signal, operationKey) {
   throw err("OUTPUT_VALIDATION_FAILED", "O Gemini não confirmou o envio do prompt.", true);
 }
 async function responseState(c, s) {
-  return await evaluate(c, s, `(()=>{${HELP};return state()})()`);
+  return await evaluate(
+    c,
+    s,
+    `(()=>{${HELP};return {...state(), notices:(${providerNotices.toString()})()}})()`,
+  );
 }
-async function textTurn(c, s, bridge, promptText, settings, signal, operationKey) {
+async function textTurn(c, s, bridge, promptText, settings, signal, operationKey, lifecycle = {}) {
   const before = await responseState(c, s),
     base = before.texts?.length ?? 0;
+  const preflight = providerError(before.notices);
+  if (preflight) throw err(preflight.code, preflight.message, false);
   await setPrompt(bridge, promptText, `prompt:${operationKey}`);
+  lifecycle.submitted = true;
   await send(c, s, bridge, signal, `send:${operationKey}`);
   const d = Date.now() + clamp(settings.responseTimeoutSeconds, 600, 30, 3600) * 1000;
   let last = "",
@@ -918,16 +926,27 @@ async function textTurn(c, s, bridge, promptText, settings, signal, operationKey
       stablePolls: stable,
     });
     if (phase === "completed") return { text, links: st.entries?.at(-1)?.links ?? [] };
-    if (/limite|rate limit|upgrade/i.test(st.body))
-      throw err("RATE_LIMIT", "Gemini informou limite de uso.", true);
+    const notice = providerError(st.notices);
+    if (notice) throw err(notice.code, notice.message, false);
     await waitForDomMutation(c, s, 1_000, signal);
   }
   throw err("TIMEOUT", "Gemini não concluiu resposta.", true);
 }
-async function mediaTurn(c, s, bridge, promptText, settings, signal, type, operationKey) {
+async function mediaTurn(
+  c,
+  s,
+  bridge,
+  promptText,
+  settings,
+  signal,
+  type,
+  operationKey,
+  lifecycle = {},
+) {
   const selector = type === "image" ? "img" : "audio,video",
     base = await evaluate(c, s, `document.querySelectorAll(${JSON.stringify(selector)}).length`);
   await setPrompt(bridge, promptText, `media-prompt:${operationKey}`);
+  lifecycle.submitted = true;
   await send(c, s, bridge, signal, `media-send:${operationKey}`);
   const d = Date.now() + clamp(settings.responseTimeoutSeconds, 600, 30, 3600) * 1000;
   while (Date.now() < d) {
@@ -1098,6 +1117,7 @@ export async function execute(request, services) {
     bridge,
     taskTargetId,
     closeTaskTarget = false;
+  const lifecycle = { submitted: false, succeeded: false };
   try {
     const cfg = request.configuration ?? {},
       profile = normalizeProfile(cfg.accountProfile),
@@ -1167,6 +1187,7 @@ export async function execute(request, services) {
                   services.signal,
                   media,
                   `${i}:${a}`,
+                  lifecycle,
                 )
               : await textTurn(
                   client,
@@ -1176,6 +1197,7 @@ export async function execute(request, services) {
                   settings,
                   services.signal,
                   `${i}:${a}`,
+                  lifecycle,
                 ),
           );
           last = null;
@@ -1193,6 +1215,7 @@ export async function execute(request, services) {
     const conversationId = await currentConversationUrl(client, sessionId);
     if (media) {
       const captured = await captureMedia(client, sessionId, services, request, media);
+      lifecycle.succeeded = true;
       return {
         status: "success",
         values: { [media === "image" ? "image" : "audio"]: captured.file, description: combined },
@@ -1221,6 +1244,7 @@ export async function execute(request, services) {
         throw err("OUTPUT_VALIDATION_FAILED", `Resultado abaixo de ${min} caracteres.`, true);
       values = generationValues(result, responses, request);
     }
+    lifecycle.succeeded = true;
     return {
       status: "success",
       values,
@@ -1230,20 +1254,26 @@ export async function execute(request, services) {
   } catch (e) {
     if (services.signal?.aborted || e.code === "CANCELLED")
       return failure("CANCELLED", "Execução cancelada.");
-    return failure(e.code || "UPSTREAM_UNAVAILABLE", e.message || "Falha Gemini.", !!e.retryable);
+    const fault = failedTurn(e, lifecycle.submitted);
+    return failure(fault.code, fault.message, fault.retryable);
   } finally {
     bridge?.dispose();
-    if (closeTaskTarget && taskTargetId)
+    const cleanup = cleanupPolicy({
+      succeeded: lifecycle.succeeded,
+      cancelled: services.signal?.aborted,
+      created: closeTaskTarget,
+      keepBrowserOpen: settings.keepBrowserOpen,
+    });
+    if (cleanup.closeTarget && taskTargetId)
       try {
         await client?.send("Target.closeTarget", { targetId: taskTargetId });
       } catch {}
-    const keepBrowserOpen = settings.keepBrowserOpen !== false;
-    if (!keepBrowserOpen && child)
+    if (cleanup.closeBrowser && child)
       try {
         await client?.send("Browser.close");
       } catch {}
     client?.close();
-    if (!keepBrowserOpen && child)
+    if (cleanup.closeBrowser && child)
       try {
         child.kill();
       } catch {}

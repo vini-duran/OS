@@ -5,6 +5,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
+import { providerNotices, providerError, failedTurn, cleanupPolicy } from "./response-guard.mjs";
 
 const PLUGIN_ID = "local.contentflow.claude-browser-text";
 const CLAUDE_HOST = "claude.ai";
@@ -1238,7 +1239,7 @@ async function responseState(client, sessionId) {
   return await evaluate(
     client,
     sessionId,
-    `(() => { ${PAGE_HELPERS}; return cfResponseState(); })()`,
+    `(() => { ${PAGE_HELPERS}; return {...cfResponseState(), notices:(${providerNotices.toString()})()}; })()`,
   );
 }
 
@@ -1281,21 +1282,8 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       stablePolls = 0;
       continue;
     }
-    const hint = String(state?.bodyHint ?? "");
-    if (/usage limit|rate limit|limite de uso|try again later/i.test(hint)) {
-      throw codedError(
-        "RATE_LIMIT",
-        "O Claude informou limite temporário de uso. Aguarde antes de tentar novamente.",
-        true,
-      );
-    }
-    if (/captcha|verify you are human|verifique se você é humano/i.test(hint)) {
-      throw codedError(
-        "AUTHENTICATION_FAILED",
-        "O Claude exige verificação manual na janela do Chrome.",
-        true,
-      );
-    }
+    const notice = providerError(state?.notices);
+    if (notice) throw codedError(notice.code, notice.message, false);
     await waitForDomMutation(client, sessionId, 1_000, signal);
   }
   throw codedError(
@@ -1305,10 +1293,22 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
   );
 }
 
-async function generatePart(client, sessionId, bridge, prompt, settings, signal, operationKey) {
+async function generatePart(
+  client,
+  sessionId,
+  bridge,
+  prompt,
+  settings,
+  signal,
+  operationKey,
+  lifecycle = {},
+) {
   const before = await responseState(client, sessionId);
   const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
+  const preflight = providerError(before?.notices);
+  if (preflight) throw codedError(preflight.code, preflight.message, false);
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
+  lifecycle.submitted = true;
   await clickSend(bridge, `send:${operationKey}`, signal);
   const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
   return await waitForResponse(client, sessionId, baselineCount, timeoutSeconds * 1000, signal);
@@ -1473,6 +1473,7 @@ export async function execute(request, services) {
   let bridge;
   let taskTargetId;
   let closeTaskTarget = false;
+  const lifecycle = { submitted: false, succeeded: false };
 
   try {
     let attachments = await resolveAttachments(request, services);
@@ -1547,6 +1548,7 @@ export async function execute(request, services) {
             settings,
             services.signal,
             `${index}:${attempt}`,
+            lifecycle,
           );
           responses.push(response);
           lastError = undefined;
@@ -1598,6 +1600,7 @@ export async function execute(request, services) {
     const outputCharacters = combined.length;
     const conversationId = await currentConversationUrl(client, sessionId);
     step(`Concluído: ${outputCharacters} caracteres em ${responses.length} resposta(s).`);
+    lifecycle.succeeded = true;
     return {
       status: "success",
       values,
@@ -1611,24 +1614,26 @@ export async function execute(request, services) {
   } catch (error) {
     if (services.signal?.aborted || error?.code === "CANCELLED")
       return resultError("CANCELLED", "Execução cancelada.", false);
-    return resultError(
-      error?.code || "UPSTREAM_UNAVAILABLE",
-      error?.message || "Falha na automação do Claude.",
-      Boolean(error?.retryable),
-    );
+    const fault = failedTurn(error, lifecycle.submitted);
+    return resultError(fault.code, fault.message, fault.retryable);
   } finally {
     bridge?.dispose();
-    if (closeTaskTarget && taskTargetId)
+    const cleanup = cleanupPolicy({
+      succeeded: lifecycle.succeeded,
+      cancelled: services.signal?.aborted,
+      created: closeTaskTarget,
+      keepBrowserOpen: settings.keepBrowserOpen,
+    });
+    if (cleanup.closeTarget && taskTargetId)
       try {
         await client?.send("Target.closeTarget", { targetId: taskTargetId });
       } catch {}
-    const keepBrowserOpen = settings.keepBrowserOpen !== false;
-    if (!keepBrowserOpen && child)
+    if (cleanup.closeBrowser && child)
       try {
         await client?.send("Browser.close");
       } catch {}
     client?.close();
-    if (!keepBrowserOpen && child) {
+    if (cleanup.closeBrowser && child) {
       try {
         child.kill();
       } catch {

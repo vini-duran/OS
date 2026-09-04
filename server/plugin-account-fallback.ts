@@ -39,5 +39,9 @@ export function canAdvanceProfileFallback(
   const fallback = job.profileFallback;
   if (!fallback) return false;
   if (response.code === "CANCELLED" || job.cancelRequested) return false;
+  // Only retry explicitly retryable technical failures. A provider refusal or
+  // uncertain send must never consume another account's quota automatically.
+  if (response.retryable !== true || !AUTOMATIC_PROFILE_FALLBACK_CODES.has(response.code ?? ""))
+    return false;
   return fallback.activeIndex + 1 < fallback.candidates.length;
 }

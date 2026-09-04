@@ -3,7 +3,7 @@
   "apiVersion": "1",
   "id": "local.contentflow.gemini-browser-studio",
   "name": "Gemini Browser Studio",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Automação modular do Gemini web para texto, pesquisa, escolha, validação, análise de arquivos, imagens e música.",
   "author": "André Marinho Jr.",
   "license": "Proprietary",
@@ -210,7 +210,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -315,7 +315,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -405,7 +405,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -565,7 +565,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -647,7 +647,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -737,7 +737,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -824,7 +824,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",
@@ -906,7 +906,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
+            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
           },
           "accountProfile": {
             "type": "string",

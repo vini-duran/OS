@@ -56,10 +56,21 @@ test("normaliza aliases ordenados e remove duplicatas ou valores inválidos", ()
   ]);
 });
 
+for (const code of ["UPSTREAM_UNAVAILABLE", "TIMEOUT", "JOB_FAILED"]) {
+  test(`avança apenas falha técnica explicitamente repetível ${code}`, () => {
+    assert.equal(
+      canAdvanceProfileFallback(jobWithFallback(), { status: "error", code, retryable: true }),
+      true,
+    );
+    assert.equal(
+      canAdvanceProfileFallback(jobWithFallback(), { status: "error", code, retryable: false }),
+      false,
+    );
+    assert.equal(canAdvanceProfileFallback(jobWithFallback(), { status: "error", code }), false);
+  });
+}
+
 for (const code of [
-  "UPSTREAM_UNAVAILABLE",
-  "TIMEOUT",
-  "JOB_FAILED",
   "AUTHENTICATION_FAILED",
   "RATE_LIMIT",
   "PERMISSION_DENIED",
@@ -67,15 +78,15 @@ for (const code of [
   "OUTPUT_VALIDATION_FAILED",
   "UNEXPECTED_ERROR",
 ]) {
-  test(`avança perfil em qualquer erro ${code}`, () => {
+  test(`não troca conta por recusa do provedor ou erro não técnico ${code}`, () => {
     assert.equal(
       canAdvanceProfileFallback(jobWithFallback(), {
         status: "error",
         code,
         message: `Falha com ${code}`,
-        retryable: false,
+        retryable: true,
       }),
-      true,
+      false,
     );
   });
 }

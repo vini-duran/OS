@@ -27,7 +27,11 @@ async function waitForServer() {
   throw new Error("A API isolada não iniciou no prazo.");
 }
 
-test("preserva itens concluídos e continua na próxima conta após falha técnica", async () => {
+for (const failure of [
+  {code: "UPSTREAM_UNAVAILABLE", retryable: true, advances: true},
+  {code: "RATE_LIMIT", retryable: true, advances: false},
+  {code: "TIMEOUT", retryable: false, advances: false},
+]) test(`preserva itens concluídos; fallback ${failure.code}, retryable=${failure.retryable}`, async () => {
   const dataDirectory = await mkdtemp(path.join(tmpdir(), "contentflow-profile-fallback-"));
   const pluginDirectory = path.join(dataDirectory, "test-browser-plugin");
   await mkdir(pluginDirectory, { recursive: true });
@@ -112,7 +116,7 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
       const profile = request.configuration.accountProfile;
       const prompt = request.inputs.prompts;
       if (profile === "primary" && prompt === "two") {
-        return { status: "error", code: "UPSTREAM_UNAVAILABLE", message: "temporary", retryable: true };
+        return { status: "error", code: ${JSON.stringify(failure.code)}, message: "temporary", retryable: ${failure.retryable} };
       }
       const mode = request.conversation?.mode ?? "none";
       if (profile === "backup" && prompt === "two" && !request.conversation?.fallbackContext?.includes("primary:new:one")) {
@@ -273,6 +277,13 @@ test("preserva itens concluídos e continua na próxima conta após falha técni
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
+    if (!failure.advances) {
+      assert.equal(execution?.status, "failed", output.join("\n"));
+      const state = await request("/api/executions/fallback-execution/state");
+      assert.equal(state.jobs.length, 1);
+      assert.deepEqual(state.jobs[0].partialValues.results, ["primary:new:one"]);
+      return;
+    }
     assert.equal(execution?.blocks[0]?.status, "completed", output.join("\n"));
     assert.deepEqual(execution?.blocks[0]?.values.results, [
       "primary:new:one",
