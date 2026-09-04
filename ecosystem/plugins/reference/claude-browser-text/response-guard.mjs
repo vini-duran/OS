@@ -63,6 +63,11 @@ export function preSendProviderError(notices = []) {
 }
 
 // A send click may succeed even when its acknowledgement is lost.
+export function canRetryTurn(error, submitted) {
+  return !submitted && Boolean(error?.retryable) &&
+    !['CANCELLED', 'AUTHENTICATION_FAILED', 'RATE_LIMIT'].includes(error?.code);
+}
+
 export function failedTurn(error, submitted) {
   return {
     code: error?.code || "UPSTREAM_UNAVAILABLE",
@@ -71,7 +76,7 @@ export function failedTurn(error, submitted) {
       (submitted
         ? " O prompt pode já ter sido enviado; a guia foi preservada para conferência antes de repetir."
         : ""),
-    retryable: !submitted && Boolean(error?.retryable),
+    retryable: canRetryTurn(error, submitted),
   };
 }
 export function cleanupPolicy({ succeeded, cancelled, created, keepBrowserOpen }) {

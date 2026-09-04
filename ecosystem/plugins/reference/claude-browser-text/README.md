@@ -1,5 +1,29 @@
 # Claude Browser Studio
 
+## Candidata local — sincronização de turnos (não instalada)
+
+Fonte de desenvolvimento posterior à instalação 1.0.9; não distribuir nem
+substituir o pacote instalado sob a mesma versão. Nenhum manifesto, permissão,
+conta, Método ou campo de saída foi alterado.
+
+- Antes de escrever, aguarda editor disponível e resposta estável/ociosa.
+- Antes do clique pela ContentFlow Browser Bridge, aguarda envio habilitado.
+- Reconhece `data-is-streaming=true` e `aria-busy=true` do editor, além de Stop.
+- Confirma envio por editor limpo/disponível ou aparecimento de nova resposta;
+  spinner sozinho e editor ausente não confirmam envio.
+- Só entrega resposta nova, estável, sem atividade e com editor disponível.
+- Registra as fases em logs, sem conteúdo dos prompts nem credenciais.
+- Não permite retry interno após tentativa de envio. Os retries já estavam
+  desativados; esta é proteção adicional, não causa comprovada da falha observada.
+
+45 testes locais (incluindo loops reais com estados simulados e adapter DOM)
+passaram, assim como o check oficial com sandbox. Esses testes não comprovam
+o cenário real no Claude: a passagem do item 3 ao 4 e a recuperação da execução
+preservada ainda não foram validadas. Não depende da extensão ChatGPT nem de
+operador humano enviando/copiando blocos. O ContentFlow mantém cursor/persistência;
+o plugin cuida somente do turno da interface. Não recupera automaticamente
+um envio anterior incerto, não recomeça o roteiro nem gira contas para mascarar erro.
+
 ## Correção local 1.0.9 — validação E2E pendente
 
 Atualização local autorizada em 2026-09-04. Corrige a regressão de confirmação

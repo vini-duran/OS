@@ -9,6 +9,7 @@ import {
   providerNotices,
   providerError,
   preSendProviderError,
+  canRetryTurn,
   failedTurn,
   cleanupPolicy,
 } from "./response-guard.mjs";
@@ -1060,7 +1061,7 @@ function cfVisible(el) {
   return r.width > 8 && r.height > 8 && r.bottom > 0 && r.right > 0;
 }
 function cfText(el) {
-  return [el?.innerText, el?.textContent, el?.getAttribute?.('aria-label'), el?.getAttribute?.('placeholder'), el?.getAttribute?.('data-testid')]
+  return [el?.innerText, el?.textContent, el?.getAttribute?.('aria-label'), el?.getAttribute?.('title'), el?.getAttribute?.('placeholder'), el?.getAttribute?.('data-testid'), el?.getAttribute?.('data-test-id')]
     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }
 function cfPrompt() {
@@ -1104,8 +1105,17 @@ function cfResponseState() {
   })).filter(entry => entry.text);
   const texts = entries.map(entry => entry.text);
   const stop = [...document.querySelectorAll('button')].some(el => cfVisible(el) && /stop|parar|interromper/i.test(cfText(el)));
+  const prompt = cfPrompt();
+  const promptReady = !!prompt && !prompt.disabled && !prompt.readOnly && prompt.getAttribute('aria-disabled') !== 'true';
+  const streaming = [...document.querySelectorAll('[data-is-streaming="true"]')].some(cfVisible);
+  const busy = !!prompt?.closest('[aria-busy="true"]');
+  const sendReady = [...document.querySelectorAll('button')].some(el =>
+    cfVisible(el) && /send message|enviar mensagem|send/i.test(cfText(el)) &&
+    !el.disabled && el.getAttribute('aria-disabled') !== 'true');
   const body = document.body?.innerText || '';
-  return { texts, entries, stop, url: location.href, bodyHint: body.slice(0, 5000) };
+  return { texts, entries, stop, generating: stop || streaming || busy, promptReady, sendReady,
+    promptText: prompt ? (prompt.value ?? prompt.innerText ?? prompt.textContent ?? '') : null,
+    url: location.href, bodyHint: body.slice(0, 5000) };
 }
 `;
 
@@ -1251,6 +1261,47 @@ async function responseState(client, sessionId) {
   );
 }
 
+async function waitForTurnReady(client, sessionId, timeoutMs, signal, requireSend = false) {
+  const deadline = Date.now() + timeoutMs;
+  let idleSince;
+  let previous;
+  let reason = 'editor indisponível';
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError('CANCELLED', 'Execução cancelada.');
+    const state = await responseState(client, sessionId);
+    const fault = preSendProviderError(state?.notices);
+    if (fault) throw codedError(fault.code, fault.message, false);
+    const busy = Boolean(state?.generating || state?.stop);
+    const latest = JSON.stringify(state?.texts ?? []);
+    const ready = state?.promptReady === true && !busy && (!requireSend || state?.sendReady === true);
+    reason = busy ? 'resposta ainda em andamento' : !state?.promptReady ? 'editor indisponível' : 'controle de envio indisponível';
+    if (!ready || latest !== previous) idleSince = undefined;
+    if (ready) {
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= 2000) return state;
+    }
+    previous = latest;
+    await waitForDomMutation(client, sessionId, 1000, signal);
+  }
+  throw codedError('TIMEOUT', `Claude não ficou pronto: ${reason}. Nenhum clique de envio realizado.`, false);
+}
+
+async function waitForSubmission(client, sessionId, baselineCount, timeoutMs, signal) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError('CANCELLED', 'Execução cancelada.');
+    const state = await responseState(client, sessionId);
+    const fault = providerError(state?.notices);
+    if (fault) throw codedError(fault.code, fault.message, false);
+    // A cleared, available composer or a new assistant turn acknowledges send.
+    // An absent editor or a spinner alone does not prove submission.
+    if ((state?.texts?.length ?? 0) > baselineCount ||
+        (state?.promptReady === true && typeof state.promptText === 'string' && !state.promptText.trim())) return;
+    await waitForDomMutation(client, sessionId, 1000, signal);
+  }
+  throw codedError('TIMEOUT', 'Envio sem confirmação do Claude; não reenviar automaticamente.', false);
+}
+
 async function waitForResponse(client, sessionId, baselineCount, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   let previous = "";
@@ -1259,6 +1310,8 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId);
+    const notice = providerError(state?.notices);
+    if (notice) throw codedError(notice.code, notice.message, false);
     const texts = Array.isArray(state?.texts) ? state.texts : [];
     newest = texts.length > baselineCount ? (texts.at(-1) ?? "") : "";
     if (newest && newest === previous) stablePolls += 1;
@@ -1266,7 +1319,7 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
     previous = newest;
     const phase = responsePhase({
       hasNewResponse: Boolean(newest),
-      generating: Boolean(state?.stop),
+      generating: Boolean(state?.generating || state?.stop || state?.promptReady !== true),
       stablePolls,
     });
     if (phase === "completed") {
@@ -1277,7 +1330,10 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
         confirmedTexts.length > baselineCount
           ? confirmedTexts.at(-1)
           : "";
-      if (confirmedNewest === newest && !confirmedState?.stop) {
+      const confirmedNotice = providerError(confirmedState?.notices);
+      if (confirmedNotice) throw codedError(confirmedNotice.code, confirmedNotice.message, false);
+      if (confirmedNewest === newest && confirmedState?.promptReady === true &&
+          !confirmedState?.generating && !confirmedState?.stop) {
         const entry = Array.isArray(confirmedState?.entries)
           ? confirmedState.entries.at(-1)
           : undefined;
@@ -1290,8 +1346,6 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       stablePolls = 0;
       continue;
     }
-    const notice = providerError(state?.notices);
-    if (notice) throw codedError(notice.code, notice.message, false);
     await waitForDomMutation(client, sessionId, 1_000, signal);
   }
   throw codedError(
@@ -1311,16 +1365,20 @@ async function generatePart(
   operationKey,
   lifecycle = {},
 ) {
-  const before = await responseState(client, sessionId);
-  const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
-  const preflight = preSendProviderError(before?.notices);
-  if (preflight) throw codedError(preflight.code, preflight.message, preflight.retryable);
+  const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
+  lifecycle.report?.('Aguardando conversa e editor prontos, sem enviar.');
+  await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal);
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
+  lifecycle.report?.('Prompt preenchido; aguardando controle de envio habilitado.');
+  const before = await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal, true);
+  const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
   // Dispatch may click successfully and lose its acknowledgement. Mark the
   // attempt before dispatch; never turn that uncertainty into a safe retry.
   lifecycle.submitted = true;
   await clickSend(bridge, `send:${operationKey}`, signal);
-  const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
+  lifecycle.report?.('Clique realizado; aguardando confirmação do envio.');
+  await waitForSubmission(client, sessionId, baselineCount, 30_000, signal);
+  lifecycle.report?.('Envio confirmado; aguardando resposta nova e concluída.');
   return await waitForResponse(client, sessionId, baselineCount, timeoutSeconds * 1000, signal);
 }
 
@@ -1558,7 +1616,7 @@ export async function execute(request, services) {
             settings,
             services.signal,
             `${index}:${attempt}`,
-            lifecycle,
+            Object.assign(lifecycle, { report: step }),
           );
           responses.push(response);
           lastError = undefined;
@@ -1566,7 +1624,7 @@ export async function execute(request, services) {
         } catch (error) {
           lastError = error;
           if (
-            !error?.retryable ||
+            !canRetryTurn(error, lifecycle.submitted) ||
             attempt >= retryAttempts ||
             ["AUTHENTICATION_FAILED", "RATE_LIMIT"].includes(error?.code)
           )
