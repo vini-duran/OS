@@ -6,9 +6,7 @@ import { execFileSync } from "node:child_process";
 const projectRoot = process.cwd();
 const runtimeDirectory = path.join(projectRoot, "desktop-runtime");
 const desktopBuildDirectory = path.join(projectRoot, "desktop-dist");
-const nodeMajor = Number(
-  process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
-);
+const nodeMajor = Number(process.versions.node.split(".")[0]);
 
 if (nodeMajor !== 26) {
   throw new Error(`A V0 precisa ser montada com Node 26; versão atual: ${process.versions.node}.`);
