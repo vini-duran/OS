@@ -1,104 +1,16 @@
 # Claude Browser Studio
 
-## Candidata após 1.0.11 — teste real de dois turnos passou
-
-Instalado Claude 1.0.11 + Bridge 0.2.2 com backup. O teste revelou espera
-indefinida por animation frames na aba de fundo. Bridge local 0.2.3 remove essa
-dependência, conservando a leitura/validação do texto; não foi publicada.
-O teste seguinte confirmou escrita mas encontrou o botão oculto na aba de fundo.
-
-A candidata ativa somente a aba criada pela ferramenta e continua exigindo
-controle visível/habilitado. Teste real no sandbox do ContentFlow enviou e
-capturou duas respostas exatas, consecutivas, com o mesmo ID de conversa.
-O teste não alterou a produção. Roteiro completo e retomada do item 4 pendentes.
-Essa última mudança ainda não está instalada no plugin. O manifesto conserva
-1.0.11 como base: não redistribuir a candidata sob essa versão. Proposta de
-promoção local: 1.0.12, após autorização explícita do conjunto validado.
-
-## Histórico — versão local 1.0.11 + Bridge 0.2.2
-
-Diagnóstico real encontrou Bridge 0.2.0 em uso e várias abas `claude.ai/new`.
-O transporte escolhia a primeira URL compatível, diferente da aba observada pelo
-plugin. Atualizar a cópia ativa para 0.2.1 não resolve o direcionamento por URL.
-A candidata exige `supportsTabBinding`, usa marcador efêmero da aba para vinculá-la
-na Bridge e recusa extensão antiga antes de preencher/enviar. Não amplia permissões.
-Instalação local do par autorizada em 2026-09-04. Não é release pública.
-54 testes locais passaram; E2E pendente. Não distribuir sob versões anteriores.
-
-`inspect-send.mjs` é entrada explícita de diagnóstico pelo sandbox: não navega,
-escreve ou envia prompts. Uma solicitação explícita `reloadBridgeId` pode recarregar
-somente a extensão cuja identidade foi verificada. O uso rotineiro permanece em
-`handler.mjs`. Dados de diagnóstico são locais, nunca tokens/cookies.
-
-## Versão local 1.0.10 — sincronização de turnos, E2E pendente
-
-Versionamento e instalação local de teste autorizados após apresentação dos
-testes da candidata. Não é release pública nem comprovação E2E. Permissões,
-contas, Métodos e campos de saída permanecem iguais; manifesto apenas versionado.
-
-- Antes de escrever, aguarda editor disponível e resposta estável/ociosa.
-- Antes do clique pela ContentFlow Browser Bridge, aguarda envio habilitado.
-- Reconhece `data-is-streaming=true` e `aria-busy=true` do editor, além de Stop.
-- Confirma envio por editor limpo/disponível ou aparecimento de nova resposta;
-  spinner sozinho e editor ausente não confirmam envio.
-- Só entrega resposta nova, estável, sem atividade e com editor disponível.
-- Registra as fases em logs, sem conteúdo dos prompts nem credenciais.
-- Não permite retry interno após tentativa de envio. Os retries já estavam
-  desativados; esta é proteção adicional, não causa comprovada da falha observada.
-
-45 testes locais (incluindo loops reais com estados simulados e adapter DOM)
-passaram, assim como o check oficial com sandbox. Esses testes não comprovam
-o cenário real no Claude: a passagem do item 3 ao 4 e a recuperação da execução
-preservada ainda não foram validadas. Não depende da extensão ChatGPT nem de
-operador humano enviando/copiando blocos. O ContentFlow mantém cursor/persistência;
-o plugin cuida somente do turno da interface. Não recupera automaticamente
-um envio anterior incerto, não recomeça o roteiro nem gira contas para mascarar erro.
-
-## Correção local 1.0.9 — validação E2E pendente
-
-Atualização local autorizada em 2026-09-04. Corrige a regressão de confirmação
-de envio da 1.0.8 e rejeita respostas antigas como resultado de um novo envio.
-`send-safety.test.mjs` cobre confirmação perdida do clique, controle ausente
-e resposta antiga que não deve contar como novo bloco, sem prompts externos.
-A geração completa dos oito blocos continua não validada no provedor.
-
-Versão **1.0.11** para ContentFlow Plugin API v1; seção abaixo registra a 1.0.9.
-
-## Correção do editor
-
-A versão 1.0.7 informa à Browser Bridge os rótulos esperados da caixa de mensagem
-do Claude. Em conjunto com a Browser Bridge 0.2.1, a seleção favorece o editor de
-chat mais baixo e valida o texto após a interface estabilizar, normalizando apenas
-caracteres invisíveis. A confirmação exige início, fim e pelo menos 90% do conteúdo;
-uma escrita parcial continua sendo recusada.
-
-## Retificação da proteção de envio
-
-A versão 1.0.9 marca a tentativa antes de despachar o clique: confirmação perdida
-mantém `retryable=false`. Só a recusa inequívoca `CONTROL_NOT_FOUND` permite
-aguardar e procurar o controle novamente. Avisos de cota pausam para reconciliação;
-outro perfil pronto não comprova causa nem resolve a falha.
-
-## Correção de espera e repetição
-
-Avisos de cota/verificação são reconhecidos somente em superfícies de erro
-visíveis, fora do editor e das respostas. Palavras soltas no corpo da página
-não encerram a espera. Em falhas, a guia criada permanece aberta; após uma
-tentativa de envio o plugin retorna `retryable: false`, inclusive se perder a
-confirmação. Conferir a conversa antes de repetir: não há recuperação automática
-de respostas abandonadas em execuções antigas.
-
-Usar em conjunto com a correção `plugin-account-fallback` do fork do Core,
-que respeita `retryable`. A versão 1.0.9 não marca cota como repetível. Em Core antigo
-que ignora esse sinal, desabilitar fallback antes de executar. Não requer novos
-logins, permissões nem alteração dos Métodos.
-
-Testado por contrato/sandbox, loops reais com respostas simuladas e DOM local;
-validação de geração real no provedor ainda pendente. Não é release oficial.
+Versão **1.1.1** para ContentFlow Plugin API v1 (com salvaguardas locais de sincronização e turnos preservadas).
 
 Plugin independente para ContentFlow que converte a lógica operacional de `gerar_roteiros.py` e `extrair_cookies_chrome.py` em seis capabilities pela interface web do Claude: texto/roteiros, pesquisa, escolha, validação, visão e análise de documentos.
 
-Ele não usa a API oficial da Anthropic. O plugin abre um Google Chrome real com perfil persistente dedicado, inicia ou retoma uma conversa e lê a resposta visível do Claude. Cookies e tokens permanecem sob controle do Chrome e nunca são exportados para TXT, manifesto, logs, outputs ou artifacts.
+Ele não usa a API oficial da Anthropic. O plugin abre um Google Chrome real com perfil persistente dedicado, inicia uma conversa nova e lê as respostas visíveis do Claude. Uma execução simples faz um envio; uma execução com outline ou quantidade de blocos faz vários envios na mesma conversa e concatena os trechos na ordem. Cookies e tokens permanecem sob controle do Chrome e nunca são exportados para TXT, manifesto, logs, outputs ou artifacts.
+
+## Histórico de salvaguardas locais
+
+- Reconhece streaming e status do editor Claude para evitar cliques prematuros.
+- `response-guard.mjs` valida estabilidade das respostas antes da entrega.
+- Suporta tanto o modo sequencial com meta de caracteres da v1.1.1 quanto a orquestração por bloco narrativo (`batchOutlineInstruction`).
 
 ## Contrato simplificado
 
@@ -147,10 +59,13 @@ A espera de respostas combina `MutationObserver` com polling de segurança e tim
 ### Criar — `generate-text-in-browser`
 
 - Entrada opcional `content`: briefing, tema, regras, referências e outros valores universais serializáveis.
-- Entrada opcional `outline`: `records` ou `list`; o núcleo executa cada item sequencialmente, persiste a resposta e reaproveita a mesma conversa.
+- Entrada opcional `outline`: `records` ou `list`; cada item dispara uma mensagem e produz uma resposta na mesma conversa (com suporte a orquestração atômica por item pelo núcleo).
+- Entrada opcional `sections`: quando não há outline, gera essa quantidade de blocos consecutivos.
+- Entrada opcional `target`: meta total de tamanho; o plugin distribui o saldo entre as etapas, pode pedir complementos e valida a faixa configurada antes de concluir.
 - Entrada opcional `attachments`: imagens ou documentos usados como referência na primeira mensagem.
 - Saída `result`: `textarea` com o texto final unido e, por padrão, limpo.
 - Saída opcional `parts`: lista que preserva cada resposta capturada separadamente na mesma conversa.
+- Saída opcional `document`: arquivo Markdown criado localmente a partir do mesmo texto final já validado.
 
 ### Validar — `validate-content-in-browser`
 
@@ -197,7 +112,9 @@ O ContentFlow v0.3 ainda envia `settings: {}` para plugins comunitários, portan
 
 ## Execução
 
-Sem `outline`, cada bloco realiza um único envio. Quando `outline` recebe mais de um item, `itemOrchestration` faz uma chamada atômica por item, em ordem. O contexto fixo e os blocos já concluídos são anexados em todas as chamadas, `parts` é persistido parcialmente após cada resposta e a conversa retornada pelo Claude é reutilizada no item seguinte. Se o núcleo mudar para outro perfil preparado após uma falha, ele abre uma conversa nova com o contexto e as partes já concluídas, sem repetir os itens persistidos.
+Por padrão, `generationMode: auto` realiza um único envio quando não há sequência. Se `outline` tiver itens ou `sections` for maior que 1, cada etapa vira uma mensagem na mesma conversa. Quando acionado com orquestração atômica de itens (`itemOrchestration`), o núcleo faz uma chamada por item, em ordem, anexando contexto fixo e persistindo `parts` parcialmente após cada resposta. `single` força um envio e `sequence` força a sequência. O resultado final é a concatenação ordenada das respostas; `parts` preserva os trechos individualmente.
+
+Quando `target` é informado, cada etapa recebe uma meta proporcional ao saldo restante. Se o acumulado ficar abaixo da tolerância, o plugin pode enviar até duas mensagens de complemento por padrão. Resultado fora da faixa aceita retorna `OUTPUT_VALIDATION_FAILED` e não é entregue como roteiro concluído.
 
 ## Segurança e dados
 
@@ -235,9 +152,9 @@ Em 20/08/2026, o fluxo real foi validado na interface web do Claude. A versão 1
 - A automação depende da interface web do Claude e pode exigir atualização se labels ou estrutura mudarem.
 - O Chrome precisa estar instalado.
 - Login, reautenticação, CAPTCHA e escolha de plano são sempre manuais.
-- Uma execução cria uma conversa nova e faz um único envio.
+- Uma execução cria uma conversa nova; pode fazer um envio ou uma sequência de até 32 etapas.
 - O plugin tenta iniciar cada execução pelo link visível **New** do Claude e usa `https://claude.ai/new` como fallback determinístico.
 - Cada conversa aceita no máximo 20 anexos e 500 MB por arquivo; limites adicionais do plano/contexto continuam valendo.
 - O plugin mapeia, mas não automatiza billing, mudança de plano, conectores, plugins de terceiros, compartilhamento, microfone ou captura da tela. Esses recursos ampliariam dados e permissões sem necessidade para os blocos do ContentFlow.
-- A criação de arquivos pelo ambiente de código do Claude não é importada como artifact nesta versão; o foco do plugin é produzir texto e analisar entradas autorizadas.
+- O plugin não depende do artifact interno do Claude, que pode variar com a interface. Quando o Método pede a saída `document`, ele grava o texto final validado como `.md` e o entrega pelo contrato seguro de artifacts do ContentFlow.
 - Os scripts Python originais não são alterados nem apagados.

@@ -1,6 +1,6 @@
 # Gemini Browser Studio
 
-Versão **1.0.4** para ContentFlow Plugin API v1.
+Versão **1.0.5** para ContentFlow Plugin API v1 (com salvaguardas locais de espera e repetição preservadas).
 
 ## Correção de espera e repetição
 

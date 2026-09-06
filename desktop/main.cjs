@@ -1,7 +1,16 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  Notification,
+  shell,
+} = require("electron");
 const { createServer, request: httpRequest } = require("node:http");
 const { spawn } = require("node:child_process");
-const { existsSync, readFileSync, statSync } = require("node:fs");
+const { existsSync, statSync } = require("node:fs");
+const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
@@ -12,10 +21,21 @@ if (!singleInstance) app.quit();
 let mainWindow;
 let webServer;
 let apiProcess;
+let appOrigin;
+let notificationIcon;
 let quitting = false;
+const staticAssetCache = new Map();
+const notifiedHumanTasks = new Set();
+const HUMAN_TASKS_UPDATE_CHANNEL = "contentflow:human-tasks-update";
+const HUMAN_TASKS_NAVIGATE_CHANNEL = "contentflow:human-tasks-navigate";
+const HUMAN_TASK_ROUTE =
+  /^\/project\/[^/]+\/(theme|title|thumbnail|script|narration|assets|edit|publish)$/;
 
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
+if (process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR) {
+  app.setPath("userData", path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR));
+}
 
 app.on("second-instance", () => {
   if (!mainWindow) return;
@@ -41,6 +61,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   quitting = true;
   webServer?.close();
+  webServer?.closeAllConnections?.();
   apiProcess?.kill();
 });
 
@@ -70,22 +91,37 @@ async function startDesktop() {
   apiProcess = spawn(process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE, [apiEntry], {
     env: process.env,
     windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "ignore", "pipe"],
   });
   let apiError = "";
+  let apiLaunchError;
+  let apiReady = false;
   apiProcess.stderr.on("data", (chunk) => {
     apiError = `${apiError}${chunk.toString("utf8")}`.slice(-12_000);
   });
+  apiProcess.once("error", (error) => {
+    apiLaunchError = error;
+  });
   apiProcess.once("exit", (code) => {
-    if (code && !quitting) {
-      dialog.showErrorBox("A API local foi encerrada", apiError || `Código de saída: ${code}`);
+    if (!quitting && apiReady) {
+      dialog.showErrorBox(
+        "A API local foi encerrada",
+        apiError || `Código de saída: ${code ?? "desconhecido"}`,
+      );
       app.quit();
     }
   });
-  await waitForApi(apiPort);
+  await waitForApi(
+    apiPort,
+    () => apiLaunchError,
+    () => apiProcess?.exitCode,
+    () => apiError,
+  );
+  apiReady = true;
 
   const webPort = await startWebServer(appRoot, apiPort);
   const windowIcon = path.join(appRoot, "build", "icon.png");
+  notificationIcon = windowIcon;
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 940,
@@ -94,6 +130,7 @@ async function startDesktop() {
     title: "ContentFlow",
     icon: windowIcon,
     backgroundColor: "#08111f",
+    show: false,
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -102,7 +139,8 @@ async function startDesktop() {
       preload: path.join(__dirname, "preload.cjs"),
     },
   });
-  const appOrigin = `http://127.0.0.1:${webPort}`;
+  appOrigin = `http://127.0.0.1:${webPort}`;
+  configureHumanTaskNotifications();
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -113,7 +151,149 @@ async function startDesktop() {
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
   });
   configureDesktopUpdater({ app, ipcMain, shell, getWindow: () => mainWindow });
+  mainWindow.once("ready-to-show", () => mainWindow?.show());
   await mainWindow.loadURL(`${appOrigin}/dashboard`);
+  if (!mainWindow.isVisible()) mainWindow.show();
+}
+
+function configureHumanTaskNotifications() {
+  ipcMain.on(HUMAN_TASKS_UPDATE_CHANNEL, (event, input) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return;
+    const tasks = Array.isArray(input?.tasks)
+      ? input.tasks.map(validHumanTask).filter(Boolean)
+      : [];
+    const count = Math.min(999, tasks.length);
+    const currentIds = new Set(tasks.map((task) => task.id));
+
+    for (const id of notifiedHumanTasks) {
+      if (!currentIds.has(id)) notifiedHumanTasks.delete(id);
+    }
+    setHumanTaskBadge(count);
+
+    for (const task of tasks) {
+      if (notifiedHumanTasks.has(task.id)) continue;
+      notifiedHumanTasks.add(task.id);
+      notifyHumanTask(task, {
+        sound: input?.notificationSound === true,
+        system: input?.systemNotifications === true,
+      });
+    }
+  });
+}
+
+function validHumanTask(value) {
+  if (
+    !value ||
+    typeof value.id !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.body !== "string" ||
+    typeof value.route !== "string" ||
+    !HUMAN_TASK_ROUTE.test(value.route)
+  ) {
+    return undefined;
+  }
+  return {
+    id: value.id.slice(0, 200),
+    title: value.title.slice(0, 120),
+    body: value.body.slice(0, 300),
+    route: value.route,
+  };
+}
+
+function setHumanTaskBadge(count) {
+  if (!mainWindow) return;
+  const description =
+    count === 0
+      ? "Nenhuma validação pendente"
+      : `${count} ${count === 1 ? "validação pendente" : "validações pendentes"}`;
+  if (process.platform === "win32") {
+    mainWindow.setOverlayIcon(count > 0 ? createBadgeIcon(count) : null, description);
+    return;
+  }
+  app.setBadgeCount(count);
+}
+
+function createBadgeIcon(count) {
+  const label = count > 99 ? "99+" : String(count);
+  const size = 32;
+  const bitmap = Buffer.alloc(size * size * 4);
+  const setPixel = (x, y, color) => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    const offset = (y * size + x) * 4;
+    bitmap[offset] = color[2];
+    bitmap[offset + 1] = color[1];
+    bitmap[offset + 2] = color[0];
+    bitmap[offset + 3] = color[3];
+  };
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const distance = Math.hypot(x - 15.5, y - 15.5);
+      if (distance <= 15) setPixel(x, y, [17, 24, 39, 255]);
+      if (distance <= 13) setPixel(x, y, [245, 158, 11, 255]);
+    }
+  }
+
+  const glyphs = {
+    0: ["111", "101", "101", "101", "111"],
+    1: ["010", "110", "010", "010", "111"],
+    2: ["111", "001", "111", "100", "111"],
+    3: ["111", "001", "111", "001", "111"],
+    4: ["101", "101", "111", "001", "001"],
+    5: ["111", "100", "111", "001", "111"],
+    6: ["111", "100", "111", "101", "111"],
+    7: ["111", "001", "010", "010", "010"],
+    8: ["111", "101", "111", "101", "111"],
+    9: ["111", "101", "111", "001", "111"],
+    "+": ["000", "010", "111", "010", "000"],
+  };
+  const scale = label.length === 1 ? 4 : label.length === 2 ? 3 : 2;
+  const glyphWidth = 3 * scale;
+  const spacing = scale;
+  const textWidth = label.length * glyphWidth + (label.length - 1) * spacing;
+  const startX = Math.floor((size - textWidth) / 2);
+  const startY = Math.floor((size - 5 * scale) / 2);
+  [...label].forEach((character, characterIndex) => {
+    glyphs[character].forEach((row, rowIndex) => {
+      [...row].forEach((pixel, columnIndex) => {
+        if (pixel !== "1") return;
+        for (let offsetY = 0; offsetY < scale; offsetY += 1) {
+          for (let offsetX = 0; offsetX < scale; offsetX += 1) {
+            setPixel(
+              startX + characterIndex * (glyphWidth + spacing) + columnIndex * scale + offsetX,
+              startY + rowIndex * scale + offsetY,
+              [17, 24, 39, 255],
+            );
+          }
+        }
+      });
+    });
+  });
+  return nativeImage.createFromBitmap(bitmap, { width: size, height: size, scaleFactor: 2 });
+}
+
+function notifyHumanTask(task, preferences) {
+  if (!preferences.system) {
+    if (preferences.sound) shell.beep();
+    return;
+  }
+  if (!Notification.isSupported()) {
+    if (preferences.sound) shell.beep();
+    return;
+  }
+  const notification = new Notification({
+    title: task.title,
+    body: task.body,
+    icon: notificationIcon,
+    silent: !preferences.sound,
+  });
+  notification.on("click", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send(HUMAN_TASKS_NAVIGATE_CHANNEL, task.route);
+  });
+  notification.show();
 }
 
 async function startWebServer(appRoot, apiPort) {
@@ -132,7 +312,12 @@ async function startWebServer(appRoot, apiPort) {
       if (staticPath) {
         outgoing.statusCode = 200;
         outgoing.setHeader("content-type", mimeType(staticPath));
-        outgoing.end(readFileSync(staticPath));
+        let body = staticAssetCache.get(staticPath);
+        if (!body) {
+          body = await readFile(staticPath);
+          staticAssetCache.set(staticPath, body);
+        }
+        outgoing.end(body);
         return;
       }
       const body = await readRequestBody(incoming);
@@ -234,9 +419,15 @@ function reservePort() {
   });
 }
 
-async function waitForApi(port) {
+async function waitForApi(port, getLaunchError, getExitCode, getStderr) {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
+    const launchError = getLaunchError?.();
+    if (launchError) throw launchError;
+    const exitCode = getExitCode?.();
+    if (exitCode !== null && exitCode !== undefined) {
+      throw new Error(getStderr?.() || `A API local encerrou com código ${exitCode}.`);
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/preferences`);
       if (response.ok) return;

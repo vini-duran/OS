@@ -17,6 +17,7 @@ const MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024;
 const PROFILE_SETUP_WAIT_MS = Number.POSITIVE_INFINITY;
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const DOCUMENT_EXTENSIONS = new Set([
+  ".md",
   ".pdf",
   ".docx",
   ".csv",
@@ -450,18 +451,29 @@ async function resolveStoredFileAttachments(value, services, kind) {
     throw codedError("INVALID_INPUT", `Máximo de ${MAX_ATTACHMENTS} anexos por conversa.`);
   const resolved = [];
   for (const file of unique) {
-    const path = await services.resolveInputFile(file);
-    const extension = extname(file.name || path).toLowerCase();
+    let path = await services.resolveInputFile(file);
+    let name = file.name || basename(path);
+    let extension = extname(name || path).toLowerCase();
     if (!SUPPORTED_EXTENSIONS.has(extension))
       throw codedError("INVALID_INPUT", `Formato não suportado: ${extension || "sem extensão"}.`);
     if (kind === "image" && !IMAGE_EXTENSIONS.has(extension))
       throw codedError("INVALID_INPUT", `A visão não aceita ${file.name}.`);
     if (kind === "document" && !DOCUMENT_EXTENSIONS.has(extension))
       throw codedError("INVALID_INPUT", `Documento não suportado: ${file.name}.`);
+    if (extension === ".md") {
+      const base = basename(name, extension)
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .slice(0, 100);
+      name = `${base || "contexto"}.txt`;
+      const normalizedPath = services.getOutputPath(name);
+      await writeFile(normalizedPath, await readFile(path));
+      path = normalizedPath;
+      extension = ".txt";
+    }
     const info = await stat(path);
     if (!info.isFile() || info.size > MAX_ATTACHMENT_BYTES)
       throw codedError("INVALID_INPUT", `Arquivo inválido ou acima de 512 MB: ${file.name}.`);
-    resolved.push({ path, name: file.name || basename(path), size: info.size });
+    resolved.push({ path, name, size: info.size });
   }
   return resolved;
 }
@@ -1061,14 +1073,6 @@ export function composerUploadState(doc) {
       style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length > 0
     );
   };
-  const text = [
-    composer.innerText,
-    ...[...composer.querySelectorAll("[aria-label], [title]")]
-      .filter(visible)
-      .map((el) => `${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""}`),
-  ]
-    .join(" ")
-    .toLowerCase();
   const send = composer.querySelector(sendSelector);
   const sendLabel = `${send?.getAttribute("aria-label") || ""} ${send?.getAttribute("data-testid") || ""}`;
   // A blob preview can be decoded before the server has received the file.
@@ -1097,36 +1101,50 @@ export function composerUploadState(doc) {
     .filter((el) => visible(el) && outsidePrompt(el))
     .map((el) => el.innerText || el.textContent || "")
     .join(" ");
+  const previews = [
+    ...new Set(
+      [...composer.querySelectorAll("img")]
+        .filter(
+          (img) =>
+            visible(img) && img.complete && img.naturalWidth >= 32 && img.naturalHeight >= 32,
+        )
+        .map((img) => img.currentSrc || img.src)
+        .filter(Boolean),
+    ),
+  ];
+  const attachmentRemovalControls = composer.querySelectorAll(
+    [
+      'button[aria-label*="remove file" i]',
+      'button[aria-label*="remove attachment" i]',
+      'button[aria-label*="remover arquivo" i]',
+      'button[aria-label*="remover anexo" i]',
+      '[data-testid*="remove"][data-testid*="file"]',
+      '[data-testid*="remove"][data-testid*="attachment"]',
+    ].join(","),
+  );
+  const hasPrompt = Boolean((prompt?.innerText || prompt?.textContent || "").trim());
+  const sendEnabled = Boolean(
+    send &&
+    visible(send) &&
+    !send.disabled &&
+    !send.matches?.(":disabled") &&
+    send.getAttribute("aria-disabled") !== "true" &&
+    doc.defaultView.getComputedStyle(send).pointerEvents !== "none" &&
+    /send-button|\b(?:send|enviar|envoyer|senden)\b/i.test(sendLabel) &&
+    !/stop|parar|detener|interromper/i.test(sendLabel),
+  );
   return {
-    text,
-    hasPrompt: Boolean((prompt?.innerText || prompt?.textContent || "").trim()),
-    previews: [
-      ...new Set(
-        [...composer.querySelectorAll("img")]
-          .filter(
-            (img) =>
-              visible(img) && img.complete && img.naturalWidth >= 32 && img.naturalHeight >= 32,
-          )
-          .map((img) => img.currentSrc || img.src)
-          .filter(Boolean),
-      ),
-    ],
+    hasPrompt,
+    previews,
+    attachmentPresent:
+      previews.length > 0 || attachmentRemovalControls.length > 0 || (!hasPrompt && sendEnabled),
     busy:
       uploadingPreview ||
       animatedUpload ||
       [
         ...composer.querySelectorAll('[role="progressbar"], [aria-busy="true"], .animate-spin'),
       ].some(visible),
-    sendEnabled: Boolean(
-      send &&
-      visible(send) &&
-      !send.disabled &&
-      !send.matches?.(":disabled") &&
-      send.getAttribute("aria-disabled") !== "true" &&
-      doc.defaultView.getComputedStyle(send).pointerEvents !== "none" &&
-      /send-button|\b(?:send|enviar|envoyer|senden)\b/i.test(sendLabel) &&
-      !/stop|parar|detener|interromper/i.test(sendLabel),
-    ),
+    sendEnabled,
     error:
       /upload failed|couldn't upload|falha.*(?:upload|carregar|enviar)|erro.*(?:upload|carregar)|arquivo.*grande/i.test(
         alerts,
@@ -1134,24 +1152,37 @@ export function composerUploadState(doc) {
   };
 }
 
-export function attachmentsAreReady(state, attachments, baselinePreviews = []) {
-  if (!state || state.error || state.busy || !state.sendEnabled) return false;
-  const named = (file) => state.text.includes(file.name.toLowerCase());
-  if (attachments.every(named)) return true;
-  const images = attachments.filter((file) =>
-    IMAGE_EXTENSIONS.has(extname(file.name).toLowerCase()),
+export function attachmentsAreReady(state, attachments) {
+  return Boolean(
+    attachments?.length &&
+    state?.attachmentPresent &&
+    !state.error &&
+    !state.busy &&
+    state.sendEnabled,
   );
-  const documents = attachments.filter((file) => !images.includes(file));
-  const baseline = new Set(baselinePreviews);
-  const newPreviews = new Set(state.previews.filter((src) => !baseline.has(src)));
-  return images.length > 0 && documents.every(named) && newPreviews.size >= images.length;
+}
+
+export async function waitForAttachmentsReady(readState, attachments, signal, timing = {}) {
+  const now = timing.now || Date.now;
+  const pause = timing.pause || sleep;
+  const deadline = now() + (timing.timeoutMs ?? 120000);
+  const stablePollsRequired = timing.stablePolls ?? 4;
+  let stablePolls = 0;
+  while (now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    const state = await readState();
+    if (state?.error) throw codedError("INVALID_INPUT", "O ChatGPT recusou um anexo.");
+    stablePolls = attachmentsAreReady(state, attachments) ? stablePolls + 1 : 0;
+    if (stablePolls >= stablePollsRequired) return;
+    await pause(500, signal);
+  }
+  throw codedError("TIMEOUT", "Anexos não ficaram prontos em 120 segundos.", true);
 }
 
 async function attachFiles(client, sessionId, attachments, signal) {
   if (!attachments.length) return;
   const readState = () =>
     evaluate(client, sessionId, `(${composerUploadState.toString()})(document)`);
-  const baseline = await readState();
   await client.send("DOM.enable", {}, sessionId);
   const { root } = await client.send("DOM.getDocument", { depth: 1, pierce: true }, sessionId);
   const { nodeIds = [] } = await client.send(
@@ -1170,15 +1201,7 @@ async function attachFiles(client, sessionId, attachments, signal) {
     { files: attachments.map((item) => item.path), nodeId: nodeIds[0] },
     sessionId,
   );
-  const deadline = Date.now() + 120000;
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-    const state = await readState();
-    if (state?.error) throw codedError("INVALID_INPUT", "O ChatGPT recusou um anexo.");
-    if (attachmentsAreReady(state, attachments, baseline?.previews)) return;
-    await sleep(500, signal);
-  }
-  throw codedError("TIMEOUT", "Anexos não ficaram prontos em 120 segundos.", true);
+  await waitForAttachmentsReady(readState, attachments, signal);
 }
 
 async function clickMode(bridge, mode) {
@@ -1309,20 +1332,29 @@ async function responseState(client, sessionId) {
 async function waitForResponse(client, sessionId, baselineCount, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   let previous = "",
-    stable = 0;
+    stable = 0,
+    stableSince = 0;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId),
       texts = state?.texts ?? [],
       newest = texts.length > baselineCount ? texts.at(-1) : "";
-    stable = newest && newest === previous ? stable + 1 : 0;
+    if (newest && newest === previous) {
+      stable += 1;
+    } else {
+      stable = 0;
+      stableSince = newest ? Date.now() : 0;
+    }
     previous = newest;
     const phase = responsePhase({
       hasNewResponse: Boolean(newest),
       generating: Boolean(state?.stop),
       stablePolls: stable,
     });
-    if (phase === "completed") {
+    // A interface pode ocultar momentaneamente o botão "Parar" durante uma
+    // pausa longa do streaming. Exigir uma janela contínua sem alterações evita
+    // capturar apenas o primeiro fragmento de uma resposta ainda em produção.
+    if (phase === "completed" && Date.now() - stableSince >= 12_000) {
       await sleep(5_000, signal);
       const confirmedState = await responseState(client, sessionId);
       const confirmedTexts = confirmedState?.texts ?? [];
@@ -1335,6 +1367,7 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       }
       previous = confirmedNewest;
       stable = 0;
+      stableSince = confirmedNewest ? Date.now() : 0;
       continue;
     }
     const hint = String(state?.bodyHint ?? "");
