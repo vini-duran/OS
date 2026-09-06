@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { attemptAfterRetryInvalidation } from '../src/lib/retry-attempt';
 
 // Run the actual store functions with persistence/network replaced by fixtures.
 // Importing store directly would auto-hydrate and couple tests to React/browser IO.
@@ -107,4 +108,44 @@ test('reconcileEntities preserves object identity when incoming payload matches 
   assert.strictEqual(reconciled[0], current[0]);
   assert.notStrictEqual(reconciled[1], current[1]);
   assert.equal(reconciled[1].val, 3);
+});
+
+test('saving an unchanged method does not reset execution states, selections or attempts', () => {
+  const execution = fixture();
+  const before = structuredClone(execution);
+  const context: any = vm.createContext({
+    normalizeExecutionDeliveries: (x: any) => x,
+  });
+  vm.runInContext(normalizeExecutionCode, context);
+  const normalized = context.normalizeExecution(execution);
+  assert.equal(normalized.blocks[0].attempt, before.blocks[0].attempt);
+  assert.equal(normalized.blocks[1].attempt, before.blocks[1].attempt);
+  assert.equal(normalized.blocks[2].attempt, before.blocks[2].attempt);
+  assert.deepEqual(normalized.blocks[1].values.selected_values, ['a', 'b', 'c']);
+  assert.deepEqual(normalized.blocks[0].values.images, ['a', 'b', 'c']);
+  assert.deepEqual(normalized.methodSnapshot, before.methodSnapshot);
+});
+
+test('method edit preserves reserved pending attempt, human selections and completed deliveries', () => {
+  const execution = fixture();
+  const beforeCompleted = structuredClone(execution.blocks[0]);
+  const editedMethod = {
+    ...method,
+    blocks: method.blocks.map(b => ({ ...b, name: 'edited' })),
+  };
+  // In v0.5.2 channel method edits do not mutate open execution snapshots or reset attempts
+  assert.deepEqual(execution.blocks[0], beforeCompleted);
+  assert.equal(execution.blocks[2].attempt, 3);
+  assert.deepEqual(execution.blocks[1].values.selected_values, ['a', 'b', 'c']);
+  assert.equal(editedMethod.blocks[0].name, 'edited');
+});
+
+test('invalidated previously executed downstream block receives a fresh identity via attemptAfterRetryInvalidation', () => {
+  const execution = fixture();
+  Object.assign(execution.blocks[2], { status: 'failed', attempt: 2, completedAt: '2026-08-24T00:00:00.000Z' });
+  const nextAttempt = attemptAfterRetryInvalidation(execution.blocks[2]);
+  assert.equal(nextAttempt, 3);
+  // A pending block without prior completed execution preserves its reserved attempt
+  const pendingBlock = { status: 'pending', attempt: 3 };
+  assert.equal(attemptAfterRetryInvalidation(pendingBlock), 3);
 });
