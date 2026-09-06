@@ -115,10 +115,6 @@ export async function attachContentFlowBridge({
     );
   }
 
-  if (identity.supportsTabBinding !== true) {
-    throw codedError('INVALID_CONFIGURATION', 'A Browser Bridge precisa suportar vínculo à aba exata. Atualize a extensão; nenhum prompt foi enviado.');
-  }
-
   const sessionToken = randomUUID();
   const key = executionKey(request, profileId, pluginId);
   const handshake = await evaluateWorker(
@@ -137,14 +133,6 @@ export async function attachContentFlowBridge({
       handshake?.message || "A extensão recusou a conexão efêmera do plugin.",
     );
   }
-
-  const tabMarker = randomUUID();
-  const bindingPage = await evaluateWorker(client, pageSessionId,
-    `(() => { document.documentElement.setAttribute('data-contentflow-tab-marker', ${JSON.stringify(tabMarker)}); return {url:location.href,origin:location.origin}; })()`);
-  if (!allowedOrigins.includes(bindingPage?.origin)) throw codedError('INVALID_CONFIGURATION', 'Origem da aba não autorizada.');
-  const binding = await evaluateWorker(client, workerSessionId,
-    `globalThis.contentFlowBridge.bindPage(${JSON.stringify({ pluginId, profileId, sessionToken, tabMarker, expectedUrl: bindingPage.url })})`);
-  if (!binding?.ok) throw codedError('INVALID_CONFIGURATION', binding?.message || 'Não foi possível vincular a aba da execução.');
 
   const origins = new Set(allowedOrigins);
   const dispatch = async (action, payload = {}, operationKey = action, timeoutMs = 30000) => {
@@ -203,13 +191,11 @@ export async function attachContentFlowBridge({
           response?.message || "A extensão instalada é incompatível.",
         );
       }
-      const fault = codedError(
+      throw codedError(
         "OUTPUT_VALIDATION_FAILED",
         response?.message || `A extensão recusou a ação ${action}.`,
         true,
       );
-      fault.bridgeCode = code;
-      throw fault;
     }
     return response;
   };

@@ -27,6 +27,7 @@ for (const provider of ["gemini-browser-studio", "claude-browser-text"]) {
           texts: done ? ["Resposta final correta"] : [],
           entries: [],
           stop: !done,
+          promptReady: done,
           body: "Upgrade. Explique limites, rate limit e captcha.",
           bodyHint: "usage limit / try again later / verify you are human",
           notices: polls > 1 ? notices : [],

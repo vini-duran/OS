@@ -53,7 +53,6 @@ function identity() {
     bridgeId: BRIDGE_ID,
     protocolVersion: PROTOCOL_VERSION,
     extensionVersion: chrome.runtime.getManifest().version,
-    supportsTabBinding: true,
   };
 }
 
@@ -61,7 +60,7 @@ function policyForPlugin(pluginId) {
   return PLUGIN_POLICIES[pluginId] || null;
 }
 
-function selectPluginTab(tabs, expectedUrl, policy, boundTabId) {
+function selectPluginTab(tabs, expectedUrl, policy) {
   const expected = new URL(expectedUrl);
   if (!policy.origins.has(expected.origin)) return null;
   const candidates = tabs.filter((tab) => {
@@ -72,9 +71,6 @@ function selectPluginTab(tabs, expectedUrl, policy, boundTabId) {
       return false;
     }
   });
-  if (Number.isInteger(boundTabId)) {
-    return candidates.find(tab => tab.id === boundTabId && tab.url === expectedUrl) || null;
-  }
   return (
     candidates.find((tab) => tab.url === expectedUrl) ||
     candidates.find((tab) => {
@@ -103,7 +99,6 @@ async function cacheResponse(command, response) {
   while (entries.length >= MAX_COMMAND_CACHE) entries.shift();
   const entry = {
     executionKey: command.executionKey,
-    tabId: activeSession?.tabId,
     response,
     storedAt: now,
     expiresAt: now + 12 * 60 * 60 * 1000,
@@ -718,7 +713,6 @@ async function dispatchToPage(command) {
   const cached = cache[command.commandId];
   if (
     cached?.executionKey === command.executionKey &&
-    cached?.tabId === activeSession?.tabId &&
     Number(cached.expiresAt) > Date.now() &&
     cached.response
   ) {
@@ -726,7 +720,7 @@ async function dispatchToPage(command) {
   }
 
   const tabs = await chrome.tabs.query({ url: policy.tabPatterns });
-  const tab = selectPluginTab(tabs, expectedUrl.toString(), policy, activeSession?.tabId);
+  const tab = selectPluginTab(tabs, expectedUrl.toString(), policy);
   if (!Number.isInteger(tab?.id)) {
     return bridgeError(
       "PLUGIN_TAB_NOT_FOUND",
@@ -804,36 +798,6 @@ globalThis.contentFlowBridge = Object.freeze({
     const operation = dispatchToPage(command).finally(() => inFlight.delete(command.commandId));
     inFlight.set(command.commandId, operation);
     return await operation;
-  },
-  async bindPage(request) {
-    const session = activeSession;
-    if (!session || request?.sessionToken !== session.sessionToken ||
-        request?.profileId !== session.profileId || request?.pluginId !== session.pluginId ||
-        !/^[a-f0-9-]{32,64}$/i.test(String(request?.tabMarker || ''))) {
-      return bridgeError('SESSION_MISMATCH', 'Vínculo de aba recusado.');
-    }
-    const policy = policyForPlugin(session.pluginId);
-    let url;
-    try { url = new URL(request.expectedUrl); } catch { return bridgeError('INVALID_COMMAND', 'URL inválida.'); }
-    if (!policy.origins.has(url.origin) || !url.pathname.includes(policy.requiredPath)) {
-      return bridgeError('ORIGIN_NOT_ALLOWED', 'Origem não autorizada.');
-    }
-    const tabs = await chrome.tabs.query({ url: policy.tabPatterns });
-    const matches = [];
-    for (const tab of tabs.filter(tab => tab.url === request.expectedUrl)) {
-      try {
-        const answer = await withTimeout(chrome.tabs.sendMessage(tab.id, {
-          source: 'contentflow', pluginId: session.pluginId, protocolVersion: PROTOCOL_VERSION,
-          profileId: session.profileId, executionKey: request.tabMarker,
-          commandId: `bind-${request.tabMarker}-${tab.id}`, action: 'inspect',
-          payload: { includeTabMarker: true },
-        }), 3000);
-        if (answer?.ok && answer.tabMarker === request.tabMarker) matches.push(tab.id);
-      } catch { /* An old tab without a content script is not the requested page. */ }
-    }
-    if (matches.length !== 1 || activeSession !== session) return bridgeError('PLUGIN_TAB_NOT_FOUND', 'Não foi possível vincular uma única aba da execução.');
-    session.tabId = matches[0];
-    return { ok: true, tabId: session.tabId };
   },
   async cancel(request) {
     const session = activeSessions.get(request?.sessionToken);
