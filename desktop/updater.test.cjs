@@ -119,3 +119,9 @@ test("percorre o fluxo IPC de verificar, baixar e instalar", async () => {
   await handlers.get("contentflow:updater:open-releases")();
   assert.deepEqual(opened, [RELEASES_URL]);
 });
+
+test("o destino de releases aponta exclusivamente para o fork do proprietário", () => {
+  assert.equal(RELEASES_URL, "https://github.com/vini-duran/OS/releases/latest");
+  assert.equal(RELEASES_URL.includes("andremjr"), false);
+});
+

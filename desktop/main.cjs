@@ -71,7 +71,10 @@ async function startDesktop() {
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
-  const dataRoot = path.join(app.getPath("userData"), "data");
+  const runtimeNodeName = process.platform === "win32" ? "node.exe" : "node";
+  const dataRoot = path.resolve(
+    process.env.CONTENTFLOW_DESKTOP_DATA_DIR ?? path.join(app.getPath("userData"), "data"),
+  );
   const apiPort = await reservePort();
 
   process.env.CONTENTFLOW_API_PORT = String(apiPort);
@@ -83,13 +86,14 @@ async function startDesktop() {
   process.env.CONTENTFLOW_PLUGIN_WORKER_DIR = app.isPackaged
     ? path.join(runtimeRoot, "workers")
     : path.join(appRoot, "server");
-  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, "node.exe");
+  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, runtimeNodeName);
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
   process.env.NODE_ENV = "production";
 
   const apiEntry = path.join(appRoot, "desktop-dist", "api.mjs");
+  const apiEnvironment = createApiEnvironment();
   apiProcess = spawn(process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE, [apiEntry], {
-    env: process.env,
+    env: apiEnvironment,
     windowsHide: true,
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -294,6 +298,42 @@ function notifyHumanTask(task, preferences) {
     mainWindow.webContents.send(HUMAN_TASKS_NAVIGATE_CHANNEL, task.route);
   });
   notification.show();
+}
+
+function createApiEnvironment() {
+  const inheritedKeys = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "USERPROFILE",
+    "ProgramData",
+  ];
+  const environment = Object.fromEntries(
+    inheritedKeys
+      .filter((key) => typeof process.env[key] === "string")
+      .map((key) => [key, process.env[key]]),
+  );
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("CONTENTFLOW_") && typeof value === "string") {
+      environment[key] = value;
+    }
+  }
+  environment.NODE_ENV = "production";
+  return environment;
 }
 
 async function startWebServer(appRoot, apiPort) {

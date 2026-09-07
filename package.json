@@ -6,7 +6,7 @@
   "author": "André Marinho Jr.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/andremjr/contentflow.git"
+    "url": "https://github.com/vini-duran/OS.git"
   },
   "private": true,
   "main": "desktop/main.cjs",
@@ -27,6 +27,7 @@
     "start": "concurrently -k \"npm run api:start\" \"vite preview --host 127.0.0.1 --port 8080\"",
     "desktop:prepare": "npm run build && node desktop/validate-native-dependencies.mjs && node desktop/prepare-desktop.mjs",
     "desktop:run": "npm run desktop:prepare && electron .",
+    "desktop:mac:arm64": "CONTENTFLOW_DESKTOP_TARGET_ARCH=arm64 npm run desktop:prepare && electron-builder --mac dir --arm64",
     "desktop:portable": "npm run desktop:prepare && electron-builder --win portable --x64",
     "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis --x64",
     "desktop:v0": "npm run desktop:prepare && electron-builder --win portable nsis --x64",
@@ -149,8 +150,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "andremjr",
-        "repo": "contentflow",
+        "owner": "vini-duran",
+        "repo": "OS",
         "channel": "latest",
         "releaseType": "release"
       }
@@ -183,6 +184,13 @@
         ]
       }
     ],
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ],
+      "artifactName": "ContentFlow-${version}-${arch}.${ext}"
+    },
     "win": {
       "icon": "build/icon.png",
       "target": [
