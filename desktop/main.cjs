@@ -9,14 +9,11 @@ const {
 } = require("electron");
 const { createServer, request: httpRequest } = require("node:http");
 const { spawn } = require("node:child_process");
-const { existsSync, statSync } = require("node:fs");
+const { existsSync, mkdirSync, statSync } = require("node:fs");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
-
-const singleInstance = app.requestSingleInstanceLock();
-if (!singleInstance) app.quit();
 
 let mainWindow;
 let webServer;
@@ -34,36 +31,45 @@ const HUMAN_TASK_ROUTE =
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
 if (process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR) {
-  app.setPath("userData", path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR));
+  const customUserData = path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR);
+  if (!existsSync(customUserData)) {
+    mkdirSync(customUserData, { recursive: true });
+  }
+  app.setPath("userData", customUserData);
 }
 
-app.on("second-instance", () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.focus();
-});
-
-app
-  .whenReady()
-  .then(startDesktop)
-  .catch((error) => {
-    dialog.showErrorBox(
-      "O ContentFlow não conseguiu iniciar",
-      error instanceof Error ? (error.stack ?? error.message) : String(error),
-    );
-    app.quit();
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app
+    .whenReady()
+    .then(startDesktop)
+    .catch((error) => {
+      dialog.showErrorBox(
+        "O ContentFlow não conseguiu iniciar",
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+      );
+      app.quit();
+    });
 
-app.on("before-quit", () => {
-  quitting = true;
-  webServer?.close();
-  webServer?.closeAllConnections?.();
-  apiProcess?.kill();
-});
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("before-quit", () => {
+    quitting = true;
+    webServer?.close();
+    webServer?.closeAllConnections?.();
+    apiProcess?.kill();
+  });
+}
 
 async function startDesktop() {
   const appRoot = app.getAppPath();
