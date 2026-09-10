@@ -11,6 +11,7 @@ import {
   HeartHandshake,
   LayoutDashboard,
   Plug,
+  Search,
   Workflow,
 } from "lucide-react";
 import { ChannelAvatar } from "@/components/channel-avatar";
@@ -108,6 +109,12 @@ export function AppSidebar() {
               active={pathname === `/channel/${channel.id}/library`}
             />
             <NavItem
+              icon={Search}
+              label="Pesquisa estratégica"
+              to={`/channel/${channel.id}/research`}
+              active={pathname === `/channel/${channel.id}/research`}
+            />
+            <NavItem
               icon={FolderKanban}
               label="Projetos"
               to={`/channel/${channel.id}`}
@@ -144,6 +151,12 @@ export function AppSidebar() {
               label="Biblioteca estratégica"
               to={`/channel/${channel.id}/library`}
               active={pathname === `/channel/${channel.id}/library`}
+            />
+            <NavItem
+              icon={Search}
+              label="Pesquisa estratégica"
+              to={`/channel/${channel.id}/research`}
+              active={pathname === `/channel/${channel.id}/research`}
             />
           </>
         )}

@@ -1,0 +1,193 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.market-radar",
+  "name": "Norte Magnata — Radar de Mercado",
+  "version": "0.6.0",
+  "description": "Coleta ampla e pontua referências do YouTube para pesquisa de tema e niche-bending, sem criar ou aprovar temas.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.0",
+  "entrypoint": "handler.mjs",
+  "permissions": ["network"],
+  "networkHosts": ["www.googleapis.com"],
+  "secretKeys": [
+    "YOUTUBE_API_KEY_PROJECT_01",
+    "YOUTUBE_API_KEY_PROJECT_02",
+    "YOUTUBE_API_KEY_PROJECT_03",
+    "YOUTUBE_API_KEY_PROJECT_04",
+    "YOUTUBE_API_KEY_PROJECT_05",
+    "YOUTUBE_API_KEY_PROJECT_06",
+    "YOUTUBE_API_KEY_PROJECT_07",
+    "YOUTUBE_API_KEY_PROJECT_08",
+    "YOUTUBE_DATA_API_KEYS"
+  ],
+  "deliveryTypes": ["processing"],
+  "capabilities": [
+    {
+      "id": "collect-youtube-market-snapshot",
+      "operator": "Código",
+      "blockTypes": ["BUSCAR"],
+      "processTypes": ["theme"],
+      "inputPorts": [],
+      "outputPorts": [
+        {
+          "key": "market_snapshot",
+          "label": "Snapshot de mercado",
+          "description": "Vídeos públicos encontrados, com origem, métricas observadas e consulta que os encontrou.",
+          "producedTypes": ["records"],
+          "required": true,
+          "presentation": { "renderer": "table", "itemType": "record" }
+        },
+        {
+          "key": "research_summary",
+          "label": "Resumo da coleta",
+          "description": "Parâmetros, total de resultados e momento da coleta.",
+          "producedTypes": ["textarea"],
+          "required": true,
+          "presentation": { "renderer": "text-long" }
+        }
+      ],
+      "execution": {
+        "mode": "immediate",
+        "defaultTimeoutMs": 90000,
+        "supportsCancellation": true,
+        "maxConcurrency": 1
+      },
+      "sideEffects": ["external_read"],
+      "cost": { "model": "free", "estimateSupported": true },
+      "dataPolicy": {
+        "sendsDataToThirdParties": true,
+        "providers": ["YouTube Data API"]
+      },
+      "blockConfigSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "core_queries": {
+            "type": "string",
+            "format": "textarea",
+            "title": "Consultas centrais",
+            "minLength": 1,
+            "maxLength": 3000,
+            "default": "como ter disciplina mesmo sem motivação\ncomo parar de procrastinar e ter foco\nhábitos que destroem sua disciplina\ncomo controlar impulso e vício no celular",
+            "description": "Uma consulta central por linha. Essas consultas são configuráveis por canal."
+          },
+          "niche_bending_queries": {
+            "type": "string",
+            "format": "textarea",
+            "title": "Consultas de niche-bending",
+            "maxLength": 3000,
+            "default": "",
+            "description": "Uma consulta de nicho de origem por linha. Elas são referências a adaptar, nunca temas a copiar."
+          },
+          "cross_language_queries": {
+            "type": "string",
+            "format": "textarea",
+            "title": "Consultas multilíngues",
+            "maxLength": 6000,
+            "default": "",
+            "description": "Uma linha por consulta no formato idioma|consulta. Ex.: en|discipline without motivation. Use para testar sinais em outros idiomas sem copiar temas."
+          },
+          "published_within_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 60
+          },
+          "max_results_per_query": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 50
+          },
+          "candidate_target": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 10000,
+            "default": 1000,
+            "description": "Quantidade máxima de candidatos únicos a coletar antes dos filtros locais."
+          },
+          "max_search_pages": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 1,
+            "description": "Páginas por consulta. Aumente somente quando houver quota disponível; cada página é uma chamada adicional."
+          },
+          "deep_review_limit": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 100,
+            "default": 20,
+            "description": "Somente estes candidatos recebem leitura amostral de comentários e comparação limitada com o canal."
+          },
+          "top_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5
+          },
+          "minimum_niche_bending_top": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "default": 3,
+            "description": "Reserva referências de outros nichos no Top, apenas quando aprovadas pelo filtro local."
+          },
+          "min_duration_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 7200,
+            "default": 180
+          },
+          "region_code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$",
+            "default": "BR"
+          },
+          "preferred_language": {
+            "type": "string",
+            "pattern": "^[a-z]{2}$",
+            "default": "pt"
+          },
+          "minimum_views_per_day": {
+            "type": "number",
+            "minimum": 0,
+            "default": 30
+          },
+          "minimum_query_term_matches": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 1
+          },
+          "excluded_title_terms": {
+            "type": "string",
+            "format": "textarea",
+            "title": "Formatos/títulos excluídos",
+            "maxLength": 1000,
+            "default": "podcast\nentrevista\npregação\npalestra motivacional",
+            "description": "Uma expressão por linha. O filtro local rejeita títulos que contenham esses formatos."
+          },
+          "simulate": {
+            "type": "boolean",
+            "default": false,
+            "description": "Valida o contrato sem consultar a API. Nunca produz dados de mercado."
+          }
+        },
+        "required": ["core_queries"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["market_snapshot", "research_summary"],
+        "properties": {
+          "market_snapshot": { "type": "array" },
+          "research_summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

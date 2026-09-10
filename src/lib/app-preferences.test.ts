@@ -3,6 +3,20 @@ import test from "node:test";
 
 import { translate } from "./app-preferences";
 
+test("restored research UI supports all application languages", () => {
+  const phrases = [
+    "Pesquisa estratégica",
+    "Executar pesquisa",
+    "Gerar brief",
+    "Configure a conexão do plugin de pesquisa.",
+  ];
+  for (const phrase of phrases) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
 test("translates recently added Methods and plugin profile UI in English", () => {
   assert.equal(
     translate("Use, compartilhe e gerencie Métodos salvos nos seus canais", "en"),

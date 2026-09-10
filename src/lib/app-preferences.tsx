@@ -45,6 +45,93 @@ const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 type Translation = [english: string, spanish: string];
 
 const PHRASES: Record<string, Translation> = {
+  "Pesquisa estratégica": ["Strategic research", "Investigación estratégica"],
+  Pesquisa: ["Research", "Investigación"],
+  "Não foi possível ler as pesquisas.": [
+    "Could not load research runs.",
+    "No se pudieron cargar las investigaciones.",
+  ],
+  "Não foi possível ler os briefs.": [
+    "Could not load briefs.",
+    "No se pudieron cargar los briefs.",
+  ],
+  "Não foi possível atualizar a pesquisa.": [
+    "Could not refresh research.",
+    "No se pudo actualizar la investigación.",
+  ],
+  "A operação não foi concluída.": [
+    "The operation was not completed.",
+    "La operación no se completó.",
+  ],
+  "A operação falhou.": ["The operation failed.", "La operación falló."],
+  "Plano criado a partir do Radar do Método Tema.": [
+    "Plan created from the Theme Method radar.",
+    "Plan creado a partir del radar del Método Tema.",
+  ],
+  "Snapshot factual concluído. Nenhum tema foi criado.": [
+    "Factual snapshot completed. No theme was created.",
+    "Snapshot factual completado. No se creó ningún tema.",
+  ],
+  "Brief factual local criado: 0 tokens.": [
+    "Local factual brief created: 0 tokens.",
+    "Brief factual local creado: 0 tokens.",
+  ],
+  "Brief aprovado para a Biblioteca Estratégica.": [
+    "Brief approved for the Strategic Library.",
+    "Brief aprobado para la Biblioteca Estratégica.",
+  ],
+  "Factual, no nível do canal. Não cria Tema, Título, Thumbnail ou Roteiro automaticamente.": [
+    "Factual channel-level research. Does not automatically create a Theme, Title, Thumbnail or Script.",
+    "Investigación factual del canal. No crea Tema, Título, Thumbnail ni Guion automáticamente.",
+  ],
+  "Pesquisa ainda não conectada": ["Research not connected yet", "Investigación aún no conectada"],
+  "O plano reaproveita exatamente o Radar BUSCAR que já existe no Método Tema. Ele não altera suas consultas.":
+    [
+      "The plan reuses the existing SEARCH radar from the Theme Method without changing its queries.",
+      "El plan reutiliza el radar BUSCAR del Método Tema sin cambiar sus consultas.",
+    ],
+  "Conectar Radar do Tema": ["Connect Theme radar", "Conectar radar del Tema"],
+  "Radar do canal": ["Channel radar", "Radar del canal"],
+  "Rodada manual; nenhuma agenda oculta.": [
+    "Manual run; no hidden schedule.",
+    "Ejecución manual; sin agenda oculta.",
+  ],
+  "Local · 0 tokens": ["Local · 0 tokens", "Local · 0 tokens"],
+  "Só passa ao Tema após aprovação.": [
+    "Available to Theme only after approval.",
+    "Disponible para Tema solo tras aprobación.",
+  ],
+  Mínimo: ["Minimum", "Mínimo"],
+  registros: ["records", "registros"],
+  "Antes de permitir criar um brief.": [
+    "Required before creating a brief.",
+    "Necesario antes de crear un brief.",
+  ],
+  "1. Coleta factual": ["1. Factual collection", "1. Recopilación factual"],
+  "Usa as consultas já configuradas no Radar. Não chama OpenAI nem inicia produção.": [
+    "Uses the configured radar queries. Does not call OpenAI or start production.",
+    "Usa las consultas del radar. No llama a OpenAI ni inicia producción.",
+  ],
+  "Executar pesquisa": ["Run research", "Ejecutar investigación"],
+  "2. Brief estratégico": ["2. Strategic brief", "2. Brief estratégico"],
+  "Separa observado, inferência/hipótese, anti-cópia e limitações. Não usa IA.": [
+    "Separates observations, inference/hypotheses, anti-copying rules and limitations. No AI is used.",
+    "Separa observaciones, inferencias/hipótesis, reglas anticopia y limitaciones. No usa IA.",
+  ],
+  "Gerar brief": ["Create brief", "Crear brief"],
+  "Draft factual": ["Factual draft", "Borrador factual"],
+  "Aprovar para Tema": ["Approve for Theme", "Aprobar para Tema"],
+  "Após uma coleta concluída, gere aqui o primeiro brief.": [
+    "Create the first brief here after completing a collection.",
+    "Crea aquí el primer brief tras completar una recopilación.",
+  ],
+  "Snapshots recentes": ["Recent snapshots", "Snapshots recientes"],
+  "Nenhuma coleta executada.": ["No collection performed.", "No se realizó ninguna recopilación."],
+  "Configure a conexão do plugin de pesquisa.": [
+    "Configure the research plugin connection.",
+    "Configura la conexión del plugin de investigación.",
+  ],
+  "Conexão indisponível.": ["Connection unavailable.", "Conexión no disponible."],
   "Perfis e contas": ["Profiles and accounts", "Perfiles y cuentas"],
   "Cadastre, prepare e veja onde cada perfil é utilizado.": [
     "Register, prepare, and see where each profile is used.",

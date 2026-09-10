@@ -28,6 +28,7 @@
     "desktop:prepare": "npm run build && node desktop/validate-native-dependencies.mjs && node desktop/prepare-desktop.mjs",
     "desktop:run": "npm run desktop:prepare && electron .",
     "desktop:mac:arm64": "CONTENTFLOW_DESKTOP_TARGET_ARCH=arm64 npm run desktop:prepare && electron-builder --mac dir --arm64",
+    "desktop:mac": "npm run desktop:mac:arm64",
     "desktop:portable": "npm run desktop:prepare && electron-builder --win portable --x64",
     "desktop:installer": "npm run desktop:prepare && electron-builder --win nsis --x64",
     "desktop:v0": "npm run desktop:prepare && electron-builder --win portable nsis --x64",
@@ -63,11 +64,12 @@
     "test:plugin-conversation": "tsx --test server/plugin-conversation.test.ts",
     "test:plugin-package": "tsx --test server/plugin-package.test.ts server/plugin-catalog.test.ts server/plugin-package.integration.test.ts",
     "test:updater": "node --test desktop/updater.test.cjs",
-    "test:distribution-boundaries": "node --test desktop/distribution-boundaries.test.cjs",
+    "test:distribution-boundaries": "node --test desktop/distribution-boundaries.test.cjs desktop/desktop-paths.test.cjs",
+    "test:main-reconciliation": "tsx --test server/channel-research.integration.test.ts server/plugin-consent-update.test.ts && npm run test:i18n",
     "test:data-migration": "tsx --test server/data-directory-migration.test.ts",
     "test:i18n": "tsx --test src/lib/app-preferences.test.ts",
     "plugin:kit": "tsx ecosystem/plugin-kit/cli.ts",
-    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:channel-history && npm run test:instructions && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:plugin-concurrency && npm run test:plugin-fallback && npm run test:plugin-inputs && npm run test:automatic-execution && npm run test:orchestrator && npm run test:plugin-kit && npm run test:plugin-branding && npm run test:plugin-dependencies && npm run test:method-file && npm run test:credential-vault && npm run test:plugin-connections && npm run test:plugin-profiles && npm run test:plugin-connection-runtime && npm run test:plugin-conversation && npm run test:plugin-package && npm run test:updater && npm run test:distribution-boundaries && npm run test:data-migration && npm run test:browser-bridge && npm run test:browser-plugins && npm run build",
+    "check": "npm run lint && npm run typecheck && npm run test:presentation && npm run test:deliveries && npm run test:channel-history && npm run test:instructions && npm run test:sandbox && npm run test:remote-artifacts && npm run test:plugin-jobs && npm run test:plugin-concurrency && npm run test:plugin-fallback && npm run test:plugin-inputs && npm run test:automatic-execution && npm run test:orchestrator && npm run test:plugin-kit && npm run test:plugin-branding && npm run test:plugin-dependencies && npm run test:method-file && npm run test:credential-vault && npm run test:plugin-connections && npm run test:plugin-profiles && npm run test:plugin-connection-runtime && npm run test:plugin-conversation && npm run test:plugin-package && npm run test:updater && npm run test:distribution-boundaries && npm run test:data-migration && npm run test:browser-bridge && npm run test:browser-plugins && npm run test:main-reconciliation && npm run build",
     "format": "prettier --write ."
   },
   "dependencies": {

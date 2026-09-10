@@ -73,7 +73,9 @@ function request(configuration: Record<string, unknown> = {}): PluginExecutionRe
 }
 
 const result = await executeRegisteredPlugin(registered("handler.mjs"), request(), 30_000);
-if (result.status !== "success") throw new Error("O plugin de referência não concluiu.");
+if (result.status !== "success") {
+  throw new Error(`O plugin de referência não concluiu: ${JSON.stringify(result)}.`);
+}
 const file = result.values.result;
 if (!file || typeof file !== "object" || Array.isArray(file) || !("url" in file)) {
   throw new Error("O artifact não foi convertido em arquivo gerenciado.");

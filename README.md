@@ -1,5 +1,26 @@
 # ContentFlow
 
+## Ecossistema vini-duran — entrada pela main
+
+Este é o nosso fork do aplicativo. A `main` reúne a base funcional **0.5.5** e
+as personalizações reconciliadas da main anterior. [Decisões e testes da consolidação](docs/MAIN_055_RECONCILIATION.md).
+
+**Para instalar ou atualizar uma máquina**, use o
+[procedimento e atualizador universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
+A distribuição disponível é [v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
+candidata macOS arm64, fixada em `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`.
+Ela **não contém as adições posteriores de consolidação da main**. Não compile
+nem instale a main sobre produção apenas porque ambas dizem `0.5.5`.
+
+| Destino | Responsabilidade |
+| --- | --- |
+| [Universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations) | Entrada, skills, mecanismos compartilhados e atualização preservativa |
+| [Automation_Magnata](https://github.com/vini-duran/Automation_Magnata) | Proposta Única, Métodos, estratégia e operação do Magnata |
+| Este fork | Aplicativo, runtime e compatibilidade; upstream somente consulta/fetch |
+
+Não mova pastas de projetos existentes nem dados/cofre para dentro do aplicativo.
+Windows e Linux não estão homologados por esta rodada do nosso ecossistema.
+
 O ContentFlow é um gerenciador estratégico de Métodos para produção de conteúdo. Ele separa a estratégia — processos, blocos, operadores, prompts, parâmetros e aprovações — da execução funcional feita por pessoas ou por plugins independentes.
 
 > O núcleo e os plugins são produtos separados. O aplicativo funciona sem plugins; nenhum pacote do ecossistema é incorporado, ativado ou tratado como confiável pela distribuição do núcleo.
@@ -12,19 +33,18 @@ O ContentFlow é um gerenciador estratégico de Métodos para produção de cont
 | Ecossistema  | Protocolo público, plugins, exemplos, Browser Bridge, Plugin Kit e skills        | [`ecosystem/README.md`](ecosystem/README.md)                                                           |
 | Criar plugin | Guia rápido, templates, testes e contratos da Plugin API v1                      | [`ecosystem/docs/quickstart.md`](ecosystem/docs/quickstart.md)                                         |
 | Criar Método | Skill portátil para modelar e validar arquivos `.contentflow-method.json`        | [`ecosystem/skills/contentflow-method-development/`](ecosystem/skills/contentflow-method-development/) |
-| Releases     | Instaladores e versões portáteis para Windows                                    | [GitHub Releases](https://github.com/andremjr/contentflow/releases)                                    |
+| Releases     | Distribuições do nosso fork e limites de instalação                            | [GitHub Releases do fork](https://github.com/vini-duran/OS/releases)                                    |
 
-## Quero apenas usar o ContentFlow no Windows
+## Instalação e preservação
 
-Você não precisa instalar Git, Node, npm nem abrir terminal.
+No macOS, siga [DESKTOP_MACOS.md](docs/DESKTOP_MACOS.md). O manifesto universal
+define o artefato e as rotas de migração aceitas; a última versão numérica do
+autor não substitui essa decisão. Projetos, plugins e credenciais existentes
+devem ser preservados e conferidos antes/depois. Uma instalação vazia começa
+sem plugins: eles são pacotes separados, sujeitos a consentimento.
 
-1. Abra a [release estável mais recente](https://github.com/andremjr/contentflow/releases/latest).
-2. Em **Assets**, baixe o arquivo que termina em `x64-Setup.exe` — esta é a opção recomendada.
-3. Instale e abra o ContentFlow. O aviso do Windows pode aparecer enquanto o aplicativo ainda não possui assinatura digital comercial; confirme que o download veio deste repositório oficial.
-4. Crie um Canal, monte ou importe um Método e crie seu primeiro Projeto.
-5. Plugins são opcionais e baixados separadamente. O aplicativo funciona sem eles; quando quiser automação, abra **Plugins**, baixe o pacote, extraia-o e instale todos de uma vez informando a pasta raiz.
-
-Projetos, plugins e credenciais ficam na área de dados do usuário e são preservados nas atualizações. Por isso, quem atualiza continua vendo os plugins que já instalou. Em uma instalação realmente nova, com a área de dados vazia, a tela **Plugins** começa zerada: os plugins não estão no instalador nem no portátil e só aparecem depois que a pessoa baixa o ZIP separado e instala cada pacote pelo aplicativo. Veja o [guia completo para Windows](docs/DESKTOP_V0.md) e, se algo falhar, consulte primeiro as mensagens exibidas no próprio bloco ou plugin.
+O [guia Windows herdado](docs/DESKTOP_V0.md) documenta o produto upstream;
+não representa homologação do nosso fork nessa plataforma.
 
 ## Estrutura do repositório
 
@@ -62,8 +82,8 @@ o mesmo consentimento, a mesma ativação e a mesma sandbox.
 Requisitos: Node.js 26 e npm 10 ou superior.
 
 ```sh
-git clone https://github.com/andremjr/contentflow.git
-cd contentflow
+git clone https://github.com/vini-duran/OS.git
+cd OS
 npm ci
 npm run dev
 ```

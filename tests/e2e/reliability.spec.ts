@@ -55,6 +55,30 @@ async function seed(request: APIRequestContext) {
   return channel;
 }
 
+test("preserva a entrada visual de pesquisa do canal sem executar pesquisa", async ({
+  page,
+  request,
+}) => {
+  const channel = await seed(request);
+  const original = await (await request.get("/api/preferences")).json();
+  try {
+    for (const [language, heading, button] of [
+      ["pt-BR", "Pesquisa estratégica", "Conectar Radar do Tema"],
+      ["en", "Strategic research", "Connect Theme radar"],
+      ["es", "Investigación estratégica", "Conectar radar del Tema"],
+    ]) {
+      await request.put("/api/preferences", { data: { ...original, language } });
+      await page.goto(`/channel/${channel.id}/research`);
+      await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: button, exact: true })).toBeVisible();
+    }
+  } finally {
+    await request.put("/api/preferences", { data: original });
+  }
+  const runs = await request.get(`/api/channels/${channel.id}/research/runs`);
+  expect((await runs.json()).runs).toEqual([]);
+});
+
 test("cria somente um projeto em clique duplo e não fecha o formulário em falha de gravação", async ({
   page,
   request,

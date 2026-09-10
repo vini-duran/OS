@@ -37,4 +37,17 @@ function assertWritableDataOutsideApp(appRoot, dataRoot) {
   }
 }
 
-module.exports = { assertWritableDataOutsideApp };
+function runtimeExecutable(runtimeRoot, platform = process.platform) {
+  return path.join(runtimeRoot, platform === "win32" ? "node.exe" : "node");
+}
+
+function resolveDesktopDataRoot(defaultDataRoot, configuredDataRoot) {
+  return path.resolve(configuredDataRoot || defaultDataRoot);
+}
+
+module.exports = {
+  assertWritableDataOutsideApp,
+  isPathInside,
+  runtimeExecutable,
+  resolveDesktopDataRoot,
+};

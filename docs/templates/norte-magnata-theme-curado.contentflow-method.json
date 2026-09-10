@@ -1,0 +1,60 @@
+{
+  "format": "contentflow-method",
+  "version": 1,
+  "name": "Norte Magnata — Tema curado por brief",
+  "method": {
+    "processType": "theme",
+    "blocks": [
+      {
+        "id": "theme-select-approved-brief",
+        "type": "ESCOLHER",
+        "operator": "Humano",
+        "name": "Selecionar brief estratégico aprovado",
+        "instructions": "Escolha um item da coleção Briefs estratégicos aprovados. Sem brief aprovado, pare: não crie um tema a partir de pesquisa bruta.",
+        "collectionId": "SELECIONAR_COLECAO_DO_CANAL",
+        "inputs": [],
+        "outputs": [],
+        "parameters": [],
+        "order": 0
+      },
+      {
+        "id": "theme-create-candidates",
+        "type": "CRIAR",
+        "operator": "IA",
+        "name": "Criar 3 a 5 temas rastreáveis",
+        "instructions": "Use exclusivamente o brief aprovado. Crie de 3 a 5 candidatos em português brasileiro, cada qual com problema concreto, tensão, mecanismo, promessa honesta, contraponto, ângulo visual inicial, oportunidade e separação entre observado, inferido e hipótese. Adapte mecanismos; nunca copie título, thumbnail, roteiro, personagem, identidade ou promessa observada.",
+        "inputs": [
+          { "id": "brief-summary", "label": "Resumo factual aprovado", "type": "textarea", "source": "previous_block" },
+          { "id": "brief-evidence", "label": "Evidências e separações", "type": "textarea", "source": "previous_block" },
+          { "id": "brief-anti-copy", "label": "Limites anti-cópia", "type": "textarea", "source": "previous_block" },
+          { "id": "brief-limitations", "label": "Limitações", "type": "textarea", "source": "previous_block" }
+        ],
+        "outputs": [
+          { "id": "theme-candidates", "label": "Temas candidatos", "key": "theme_candidates", "type": "list", "required": true }
+        ],
+        "plugin": {
+          "pluginId": "official-openai-gpt",
+          "capabilityId": "generate-or-validate-text",
+          "configuration": { "model": "gpt-5.6-terra", "temperature": 0.6 }
+        },
+        "parameters": [],
+        "order": 1
+      },
+      {
+        "id": "theme-approve",
+        "type": "VALIDAR",
+        "operator": "Humano",
+        "name": "Escolher e aprovar um tema",
+        "instructions": "Escolha somente um candidato específico, diferenciado, rastreável e alinhado ao Norte Magnata. Se nenhum estiver pronto, devolva feedback e mantenha o processo no Tema.",
+        "inputs": [],
+        "outputs": [
+          { "id": "theme-approved", "label": "Tema aprovado", "key": "selected_value", "type": "text", "required": true },
+          { "id": "theme-feedback", "label": "Feedback", "key": "feedback", "type": "textarea", "required": false }
+        ],
+        "validation": { "targetBlockId": "theme-create-candidates", "targetOutputKey": "theme_candidates", "mode": "select_one", "onReject": "pause", "maxAttempts": 1 },
+        "parameters": [],
+        "order": 2
+      }
+    ]
+  }
+}

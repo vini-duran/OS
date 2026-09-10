@@ -1,47 +1,48 @@
-# ContentFlow OS no macOS (Apple Silicon)
+# ContentFlow no macOS — instalar e atualizar
 
-## Compilar
+## Operador: use o artefato aprovado, não uma compilação improvisada
 
-O projeto requer Node 26. Na raiz do repositório, execute:
+Leia o [atualizador universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
+Ele identifica a instalação existente, verifica o artefato por hash, exige rota
+compatível e aplica somente com aplicativo/dados fora de uso e backup/recibo.
+Se a versão ou o snapshot de origem não estiverem cobertos, mantenha o aplicativo
+atual e solicite a validação da rota. Não substitua simplesmente a pasta `.app`.
 
-```bash
+Release candidata disponível: [v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
+macOS arm64, fonte `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`.
+A main contém reconciliações posteriores; código em main não muda esse ZIP.
+Veja [escopo da consolidação](MAIN_055_RECONCILIATION.md).
+
+## Quatro camadas, preservadas
+
+- Workplace e projetos: caminhos existentes, sem reorganização automática.
+- Aplicativo: conservar o caminho real instalado, que pode chamar-se
+  `ContentFlow.app` ou `ContentFlow OS.app`.
+- Dados: identificar o diretório efetivo do processo/recibo. Não assumir que
+  `Application Support/ContentFlow` e `Application Support/ContentFlow OS`
+  sejam intercambiáveis. Banco, mídia, plugins e configurações ficam fora do bundle.
+- Configuração dos agentes: entrada e skills separadas do executável.
+
+O cofre usa o provedor nativo e trata o armazenamento legado conforme
+[CREDENTIAL_VAULT_MIGRATION.md](CREDENTIAL_VAULT_MIGRATION.md). Não exportar
+segredos, apagar backups legados ou preencher novamente todas as chaves por rotina.
+Assinatura ad hoc não é notarização nem garantia de confiança automática no macOS.
+
+## Mantenedor: compilar em checkout isolado
+
+Requisitos: Node 26 e npm 10+. Na revisão fixada do fork:
+
+```sh
 npm ci
 npm run check
-npm run desktop:mac
+npm run desktop:mac:arm64
 ```
 
-O aplicativo será criado em `release/v0/mac-arm64/ContentFlow OS.app`.
+Saída de build: `release/v0/mac-arm64/ContentFlow.app`, não o aplicativo instalado.
+Teste com diretórios exclusivos de dados e userData sintéticos antes de distribuir;
+nunca abra uma compilação candidata contra dados reais por conveniência.
+O runtime Node privado e o helper de proteção de caminhos fazem parte do pacote.
+Plugins privados/de referência não são incluídos nem ativados pelo build do Core.
 
-## Atualizar sem perder dados
-
-Os dados locais ficam fora do pacote `.app`, na pasta de dados do macOS. Isso
-inclui banco, projetos, plugins instalados e credenciais guardadas pelo sistema.
-Para atualizar, feche o App e substitua somente `ContentFlow OS.app` por uma
-compilação nova. Não copie, apague ou recrie a pasta de dados.
-
-O App usa o runtime Node privado e assinado tanto para a API local quanto para
-os plugins. A identidade desse executável permanece estável entre recompilações,
-evitando que o macOS solicite novamente a senha do chaveiro a cada atualização.
-Na primeira utilização desse runtime, o macOS ainda pode pedir autorização uma
-vez; selecione **Sempre Permitir**. O App não depende de `node.exe`, que existe
-apenas no Windows.
-
-Desde a v0.3.2, todas as credenciais de plugins usam um único registro no
-Chaveiro. Isso evita uma autorização separada para cada chave de um plugin com
-rotação. Registros anteriores permanecem intactos, mas as credenciais precisam
-ser preenchidas novamente uma vez no novo cofre.
-
-Os plugins opcionais oficiais são copiados para
-`~/Documents/ContentFlow OS/Plugins` sem ativação automática. A atualização não
-remove plugins, consentimentos nem credenciais já armazenados na pasta de dados.
-
-## Teste mínimo antes de substituir uma instalação
-
-1. Abra o App compilado diretamente de `release/v0/mac-arm64`.
-2. Confirme que um projeto existente aparece no painel.
-3. Em **Plugins**, confirme que um plugin previamente consentido permanece
-   ativo após atualização compatível.
-4. Feche a janela e abra o App novamente; no macOS a janela deve reaparecer.
-
-Não versionar credenciais, banco local, cookies, perfis do Chrome, mídia ou
-caminhos específicos desta máquina.
+Publicação de um novo binário e migração real são etapas distintas da consolidação
+de fonte. Não iniciar produção ou restaurar banco sobre entregas novas para testar.

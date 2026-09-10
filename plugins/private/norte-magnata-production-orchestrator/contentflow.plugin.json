@@ -1,0 +1,44 @@
+{
+  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
+  "apiVersion": "1",
+  "id": "com.norte-magnata.production-orchestrator",
+  "name": "Norte Magnata — Orquestrador provisório",
+  "version": "0.1.0",
+  "description": "Executa e acompanha a etapa real da produção Norte Magnata sem comandos externos ao painel.",
+  "author": "Norte Magnata",
+  "license": "LicenseRef-NorteMagnata-Private",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "minCoreVersion": "0.3.2",
+  "entrypoint": "handler.mjs",
+  "permissions": ["filesystem:read", "filesystem:write", "process"],
+  "deliveryTypes": ["processing", "image"],
+  "capabilities": [{
+    "id": "run-current-production-step",
+    "operator": "Código",
+    "blockTypes": ["CRIAR"],
+    "processTypes": ["assets", "editing", "publishing"],
+    "inputPorts": [],
+    "outputPorts": [
+      { "key": "orchestration_status", "label": "Estado da produção", "producedTypes": ["textarea"], "required": true, "presentation": { "renderer": "text-long" } },
+      { "key": "production_files", "label": "Entregáveis encontrados", "producedTypes": ["files"], "required": false, "presentation": { "renderer": "file-list" } }
+    ],
+    "execution": { "mode": "immediate", "defaultTimeoutMs": 86400000, "supportsCancellation": true, "maxConcurrency": 1 },
+    "sideEffects": ["subprocess", "local_artifact"],
+    "cost": { "model": "unknown", "estimateSupported": false },
+    "dataPolicy": { "sendsDataToThirdParties": true, "providers": ["OpenAI API", "Google Flow"] },
+    "blockConfigSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["continue_expanded", "resume_current", "inspect"], "default": "continue_expanded" },
+        "simulate": { "type": "boolean", "default": false }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orchestration_status"],
+      "properties": { "orchestration_status": { "type": "string" }, "production_files": { "type": "array" } }
+    }
+  }]
+}

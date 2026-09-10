@@ -11,7 +11,7 @@ npm run plugin:kit -- check ./meu-plugin
 
 Ele oferece `create`, `validate`, `test-contract`, `test-sandbox`, `fixture`, `report` e `check`, usa o mesmo validador do carregador real e nunca instala dependências nem executa scripts de instalação de terceiros. Há três templates em [`../plugin-kit/templates`](../plugin-kit/templates), uma [aula prática de 30 minutos](tutorial.md) e um [guia compacto para agentes de IA](ai-development.md).
 
-> Estado atual: plugins locais e comunitários podem ser instalados por pasta, ativados pelo próprio usuário e executados sem aprovação central. O núcleo valida o manifesto, exige novo consentimento quando versão ou permissões mudam e executa o código em processo separado com filesystem, rede, subprocessos, workers e módulos nativos negados por padrão.
+> Estado atual: plugins locais e comunitários podem ser instalados por pasta, ativados pelo próprio usuário e executados sem aprovação central. O núcleo valida o manifesto e preserva a ativação em atualizações compatíveis do mesmo `pluginId`; novo consentimento é exigido se permissões ou hosts de rede mudarem. O código executa em processo separado com filesystem, rede, subprocessos, workers e módulos nativos negados por padrão.
 
 Se você está usando uma IA para criar o plugin, prefira o conjunto pequeno listado em [`ai-development.md`](ai-development.md). Para o primeiro plugin, o autor precisa se concentrar em três coisas: o manifesto, o valor recebido em `request.inputs` e o valor devolvido em `response.values`. Instalação, consentimento, cofre, sandbox e importação de artifacts ficam a cargo do ContentFlow.
 
@@ -22,7 +22,7 @@ Na tela **Plugins**, use uma destas opções:
 - **Usar pasta ao vivo**: recomendado durante o desenvolvimento. O ContentFlow mantém um vínculo com a pasta escolhida; salvar uma alteração no código basta para a próxima execução usar a nova versão. Para remover, clique em **Desconectar pasta**.
 - **Instalar uma cópia**: recomendado para distribuição. Informe a pasta de um plugin ou a raiz de um pacote extraído; o aplicativo valida o conjunto e instala todos os novos em lote. As cópias continuam instaladas mesmo se a pasta original for apagada. Para remover, clique em **Desinstalar**.
 
-O botão de exemplo preenche a pasta `Documentos\ContentFlow\Plugins\community-reference`, criada automaticamente pela V0. Atualizar a página apenas relê os plugins conectados ou instalados; apagar a pasta de origem não desinstala uma cópia. Essa distinção evita perda acidental de um plugin já instalado.
+A pasta de origem é escolhida pelo operador; a distribuição atual do núcleo não copia plugins de referência automaticamente. Atualizar a página apenas relê os plugins conectados ou instalados; apagar a pasta de origem não desinstala uma cópia. Essa distinção evita perda acidental de um plugin já instalado.
 
 ## 1. Escolha uma entrega clara
 
@@ -73,6 +73,8 @@ Comece pelo exemplo completo em [`examples/contentflow.plugin.example.json`](exa
 12. `networkHosts` quando a permissão `network` puder ser limitada a hosts conhecidos.
 
 `blockConfigSchema` descreve opções escolhidas no método, como modelo, temperatura ou endpoint. `settingsSchema` descreve preferências locais reutilizadas entre métodos. Credenciais ficam apenas em `secretKeys`.
+
+Para uma configuração textual com vários itens, declare `"type": "string"` e `"format": "textarea"`. O editor do Método então renderiza uma área de texto que preserva quebras de linha; o handler deve documentar e validar como essas linhas são interpretadas. Não use um `Input` de uma linha para listas de consultas, termos ou URLs.
 
 Exemplo de rede declarativa:
 
