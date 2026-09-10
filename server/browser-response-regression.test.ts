@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-const { providerError } = await import(new URL("../ecosystem/plugins/reference/gemini-browser-studio/response-guard.mjs", import.meta.url).href);
+const { providerError } = await import(
+  new URL(
+    "../ecosystem/plugins/reference/gemini-browser-studio/response-guard.mjs",
+    import.meta.url,
+  ).href
+);
 
 // Execute the real polling functions offline. No provider or browser is opened.
 function extract(source: string, name: string) {
@@ -33,8 +38,15 @@ for (const provider of ["gemini-browser-studio", "claude-browser-text"]) {
           notices: polls > 1 ? notices : [],
         };
       },
-      responsePhase: ({ hasNewResponse, generating, stablePolls }: any) =>
-        hasNewResponse && !generating && stablePolls >= 2 ? "completed" : "waiting",
+      responsePhase: ({
+        hasNewResponse,
+        generating,
+        stablePolls,
+      }: {
+        hasNewResponse: boolean;
+        generating: boolean;
+        stablePolls: number;
+      }) => (hasNewResponse && !generating && stablePolls >= 2 ? "completed" : "waiting"),
       setPrompt: async () => {},
       send: async () => {
         sends++;
