@@ -34,6 +34,29 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
 
 ## Estado da rodada 2026-09-09
 
+### Último avanço — fonte validada, instalação ainda pendente
+
+- Candidata corrigida e publicada:
+  [`64fc1bf`](https://github.com/vini-duran/OS/commit/64fc1bfeb93f56a399b498314739fbd55a8b8fbb).
+- Cofre: exclusão não reimporta segredo do backup legado; gravação não confirmada
+  fica bloqueada. Backup legado preservado. 29 testes isolados passaram.
+- Desktop: proteção restaurada contra dados dentro do aplicativo, inclusive
+  symlinks; 9 testes de distribuição passaram. Conexões: 2 testes passaram.
+- `npm run check` completo passou (lint, tipos, regressões e build).
+- Limpeza local: duas extrações antigas conferidas contra o ZIP e um worktree
+  limpo removidos; aproximadamente 1,35 GiB em arquivos. ZIP, commits, evidências
+  e checkpoint preservados. Nenhum aplicativo instalado ou dado de produção
+  foi removido; o volume efetivamente liberado depende do APFS.
+- **Não atualizar outra máquina por esta candidata ainda.** Faltam migração
+  nativa do cofre, reconciliação final com a main histórica e validação do novo
+  pacote. O ZIP descrito abaixo antecede estas correções.
+- Próxima ação detalhada:
+  [pendências da 0.5.5](https://github.com/vini-duran/OS/blob/64fc1bfeb93f56a399b498314739fbd55a8b8fbb/docs/UPDATE_055_REMAINING.md).
+  Recuperação:
+  [migração do cofre](https://github.com/vini-duran/OS/blob/64fc1bfeb93f56a399b498314739fbd55a8b8fbb/docs/CREDENTIAL_VAULT_MIGRATION.md).
+
+### Base da candidata e evidências anteriores
+
 Upstream `v0.5.5` (`8fe65673332a8eab8542a72f87966abc94310759`) integrado
 apenas em clone de trabalho do fork para revisão. A distribuição existente
 continua `v0.5.2-ecossistema.1`. A promoção funcional para main e a nova release
