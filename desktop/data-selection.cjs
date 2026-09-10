@@ -29,6 +29,11 @@
  *   falha ao persistir seleção obrigatória bloqueia, nunca segue com warn.
  * - Banco/symlink existente porém inválido bloqueia na descoberta; o SQLite
  *   precisa ser arquivo regular para contar como banco existente.
+ * - Ancestrais com symlink quebrado/loop bloqueiam antes de qualquer seleção
+ *   ou gravação (nunca degradam para instalação nova).
+ * - O destino físico do SQLite (resolvido via realpath) também respeita a
+ *   fronteira do aplicativo; links válidos para destinos externos seguem
+ *   permitidos.
  * - Este módulo nunca cria `contentflow.sqlite`; só resolve e persiste JSON.
  */
 
@@ -93,6 +98,11 @@ function validateDestinationPair(rawDataDir, rawUserData) {
   }
   const dataDir = path.resolve(rawDataDir);
   const userData = path.resolve(rawUserData);
+
+  // Ancestrais primeiro: link quebrado no meio do caminho bloqueia antes de
+  // qualquer seleção alternativa ou gravação.
+  assertAncestorsResolvable(dataDir);
+  assertAncestorsResolvable(userData);
 
   for (const candidate of [dataDir, userData]) {
     let linkStat = null;
@@ -234,10 +244,85 @@ function persistSelection(filePath, payload, appRoot) {
   }
 }
 
+// Caminha todos os prefixos do caminho e exige que cada symlink existente
+// resolva para um destino acessível. Links válidos passam — inclusive os do
+// macOS (p.ex. /tmp → /private/tmp) e links para destinos externos. Link
+// quebrado ou loop bloqueia com CONTENTFLOW_SYMLINK_INVALID. Componentes
+// ausentes são normais (a API cria os diretórios).
+function assertAncestorsResolvable(target) {
+  const resolved = path.resolve(target);
+  const parts = resolved.split(path.sep);
+  let prefix = path.isAbsolute(resolved) ? path.sep : "";
+  for (const part of parts) {
+    if (!part) continue;
+    prefix = prefix === path.sep ? path.sep + part : path.join(prefix, part);
+    let stat;
+    try {
+      stat = fs.lstatSync(prefix);
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      if (error && error.code === "ELOOP") {
+        throw new Error(
+          `CONTENTFLOW_SYMLINK_INVALID: loop de symlink em ${prefix} (componente de ${resolved}). ` +
+            "Corrija o link com o app fechado; nada foi gravado.",
+        );
+      }
+      throw new Error(
+        `CONTENTFLOW_DESTINATION_INVALID: componente ilegível ${prefix} (de ${resolved}): ` +
+          `${(error && error.message) || String(error)}`,
+      );
+    }
+    if (stat.isSymbolicLink()) {
+      try {
+        fs.statSync(prefix);
+      } catch (error) {
+        if (error && error.code === "ELOOP") {
+          throw new Error(
+            `CONTENTFLOW_SYMLINK_INVALID: loop de symlink em ${prefix} (componente de ${resolved}). ` +
+              "Corrija o link com o app fechado; nada foi gravado.",
+          );
+        }
+        throw new Error(
+          `CONTENTFLOW_SYMLINK_INVALID: symlink quebrado em ${prefix} (componente de ${resolved}). ` +
+            "Corrija o link ou ajuste a seleção com o app fechado; nada foi gravado.",
+        );
+      }
+    }
+  }
+}
+
+// Valida o destino físico do SQLite contra a fronteira do aplicativo.
+// Ausente (ainda não criado) não tem o que checar; existente precisa residir
+// fora do bundle. Sem appRoot, inerte (testes sintéticos).
+function enforceSqliteBoundary(appRoot, sqlitePath) {
+  if (!appRoot) return;
+  let real;
+  try {
+    real = fs.realpathSync(sqlitePath);
+  } catch (error) {
+    // Ausente: nada a confrontar. Quebrado/loop já foi bloqueado em classify.
+    if (error && error.code === "ENOENT") return;
+    if (error && error.code === "ELOOP") {
+      throw new Error(
+        `CONTENTFLOW_SYMLINK_INVALID: loop de symlink em ${sqlitePath}. ` +
+          "Corrija o link com o app fechado; nada foi gravado.",
+      );
+    }
+    throw new Error(
+      `CONTENTFLOW_DATABASE_INVALID: não foi possível resolver ${sqlitePath} ` +
+        `(${(error && error.code) || (error && error.message) || String(error)}). Nada foi alterado.`,
+    );
+  }
+  assertWritableDataOutsideApp(appRoot, real);
+}
+
 // Classifica o SQLite candidato: "absent" (nada ali) ou "file" (banco
 // utilizável). Existente porém inválido (diretório, symlink quebrado/loop,
 // alvo não-regular, ilegível) BLOQUEIA em vez de ser ignorado.
 function classifySqlite(sqlitePath) {
+  // Ancestrais com link quebrado bloqueiam aqui: sem isso, o lstat abaixo
+  // retornaria ENOENT e o caminho seria tratado como "ausente".
+  assertAncestorsResolvable(sqlitePath);
   let stat;
   try {
     stat = fs.lstatSync(sqlitePath);
@@ -393,11 +478,16 @@ function resolveDataLocation(options = {}) {
       : path.join(path.resolve(envUserData), "data");
     const validated = validateDestinationPair(rawDataDir, rawUserData);
     enforceBundleBoundary(appRoot, [validated.dataDir, validated.userData]);
+    const envSqlite = path.join(validated.dataDir, "contentflow.sqlite");
+    // Entrada explícita respeita o operador, mas banco existente porém
+    // inválido bloqueia; destino físico dentro do bundle também bloqueia.
+    classifySqlite(envSqlite);
+    enforceSqliteBoundary(appRoot, envSqlite);
     return {
       dataDir: validated.dataDir,
       userData: validated.userData,
       source: "env_explicit",
-      sqliteFile: path.join(validated.dataDir, "contentflow.sqlite"),
+      sqliteFile: envSqlite,
     };
   }
 
@@ -428,6 +518,7 @@ function resolveDataLocation(options = {}) {
     enforceBundleBoundary(appRoot, [validated.dataDir, validated.userData]);
     const expectedSqlite = path.join(validated.dataDir, "contentflow.sqlite");
     if (classifySqlite(expectedSqlite) === "file") {
+      enforceSqliteBoundary(appRoot, expectedSqlite);
       return {
         dataDir: validated.dataDir,
         userData: validated.userData,
@@ -447,10 +538,15 @@ function resolveDataLocation(options = {}) {
 
   // 3. Avaliação dos caminhos candidatos (nenhuma config válida presente).
   // Banco/symlink existente porém inválido bloqueia aqui: nunca cai em fresh.
+  // SQLite cujo destino físico cai dentro do bundle também bloqueia, antes de
+  // aceitar ou persistir qualquer seleção.
   const candidates = getCandidatePaths(appDataDir);
-  const existingCandidates = candidates.filter(
-    (candidate) => classifySqlite(candidate.sqliteFile) === "file",
-  );
+  const existingCandidates = [];
+  for (const candidate of candidates) {
+    if (classifySqlite(candidate.sqliteFile) !== "file") continue;
+    enforceSqliteBoundary(appRoot, candidate.sqliteFile);
+    existingCandidates.push(candidate);
+  }
 
   if (existingCandidates.length === 1) {
     const chosen = existingCandidates[0];

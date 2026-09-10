@@ -476,3 +476,124 @@ test("destino de configuração bloqueado por arquivo não vira instalação nov
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("ancestral com symlink quebrado bloqueia em vez de fresh", () => {
+  const { root, appData } = makeAppData();
+  try {
+    fs.symlinkSync(
+      path.join(root, "destino-ausente"),
+      path.join(appData, "ContentFlow OS"),
+    );
+    assert.throws(
+      () => resolveDataLocation({ appDataDir: appData, env: {} }),
+      /CONTENTFLOW_SYMLINK_INVALID/,
+    );
+    // Zero gravações: nenhum outro diretório selecionado, nenhuma config.
+    assert.equal(
+      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
+      false,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sqlite com destino físico dentro do bundle bloqueia a descoberta", () => {
+  const { root, appData } = makeAppData();
+  try {
+    const appRoot = path.join(root, "Candidate.app", "Contents", "Resources", "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+    const inner = path.join(appRoot, "inner.sqlite");
+    fs.writeFileSync(inner, "-- synthetic inner db --");
+    const dataDir = path.join(appData, "ContentFlow", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.symlinkSync(inner, path.join(dataDir, "contentflow.sqlite"));
+    assert.throws(
+      () => resolveDataLocation({ appDataDir: appData, appRoot, env: {} }),
+      /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
+      false,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("env cujo sqlite aponta para dentro do bundle bloqueia sem gravar", () => {
+  const { root, appData } = makeAppData();
+  try {
+    const appRoot = path.join(root, "Candidate.app", "Contents", "Resources", "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+    const inner = path.join(appRoot, "inner.sqlite");
+    fs.writeFileSync(inner, "-- synthetic inner db --");
+    const data = path.join(root, "ext-data");
+    fs.mkdirSync(data, { recursive: true });
+    fs.symlinkSync(inner, path.join(data, "contentflow.sqlite"));
+    assert.throws(
+      () =>
+        resolveDataLocation({
+          appDataDir: appData,
+          appRoot,
+          env: { CONTENTFLOW_DESKTOP_DATA_DIR: data },
+        }),
+      /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
+      false,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistente cujo sqlite aponta para dentro do bundle bloqueia sem alterar config", () => {
+  const { root, appData } = makeAppData();
+  try {
+    const appRoot = path.join(root, "Candidate.app", "Contents", "Resources", "app");
+    fs.mkdirSync(appRoot, { recursive: true });
+    const inner = path.join(appRoot, "inner.sqlite");
+    fs.writeFileSync(inner, "-- synthetic inner db --");
+    const persisted = path.join(root, "persisted-data");
+    fs.mkdirSync(persisted, { recursive: true });
+    fs.symlinkSync(inner, path.join(persisted, "contentflow.sqlite"));
+    fs.mkdirSync(path.join(appData, "ContentFlow"), { recursive: true });
+    const configPath = path.join(appData, "ContentFlow", CONFIG_FILENAME);
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ schema_version: 1, dataDir: persisted, userData: root }),
+    );
+    const before = fs.readFileSync(configPath, "utf8");
+    assert.throws(
+      () => resolveDataLocation({ appDataDir: appData, appRoot, env: {} }),
+      /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
+    );
+    assert.equal(fs.readFileSync(configPath, "utf8"), before);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("symlink válido para destino externo segue permitido", () => {
+  const { root, appData } = makeAppData();
+  try {
+    const real = path.join(root, "real-appdata");
+    fs.mkdirSync(real, { recursive: true });
+    const osDir = path.join(real, "ContentFlow OS", "data");
+    fs.mkdirSync(osDir, { recursive: true });
+    fs.writeFileSync(path.join(osDir, "contentflow.sqlite"), "-- synthetic --");
+    const alias = path.join(root, "alias-appdata");
+    fs.symlinkSync(real, alias, "dir");
+    const result = resolveDataLocation({ appDataDir: alias, env: {} });
+    assert.equal(result.source, "auto_detected_unique");
+    assert.equal(result.dataDir, path.join(alias, "ContentFlow OS", "data"));
+    assert.equal(
+      readPrimaryConfig(alias).selection_reason,
+      "auto_detected_single_existing",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
