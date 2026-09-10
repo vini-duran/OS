@@ -1,7 +1,8 @@
 # Atualização 0.5.5 — estado e próxima ação
 
-Atualizado em 2026-09-09. Candidata de fonte; não instalar em outra máquina ainda.
-A distribuição homologada anterior permanece disponível, sem substituição local.
+Atualizado em 2026-09-09. Instalação local 0.5.2 → 0.5.5 realizada a partir de
+64fc1bf, com backup. Abertura e preservação verificadas. Não é ainda release
+para outra máquina nem homologação de atualização de qualquer versão antiga.
 
 ## Correções concluídas em fonte
 
@@ -16,14 +17,19 @@ A distribuição homologada anterior permanece disponível, sem substituição l
 
 ## O que ainda impede promoção funcional e instalação
 
-1. Validar migração nativa de credenciais sintéticas em ambiente realmente
-   separado do cofre do operador. O teste em memória não comprova Keychain.
+1. Teste nativo do cofre concluído com serviços sintéticos de nome aleatório
+   exclusivo, sem ler credenciais existentes. Exclusão persistiu em novo
+   processo e as entradas de teste foram removidas.
 2. Concluir reconciliação da main histórica: recurso de pesquisa de canal,
    consentimentos e demais diferenças precisam de destino/compatibilidade
    registrados. Não substituir uma branch inteira para resolver conflitos.
-3. Construir um novo pacote a partir da fonte final; o ZIP anterior não contém
-   as correções de cofre nem esta proteção de dados.
-4. Validar esse pacote em ambiente isolado, promover fonte aprovada para main,
+3. Pacote local atualizado construído e instalado, com assinatura ad-hoc.
+   O ZIP anterior não contém estas correções; gerar artefato de distribuição
+   final após a reconciliação de main.
+4. A cópia dos dados abriu na candidata sem perda nas oito tabelas conferidas;
+   depois da instalação, 34 plugins sem erro de manifesto e mesmos hashes
+   de canais/projetos/execuções/conexões/permissões/workspaces. Falta promover
+   a fonte reconciliada para main,
    publicar release autorizada e conferir download/hash. Só depois atualizar
    o manifesto universal e orientar a outra máquina.
 

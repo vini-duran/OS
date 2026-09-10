@@ -1,7 +1,8 @@
 # Migração do cofre: exclusão persistente e recuperação segura
 
-Estado em 2026-09-09: correção de fonte em candidata isolada. Não instalada,
-não homologada em Keychain real e não incluída no ZIP anterior de 0.5.5.
+Estado em 2026-09-09: teste nativo com credenciais sintéticas aprovado; binário
+da fonte 64fc1bf instalado neste host macOS, partindo da instalação 0.5.2.
+Não incluído no ZIP anterior de 0.5.5; release para outras máquinas pendente.
 
 ## O problema corrigido
 
@@ -61,7 +62,13 @@ de conexão usam SQLite em memória. Typecheck de cliente e servidor passou.
 Cobertura inclui exclusão e nova instância, falhas de confirmação, revogação
 antes da migração, concorrência local e isolamento entre plugins/conexões.
 
-Limites: nova instância simula reinício do serviço, não reinício do macOS.
-Não foram acessados cofre real, banco real, mídias ou produção. Não foi gerado
-novo instalador. A migração nativa e o rollback entre versões ainda precisam
-de validação isolada antes de release/instalação.
+Teste nativo adicional, manual e opt-in:
+`node --import tsx scripts/test-native-vault.mts`.
+Usa a biblioteca nativa com serviços de nome aleatório exclusivo e valores
+sintéticos no Keychain do host; não é outro usuário macOS nem outro cofre.
+Não consulta nomes de serviço de produção. Verifica migração, exclusão,
+novo processo, conexões e remoção das entradas de teste.
+
+Limites: novo processo não é reinício do macOS. Não foram lidas credenciais
+existentes. O rollback de versões anteriores sobre novas revogações ainda
+exige os cuidados acima; não é validado universalmente por este teste.
