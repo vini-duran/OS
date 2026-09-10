@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -2897,8 +2898,12 @@ app.get("/api/plugins/updates", async (request, response) => {
 });
 
 function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDirectory: string) {
-  const installedRoot = path.resolve(installedPluginsDirectory);
-  const destination = path.resolve(plugin.absoluteDirectory);
+  const installedRoot = existsSync(installedPluginsDirectory)
+    ? realpathSync(installedPluginsDirectory)
+    : path.resolve(installedPluginsDirectory);
+  const destination = existsSync(plugin.absoluteDirectory)
+    ? realpathSync(plugin.absoluteDirectory)
+    : path.resolve(plugin.absoluteDirectory);
   const updateBackupsDirectory = path.resolve(dataDirectory, "plugins", "update-backups");
   let temporaryDestination: string | undefined;
   let backupDestination: string | undefined;
@@ -3064,11 +3069,16 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
   try {
     const connections = pluginConnections.list(plugin.id, true);
     if (plugin.source === "installed") {
-      const installedRoot = path.resolve(installedPluginsDirectory);
-      if (!plugin.absoluteDirectory.startsWith(`${installedRoot}${path.sep}`)) {
+      const installedRoot = existsSync(installedPluginsDirectory)
+        ? realpathSync(installedPluginsDirectory)
+        : path.resolve(installedPluginsDirectory);
+      const destination = existsSync(plugin.absoluteDirectory)
+        ? realpathSync(plugin.absoluteDirectory)
+        : path.resolve(plugin.absoluteDirectory);
+      if (!destination.startsWith(`${installedRoot}${path.sep}`)) {
         throw new Error("A pasta instalada não está dentro do armazenamento autorizado.");
       }
-      rmSync(plugin.absoluteDirectory, { recursive: true, force: true });
+      rmSync(destination, { recursive: true, force: true });
     } else {
       rmSync(path.join(developmentLinksDirectory, `${plugin.id}.json`), { force: true });
     }
