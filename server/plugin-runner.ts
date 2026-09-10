@@ -68,7 +68,7 @@ export function windowsExecutableDiscoveryReadPaths(
   environment: NodeJS.ProcessEnv = process.env,
   platform = process.platform,
 ) {
-  if (platform !== "win32") return [];
+  if (platform !== "win32" && !environment.LOCALAPPDATA) return [];
   return [
     environment.PROGRAMFILES &&
       path.join(environment.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
@@ -209,17 +209,21 @@ export async function executeRegisteredPlugin(
         safeSegment(plugin.id),
       ),
   );
+  mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(artifactDirectory, { recursive: true });
+  mkdirSync(workspaceDirectory, { recursive: true });
+  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
+  const realUploadsDirectory = realpathSync(uploadsDirectory);
+  // macOS exposes temporary paths through /var while resolving them physically
+  // under /private/var. Keep both the permission and the worker envelope on the
+  // same canonical root so Node's permission model does not reject valid writes.
   const outputDirectory = path.resolve(
-    workspaceDirectory,
+    realWorkspaceDirectory,
     ".contentflow-output",
     safeSegment(request.executionId),
     safeSegment(request.traceId),
   );
-  mkdirSync(uploadsDirectory, { recursive: true });
-  mkdirSync(artifactDirectory, { recursive: true });
-  mkdirSync(workspaceDirectory, { recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
-  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const permissions = new Set(plugin.manifest.permissions);
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
@@ -229,15 +233,32 @@ export async function executeRegisteredPlugin(
     args.push(`--allow-fs-read=${readable}`);
   }
   if (permissions.has("filesystem:read")) {
-    args.push(`--allow-fs-read=${uploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
+    args.push(`--allow-fs-read=${realUploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
+    if (workspaceDirectory !== realWorkspaceDirectory) {
+      args.push(`--allow-fs-read=${workspaceDirectory}`);
+    }
+    if (uploadsDirectory !== realUploadsDirectory) {
+      args.push(`--allow-fs-read=${uploadsDirectory}`);
+    }
   }
   if (permissions.has("filesystem:write")) {
     args.push(`--allow-fs-write=${realWorkspaceDirectory}`);
+    if (workspaceDirectory !== realWorkspaceDirectory) {
+      args.push(`--allow-fs-write=${workspaceDirectory}`);
+    }
   }
   if (permissions.has("process")) {
     args.push("--allow-child-process");
     for (const executablePath of windowsExecutableDiscoveryReadPaths()) {
       args.push(`--allow-fs-read=${executablePath}`);
+      try {
+        const real = realpathSync(executablePath);
+        if (real !== executablePath) {
+          args.push(`--allow-fs-read=${real}`);
+        }
+      } catch {
+        // file might not exist yet
+      }
     }
   }
   if (permissions.has("worker")) args.push("--allow-worker");
