@@ -34,7 +34,19 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
 
 ## Estado da rodada 2026-09-09
 
-### Último avanço — fonte validada, instalação ainda pendente
+### Último avanço — instalada localmente; distribuição ainda pendente
+
+**Instalação local concluída:** macOS arm64, 0.5.2 → 0.5.5, fonte 64fc1bf,
+no mesmo caminho do aplicativo operacional. Backup do bundle anterior e dados
+mantido localmente. Dashboard nativo confirma v0.5.5. As oito tabelas conferidas
+preservaram seus registros: canais, projetos, execuções, bibliotecas,
+consentimentos, conexões e workspaces. Registro de 34 plugins sem erro de
+manifesto; nenhuma produção/retry iniciada.
+
+O teste nativo de cofre com serviços aleatórios exclusivos e valores sintéticos
+passou, inclusive exclusão após novo processo; entradas de teste removidas.
+Não foram lidas credenciais existentes. Não equivale a testar todo cofre ou
+autorizar rollback indiscriminado.
 
 - Candidata corrigida e publicada:
   [`64fc1bf`](https://github.com/vini-duran/OS/commit/64fc1bfeb93f56a399b498314739fbd55a8b8fbb).
@@ -47,21 +59,22 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
   limpo removidos; aproximadamente 1,35 GiB em arquivos. ZIP, commits, evidências
   e checkpoint preservados. Nenhum aplicativo instalado ou dado de produção
   foi removido; o volume efetivamente liberado depende do APFS.
-- **Não atualizar outra máquina por esta candidata ainda.** Faltam migração
-  nativa do cofre, reconciliação final com a main histórica e validação do novo
-  pacote. O ZIP descrito abaixo antecede estas correções.
+- **Não usar o ZIP antigo para atualizar outra máquina.** Faltam reconciliação
+  final com a main histórica e publicação/download do pacote de distribuição.
+  A instalação local foi verificada separadamente; o ZIP abaixo é anterior.
 - Próxima ação detalhada:
-  [pendências da 0.5.5](https://github.com/vini-duran/OS/blob/64fc1bfeb93f56a399b498314739fbd55a8b8fbb/docs/UPDATE_055_REMAINING.md).
+  [pendências da 0.5.5](https://github.com/vini-duran/OS/blob/31de856f60f1ae8064e12c3ffce172abc9b35eda/docs/UPDATE_055_REMAINING.md).
   Recuperação:
-  [migração do cofre](https://github.com/vini-duran/OS/blob/64fc1bfeb93f56a399b498314739fbd55a8b8fbb/docs/CREDENTIAL_VAULT_MIGRATION.md).
+  [migração do cofre](https://github.com/vini-duran/OS/blob/31de856f60f1ae8064e12c3ffce172abc9b35eda/docs/CREDENTIAL_VAULT_MIGRATION.md).
 
 ### Base da candidata e evidências anteriores
 
 Upstream `v0.5.5` (`8fe65673332a8eab8542a72f87966abc94310759`) integrado
 apenas em clone de trabalho do fork para revisão. A distribuição existente
 continua `v0.5.2-ecossistema.1`. A promoção funcional para main e a nova release
-estão pendentes de reconciliação e revisão. Nenhuma instalação operacional foi
-substituída. Testes de fonte não comprovam migração real.
+estão pendentes de reconciliação e revisão. A instalação local foi substituída
+apenas após os testes e backup descritos acima. Testes de fonte, sozinhos,
+não comprovam migração real.
 
 Avanço da candidata, sem aprovação de instalação:
 
