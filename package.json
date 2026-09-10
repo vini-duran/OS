@@ -149,6 +149,7 @@
     },
     "files": [
       "desktop/main.cjs",
+      "desktop/data-selection.cjs",
       "desktop/desktop-paths.cjs",
       "desktop/preload.cjs",
       "desktop/updater.cjs",
