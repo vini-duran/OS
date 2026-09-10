@@ -124,4 +124,3 @@ test("o destino de releases aponta exclusivamente para o fork do proprietário",
   assert.equal(RELEASES_URL, "https://github.com/vini-duran/OS/releases/latest");
   assert.equal(RELEASES_URL.includes("andremjr"), false);
 });
-

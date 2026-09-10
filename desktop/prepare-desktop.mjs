@@ -104,4 +104,3 @@ writeFileSync(
   ),
   "utf8",
 );
-

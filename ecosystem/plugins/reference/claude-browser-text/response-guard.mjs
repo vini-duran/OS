@@ -64,8 +64,11 @@ export function preSendProviderError(notices = []) {
 
 // A send click may succeed even when its acknowledgement is lost.
 export function canRetryTurn(error, submitted) {
-  return !submitted && Boolean(error?.retryable) &&
-    !['CANCELLED', 'AUTHENTICATION_FAILED', 'RATE_LIMIT'].includes(error?.code);
+  return (
+    !submitted &&
+    Boolean(error?.retryable) &&
+    !["CANCELLED", "AUTHENTICATION_FAILED", "RATE_LIMIT"].includes(error?.code)
+  );
 }
 
 export function failedTurn(error, submitted) {

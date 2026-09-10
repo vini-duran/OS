@@ -24,4 +24,3 @@ if (!existsSync(bindingPath)) {
 }
 
 console.log(`Dependência nativa ${currentTarget} validada: ${bindingPath}`);
-

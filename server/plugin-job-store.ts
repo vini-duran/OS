@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { RuntimeValue, StoredFile } from "../src/lib/domain";
 import type { PluginExecutionRequest } from "../src/lib/plugin-contract";
-import { prepareItemJobResume } from './plugin-item-resume';
+import { prepareItemJobResume } from "./plugin-item-resume";
 
 export type PluginJobStatus =
   "starting" | "pending" | "cancel_requested" | "completed" | "failed" | "cancelled" | "abandoned";
@@ -28,8 +28,13 @@ export type PersistentPluginJob = {
   cancelRequested: boolean;
   error?: string;
   retryCount: number;
-  recoveryHistory?: Array<{ at: string; previousPluginVersion: string; previousError?: string;
-    currentIndex: number; reconciliationNote: string }>;
+  recoveryHistory?: Array<{
+    at: string;
+    previousPluginVersion: string;
+    previousError?: string;
+    currentIndex: number;
+    reconciliationNote: string;
+  }>;
   profileFallback?: {
     configurationKey: string;
     candidates: string[];
@@ -126,21 +131,37 @@ export class PluginJobStore {
     ).map((row) => parseJob(row.payload));
   }
 
-  resumeFailedItems(id: string, expectedUpdatedAt: string,
+  resumeFailedItems(
+    id: string,
+    expectedUpdatedAt: string,
     options: Parameters<typeof prepareItemJobResume>[1],
-    onSaved?: (saved: PersistentPluginJob) => void) {
-    return this.database.transaction(() => {
-      const job = this.get(id);
-      if (!job || job.updatedAt !== expectedUpdatedAt) throw new Error('Estado do job mudou; confira novamente antes de retomar.');
-      const next = prepareItemJobResume(job, options);
-      const result = this.database.prepare(`UPDATE plugin_jobs SET status = ?, next_poll_at = ?,
+    onSaved?: (saved: PersistentPluginJob) => void,
+  ) {
+    return this.database
+      .transaction(() => {
+        const job = this.get(id);
+        if (!job || job.updatedAt !== expectedUpdatedAt)
+          throw new Error("Estado do job mudou; confira novamente antes de retomar.");
+        const next = prepareItemJobResume(job, options);
+        const result = this.database
+          .prepare(
+            `UPDATE plugin_jobs SET status = ?, next_poll_at = ?,
         lease_token = NULL, lease_until = NULL, payload = ?, updated_at = ?
-        WHERE id = ? AND status = 'failed' AND updated_at = ? AND lease_token IS NULL`)
-        .run(next.status, next.nextPollAt, JSON.stringify(next), next.updatedAt, id, expectedUpdatedAt);
-      if (result.changes !== 1) throw new Error('Job ocupado ou alterado; retomada recusada.');
-      onSaved?.(next);
-      return next;
-    }).immediate();
+        WHERE id = ? AND status = 'failed' AND updated_at = ? AND lease_token IS NULL`,
+          )
+          .run(
+            next.status,
+            next.nextPollAt,
+            JSON.stringify(next),
+            next.updatedAt,
+            id,
+            expectedUpdatedAt,
+          );
+        if (result.changes !== 1) throw new Error("Job ocupado ou alterado; retomada recusada.");
+        onSaved?.(next);
+        return next;
+      })
+      .immediate();
   }
 
   claim(id: string, now = new Date(), leaseMs = 60 * 60 * 1_000): ClaimedPluginJob | undefined {

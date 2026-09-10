@@ -28,7 +28,9 @@ function fixture({ partialWrite = false, invisibleMarkers = false, suspendedFram
         return false;
       if (selector.includes('[role="textbox"]') && this.attributes.role !== "textbox") return false;
       if (selector.includes('[aria-label*="prompt" i]'))
-        return String(this.attributes["aria-label"] || "").toLowerCase().includes("prompt");
+        return String(this.attributes["aria-label"] || "")
+          .toLowerCase()
+          .includes("prompt");
       return selector.includes('contenteditable="true"') || selector === '[role="textbox"]';
     }
     getBoundingClientRect() {
@@ -76,7 +78,11 @@ function fixture({ partialWrite = false, invisibleMarkers = false, suspendedFram
   const context = {
     chrome: {
       runtime: {
-        onMessage: { addListener(value) { listener = value; } },
+        onMessage: {
+          addListener(value) {
+            listener = value;
+          },
+        },
         sendMessage: async () => ({}),
       },
     },
@@ -90,10 +96,20 @@ function fixture({ partialWrite = false, invisibleMarkers = false, suspendedFram
     Element: FakeElement,
     HTMLInputElement: FakeInput,
     HTMLTextAreaElement: FakeTextArea,
-    InputEvent: class InputEvent { constructor(type, options) { this.type = type; this.options = options; } },
-    Event: class Event { constructor(type, options) { this.type = type; this.options = options; } },
+    InputEvent: class InputEvent {
+      constructor(type, options) {
+        this.type = type;
+        this.options = options;
+      }
+    },
+    Event: class Event {
+      constructor(type, options) {
+        this.type = type;
+        this.options = options;
+      }
+    },
     getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
-    requestAnimationFrame: (callback) => suspendedFrames ? 1 : callback(),
+    requestAnimationFrame: (callback) => (suspendedFrames ? 1 : callback()),
     setTimeout,
     clearTimeout,
     Date,
@@ -153,13 +169,17 @@ test("recusa escrita parcial e informa somente comprimentos", async () => {
   assert.equal(response.readbackLength, 40);
 });
 
-test("aba em segundo plano confirma escrita sem depender de animation frames", { timeout: 2000 }, async () => {
-  const { listener, prompt } = fixture({ suspendedFrames: true });
-  const text = "Prompt em aba de fundo.";
-  const response = await setPrompt(listener, text);
-  assert.equal(response.ok, true);
-  assert.equal(prompt.textContent, text);
-});
+test(
+  "aba em segundo plano confirma escrita sem depender de animation frames",
+  { timeout: 2000 },
+  async () => {
+    const { listener, prompt } = fixture({ suspendedFrames: true });
+    const text = "Prompt em aba de fundo.";
+    const response = await setPrompt(listener, text);
+    assert.equal(response.ok, true);
+    assert.equal(prompt.textContent, text);
+  },
+);
 
 test("aba de fundo continua recusando escrita parcial", { timeout: 2000 }, async () => {
   const { listener } = fixture({ suspendedFrames: true, partialWrite: true });

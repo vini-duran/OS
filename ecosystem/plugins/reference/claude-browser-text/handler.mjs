@@ -302,7 +302,10 @@ function sequenceItems(request) {
 function buildParts(request) {
   if (request?.batch && request?.inputs?.outline) {
     return [
-      buildInstructionPrompt(request, [batchOutlineInstruction(request), plainTextInstruction(true)]),
+      buildInstructionPrompt(request, [
+        batchOutlineInstruction(request),
+        plainTextInstruction(true),
+      ]),
     ];
   }
   const base = buildInstructionPrompt(request, [plainTextInstruction(true)]);
@@ -1458,16 +1461,21 @@ async function waitForTurnReady(client, sessionId, timeoutMs, signal, requireSen
   const deadline = Date.now() + timeoutMs;
   let idleSince;
   let previous;
-  let reason = 'editor indisponível';
+  let reason = "editor indisponível";
   while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError('CANCELLED', 'Execução cancelada.');
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId);
     const fault = preSendProviderError(state?.notices);
     if (fault) throw codedError(fault.code, fault.message, false);
     const busy = Boolean(state?.generating || state?.stop);
     const latest = JSON.stringify(state?.texts ?? []);
-    const ready = state?.promptReady === true && !busy && (!requireSend || state?.sendReady === true);
-    reason = busy ? 'resposta ainda em andamento' : !state?.promptReady ? 'editor indisponível' : 'controle de envio indisponível';
+    const ready =
+      state?.promptReady === true && !busy && (!requireSend || state?.sendReady === true);
+    reason = busy
+      ? "resposta ainda em andamento"
+      : !state?.promptReady
+        ? "editor indisponível"
+        : "controle de envio indisponível";
     if (!ready || latest !== previous) idleSince = undefined;
     if (ready) {
       idleSince ??= Date.now();
@@ -1476,23 +1484,36 @@ async function waitForTurnReady(client, sessionId, timeoutMs, signal, requireSen
     previous = latest;
     await waitForDomMutation(client, sessionId, 1000, signal);
   }
-  throw codedError('TIMEOUT', `Claude não ficou pronto: ${reason}. Nenhum clique de envio realizado.`, false);
+  throw codedError(
+    "TIMEOUT",
+    `Claude não ficou pronto: ${reason}. Nenhum clique de envio realizado.`,
+    false,
+  );
 }
 
 async function waitForSubmission(client, sessionId, baselineCount, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError('CANCELLED', 'Execução cancelada.');
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId);
     const fault = providerError(state?.notices);
     if (fault) throw codedError(fault.code, fault.message, false);
     // A cleared, available composer or a new assistant turn acknowledges send.
     // An absent editor or a spinner alone does not prove submission.
-    if ((state?.texts?.length ?? 0) > baselineCount ||
-        (state?.promptReady === true && typeof state.promptText === 'string' && !state.promptText.trim())) return;
+    if (
+      (state?.texts?.length ?? 0) > baselineCount ||
+      (state?.promptReady === true &&
+        typeof state.promptText === "string" &&
+        !state.promptText.trim())
+    )
+      return;
     await waitForDomMutation(client, sessionId, 1000, signal);
   }
-  throw codedError('TIMEOUT', 'Envio sem confirmação do Claude; não reenviar automaticamente.', false);
+  throw codedError(
+    "TIMEOUT",
+    "Envio sem confirmação do Claude; não reenviar automaticamente.",
+    false,
+  );
 }
 
 async function waitForResponse(client, sessionId, baselineCount, timeoutMs, signal) {
@@ -1519,14 +1540,15 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       await sleep(5_000, signal);
       const confirmedState = await responseState(client, sessionId);
       const confirmedTexts = Array.isArray(confirmedState?.texts) ? confirmedState.texts : [];
-      const confirmedNewest =
-        confirmedTexts.length > baselineCount
-          ? confirmedTexts.at(-1)
-          : "";
+      const confirmedNewest = confirmedTexts.length > baselineCount ? confirmedTexts.at(-1) : "";
       const confirmedNotice = providerError(confirmedState?.notices);
       if (confirmedNotice) throw codedError(confirmedNotice.code, confirmedNotice.message, false);
-      if (confirmedNewest === newest && confirmedState?.promptReady === true &&
-          !confirmedState?.generating && !confirmedState?.stop) {
+      if (
+        confirmedNewest === newest &&
+        confirmedState?.promptReady === true &&
+        !confirmedState?.generating &&
+        !confirmedState?.stop
+      ) {
         const entry = Array.isArray(confirmedState?.entries)
           ? confirmedState.entries.at(-1)
           : undefined;
@@ -1559,19 +1581,19 @@ async function generatePart(
   lifecycle = {},
 ) {
   const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
-  lifecycle.report?.('Aguardando conversa e editor prontos, sem enviar.');
+  lifecycle.report?.("Aguardando conversa e editor prontos, sem enviar.");
   await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal);
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
-  lifecycle.report?.('Prompt preenchido; aguardando controle de envio habilitado.');
+  lifecycle.report?.("Prompt preenchido; aguardando controle de envio habilitado.");
   const before = await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal, true);
   const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
   // Dispatch may click successfully and lose its acknowledgement. Mark the
   // attempt before dispatch; never turn that uncertainty into a safe retry.
   lifecycle.submitted = true;
   await clickSend(bridge, `send:${operationKey}`, signal);
-  lifecycle.report?.('Clique realizado; aguardando confirmação do envio.');
+  lifecycle.report?.("Clique realizado; aguardando confirmação do envio.");
   await waitForSubmission(client, sessionId, baselineCount, 30_000, signal);
-  lifecycle.report?.('Envio confirmado; aguardando resposta nova e concluída.');
+  lifecycle.report?.("Envio confirmado; aguardando resposta nova e concluída.");
   return await waitForResponse(client, sessionId, baselineCount, timeoutSeconds * 1000, signal);
 }
 
@@ -1948,61 +1970,121 @@ export async function execute(request, services) {
 export async function inspectSendControls(request, services) {
   const profileName = normalizeAccountProfile(request.configuration?.accountProfile);
   const profilePath = runtimeProfilePath({}, profileName, services);
-  if (!await profileIsPrepared(profilePath, profileName)) return resultError('INVALID_CONFIGURATION', 'Perfil não preparado.');
+  if (!(await profileIsPrepared(profilePath, profileName)))
+    return resultError("INVALID_CONFIGURATION", "Perfil não preparado.");
   const version = await fetchBrowserVersion(profilePort(DEFAULT_PORT, profileName));
-  if (!version) return resultError('NOT_FOUND', 'Navegador dedicado não está aberto.');
+  if (!version) return resultError("NOT_FOUND", "Navegador dedicado não está aberto.");
   const client = await new CdpClient(version.webSocketDebuggerUrl).connect(services.signal);
   try {
     if (request.configuration?.inspectConversationUrl) {
       const url = validateConversationUrl(request.configuration.inspectConversationUrl);
-      const { targetInfos } = await client.send('Target.getTargets');
-      const existing = targetInfos.find(t => t.type === 'page' && t.url === url);
+      const { targetInfos } = await client.send("Target.getTargets");
+      const existing = targetInfos.find((t) => t.type === "page" && t.url === url);
       if (!existing) {
         // Explicit read-only reconciliation opens the saved conversation, never sends.
-        const created = await client.send('Target.createTarget', { url, background: false });
-        const { sessionId } = await client.send('Target.attachToTarget', { targetId: created.targetId, flatten: true });
-        try { await waitForPrompt(client, sessionId, 60_000, services.signal); }
-        finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+        const created = await client.send("Target.createTarget", { url, background: false });
+        const { sessionId } = await client.send("Target.attachToTarget", {
+          targetId: created.targetId,
+          flatten: true,
+        });
+        try {
+          await waitForPrompt(client, sessionId, 60_000, services.signal);
+        } finally {
+          await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+        }
       }
     }
     if (request.configuration?.reloadBridgeId) {
       const id = request.configuration.reloadBridgeId;
-      if (!/^[a-p]{32}$/.test(id)) throw codedError('INVALID_INPUT', 'ID de extensão inválido.');
-      const pages = await client.send('Target.getTargets');
-      const page = pages.targetInfos.find(t => t.type === 'page' && /^https:\/\/claude\.ai\//.test(t.url));
-      if (!page) throw codedError('NOT_FOUND', 'Nenhuma aba Claude disponível.');
-      const attached = await client.send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
-      await client.send('ServiceWorker.enable', {}, attached.sessionId);
-      await client.send('ServiceWorker.startWorker', { scopeURL: `chrome-extension://${id}/` }, attached.sessionId);
+      if (!/^[a-p]{32}$/.test(id)) throw codedError("INVALID_INPUT", "ID de extensão inválido.");
+      const pages = await client.send("Target.getTargets");
+      const page = pages.targetInfos.find(
+        (t) => t.type === "page" && /^https:\/\/claude\.ai\//.test(t.url),
+      );
+      if (!page) throw codedError("NOT_FOUND", "Nenhuma aba Claude disponível.");
+      const attached = await client.send("Target.attachToTarget", {
+        targetId: page.targetId,
+        flatten: true,
+      });
+      await client.send("ServiceWorker.enable", {}, attached.sessionId);
+      await client.send(
+        "ServiceWorker.startWorker",
+        { scopeURL: `chrome-extension://${id}/` },
+        attached.sessionId,
+      );
       for (let attempt = 0; attempt < 12; attempt++) {
-        const { targetInfos } = await client.send('Target.getTargets');
-        const target = targetInfos.find(t => t.type === 'service_worker' && t.url === `chrome-extension://${id}/service-worker.js`);
+        const { targetInfos } = await client.send("Target.getTargets");
+        const target = targetInfos.find(
+          (t) =>
+            t.type === "service_worker" && t.url === `chrome-extension://${id}/service-worker.js`,
+        );
         if (target) {
-          const { sessionId } = await client.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
-          const identity = await evaluate(client, sessionId, 'globalThis.contentFlowBridge?.identity');
-          if (identity?.bridgeId !== 'com.contentflow.browser-bridge') throw codedError('INVALID_INPUT', 'Extensão não é a Browser Bridge.');
+          const { sessionId } = await client.send("Target.attachToTarget", {
+            targetId: target.targetId,
+            flatten: true,
+          });
+          const identity = await evaluate(
+            client,
+            sessionId,
+            "globalThis.contentFlowBridge?.identity",
+          );
+          if (identity?.bridgeId !== "com.contentflow.browser-bridge")
+            throw codedError("INVALID_INPUT", "Extensão não é a Browser Bridge.");
           // Refresh only this verified extension; never reload provider pages.
-          await client.send('Runtime.evaluate', { expression: 'chrome.runtime.reload()', returnByValue: true }, sessionId).catch(() => {});
-          return { status: 'success', values: { result: JSON.stringify({ reloadRequested: true, previousVersion: identity.extensionVersion }) } };
+          await client
+            .send(
+              "Runtime.evaluate",
+              { expression: "chrome.runtime.reload()", returnByValue: true },
+              sessionId,
+            )
+            .catch(() => {});
+          return {
+            status: "success",
+            values: {
+              result: JSON.stringify({
+                reloadRequested: true,
+                previousVersion: identity.extensionVersion,
+              }),
+            },
+          };
         }
         await sleep(250, services.signal);
       }
-      throw codedError('NOT_FOUND', 'Worker da Bridge não disponível para recarga.');
+      throw codedError("NOT_FOUND", "Worker da Bridge não disponível para recarga.");
     }
-    const { targetInfos = [] } = await client.send('Target.getTargets');
-    const pages = targetInfos.filter(t => t.type === 'page' && /^https:\/\/claude\.ai\//.test(t.url));
+    const { targetInfos = [] } = await client.send("Target.getTargets");
+    const pages = targetInfos.filter(
+      (t) => t.type === "page" && /^https:\/\/claude\.ai\//.test(t.url),
+    );
     const results = [];
-    for (const worker of targetInfos.filter(t => t.type === 'service_worker' && /^chrome-extension:\/\//.test(t.url))) {
-      const { sessionId } = await client.send('Target.attachToTarget', { targetId: worker.targetId, flatten: true });
+    for (const worker of targetInfos.filter(
+      (t) => t.type === "service_worker" && /^chrome-extension:\/\//.test(t.url),
+    )) {
+      const { sessionId } = await client.send("Target.attachToTarget", {
+        targetId: worker.targetId,
+        flatten: true,
+      });
       try {
-        const identity = await evaluate(client, sessionId, 'globalThis.contentFlowBridge?.identity');
+        const identity = await evaluate(
+          client,
+          sessionId,
+          "globalThis.contentFlowBridge?.identity",
+        );
         if (identity) results.push({ bridgeIdentity: identity });
-      } finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+      } finally {
+        await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      }
     }
     for (const target of pages) {
-      const { sessionId } = await client.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+      const { sessionId } = await client.send("Target.attachToTarget", {
+        targetId: target.targetId,
+        flatten: true,
+      });
       try {
-        const result = await evaluate(client, sessionId, `(() => { ${PAGE_HELPERS};
+        const result = await evaluate(
+          client,
+          sessionId,
+          `(() => { ${PAGE_HELPERS};
           const p=cfPrompt(); const s=cfResponseState();
           return {pagePath:location.pathname, responseTexts:s.texts,
             userMessageCount:document.querySelectorAll('[data-testid="user-message"]').length,
@@ -2023,17 +2105,24 @@ export async function inspectSendControls(request, services) {
               disabled:!!el.disabled, ariaDisabled:el.getAttribute('aria-disabled'),
               svgLabels:[...el.querySelectorAll('svg')].map(x=>({label:x.getAttribute('aria-label'),'data-icon':x.getAttribute('data-icon')})),
               nearEditor:!!p&&!!el.parentElement?.contains(p)
-            }))}; })()`);
-        result.responses = (result.responseTexts ?? []).map(text => ({
+            }))}; })()`,
+        );
+        result.responses = (result.responseTexts ?? []).map((text) => ({
           characters: text.length,
-          sha256: createHash('sha256').update(String(text).replace(/\s+/gu, ' ').trim()).digest('hex'),
+          sha256: createHash("sha256")
+            .update(String(text).replace(/\s+/gu, " ").trim())
+            .digest("hex"),
         }));
         delete result.responseTexts;
         results.push(result);
-      } finally { await client.send('Target.detachFromTarget', { sessionId }).catch(() => {}); }
+      } finally {
+        await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+      }
     }
-    return { status: 'success', values: { result: JSON.stringify(results) } };
-  } finally { client.close(); }
+    return { status: "success", values: { result: JSON.stringify(results) } };
+  } finally {
+    client.close();
+  }
 }
 
 export const __test = {

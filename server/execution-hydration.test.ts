@@ -41,7 +41,10 @@ async function waitForApi(baseUrl: string, child: ChildProcess): Promise<void> {
   throw new Error("A API de teste isolada não iniciou dentro do prazo.");
 }
 
-async function jsonRequest<T>(url: string, init?: RequestInit): Promise<{ response: Response; body: T & { error?: string } }> {
+async function jsonRequest<T>(
+  url: string,
+  init?: RequestInit,
+): Promise<{ response: Response; body: T & { error?: string } }> {
   const response = await fetch(url, init);
   const body = (await response.json()) as T & { error?: string };
   return { response, body };
@@ -76,7 +79,9 @@ function createTestChannel(id = "channel-hydration-test"): Channel {
               operator: "Código",
               name: `Gerar ${processType}`,
               inputs: [],
-              outputs: [{ id: "images", key: "images", label: "Imagens", type: "list", required: true }],
+              outputs: [
+                { id: "images", key: "images", label: "Imagens", type: "list", required: true },
+              ],
               parameters: [],
               order: 0,
             },
@@ -86,7 +91,15 @@ function createTestChannel(id = "channel-hydration-test"): Channel {
               operator: "Humano",
               name: `Selecionar ${processType}`,
               inputs: [],
-              outputs: [{ id: "selected", key: "selected_values", label: "Selecionados", type: "list", required: true }],
+              outputs: [
+                {
+                  id: "selected",
+                  key: "selected_values",
+                  label: "Selecionados",
+                  type: "list",
+                  required: true,
+                },
+              ],
               parameters: [],
               order: 1,
             },
@@ -256,7 +269,9 @@ test(
       const afterUnchangedState = await jsonRequest<{ executions: ProcessExecution[] }>(
         `${baseUrl}/api/state`,
       );
-      const execAfterUnchanged = afterUnchangedState.body.executions.find((e) => e.id === execution.id);
+      const execAfterUnchanged = afterUnchangedState.body.executions.find(
+        (e) => e.id === execution.id,
+      );
       assert.ok(execAfterUnchanged);
       assert.equal(execAfterUnchanged.status, "awaiting_human");
       assert.deepEqual(execAfterUnchanged.blocks[0].values.images, [
@@ -289,9 +304,10 @@ test(
       assert.equal(editedMethodRes.body.blocks[0].name, "Gerar thumbnail (Revisado)");
 
       // Comprova que a execução ativa mantém seu methodSnapshot original, entregas, seleções e tentativas
-      const afterEditState = await jsonRequest<{ channels: Channel[]; executions: ProcessExecution[] }>(
-        `${baseUrl}/api/state`,
-      );
+      const afterEditState = await jsonRequest<{
+        channels: Channel[];
+        executions: ProcessExecution[];
+      }>(`${baseUrl}/api/state`);
       const updatedChannel = afterEditState.body.channels.find((c) => c.id === channel.id);
       assert.ok(updatedChannel);
       assert.equal(
@@ -326,43 +342,45 @@ test(
 
       // 5. Execução real de comando: completar bloco humano com seleção preservada
       const completeCommandId = crypto.randomUUID();
-      const completeRes = await jsonRequest<{ result: unknown; state: { executions: ProcessExecution[] } }>(
-        `${baseUrl}/api/commands`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: completeCommandId,
-            action: "completeHuman",
-            executionId: execution.id,
-            blockId: "thumbnail-select",
-            attempt: 2,
-            values: { selected_values: ["thumb_opt1.png"] },
-          }),
-        },
-      );
+      const completeRes = await jsonRequest<{
+        result: unknown;
+        state: { executions: ProcessExecution[] };
+      }>(`${baseUrl}/api/commands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: completeCommandId,
+          action: "completeHuman",
+          executionId: execution.id,
+          blockId: "thumbnail-select",
+          attempt: 2,
+          values: { selected_values: ["thumb_opt1.png"] },
+        }),
+      });
       assert.equal(completeRes.response.status, 200, completeRes.body.error);
 
       // 6. Execução real de comando: retry / rejeição no bloco anterior preserva entregas de blocos a montante
       // e renova identidade dos blocos a jusante já executados
       const retryCommandId = crypto.randomUUID();
-      const retryRes = await jsonRequest<{ result: unknown; state: { executions: ProcessExecution[] } }>(
-        `${baseUrl}/api/commands`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: retryCommandId,
-            action: "retry",
-            executionId: execution.id,
-            blockId: "thumbnail-select",
-            attempt: 2,
-          }),
-        },
-      );
+      const retryRes = await jsonRequest<{
+        result: unknown;
+        state: { executions: ProcessExecution[] };
+      }>(`${baseUrl}/api/commands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: retryCommandId,
+          action: "retry",
+          executionId: execution.id,
+          blockId: "thumbnail-select",
+          attempt: 2,
+        }),
+      });
       assert.equal(retryRes.response.status, 200, retryRes.body.error);
 
-      const finalState = await jsonRequest<{ executions: ProcessExecution[] }>(`${baseUrl}/api/state`);
+      const finalState = await jsonRequest<{ executions: ProcessExecution[] }>(
+        `${baseUrl}/api/state`,
+      );
       const finalExec = finalState.body.executions.find((e) => e.id === execution.id);
       assert.ok(finalExec);
       assert.deepEqual(
