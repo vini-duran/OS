@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   CheckCircle2,
+  ChevronDown,
   Code2,
   LoaderCircle,
   Play,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import { RuntimeFieldsForm } from "@/components/runtime-fields-form";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
+import { ImageGallery } from "@/components/image-gallery";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,7 +43,6 @@ import {
   PROCESS_ROUTE_SEGMENT,
 } from "@/lib/human-workflow";
 import { resolveBlockInputs } from "@/lib/runtime-contract";
-import { activeProjectDeliveries, deliveryRuntimeValue } from "@/lib/deliveries";
 import {
   cancelProcessExecution,
   chooseCollectionItem,
@@ -51,6 +52,8 @@ import {
   resetStage,
   retryBlockExecution,
   saveHumanBlockDraft,
+  readRuntimeDraft,
+  saveProcessOutputDraft,
   startProcessExecution,
   useChannel,
   useChannelExecutions,
@@ -74,15 +77,12 @@ const STATUS_LABEL: Record<BlockExecution["status"], string> = {
 
 const NEXT_PROCESS_DELAY = 1100;
 
-export function ProcessRunner({
-  project,
-  processId,
-  description,
-}: {
-  project?: Project;
-  processId: ProcessId;
-  description: string;
-}) {
+type ProcessRunnerProps = { project?: Project; processId: ProcessId; description: string };
+export function ProcessRunner(props: ProcessRunnerProps) {
+  return <ProcessRunnerSession key={`${props.project?.id}:${props.processId}`} {...props} />;
+}
+
+function ProcessRunnerSession({ project, processId, description }: ProcessRunnerProps) {
   const navigate = useNavigate();
   const channel = useChannel(project?.channelId ?? "");
   const collections = useLibraryCollections(project?.channelId);
@@ -109,19 +109,15 @@ export function ProcessRunner({
   const blockedByPluginExecutor =
     activeExecution?.status === "blocked_executor" && activeBlock?.operator !== "Humano";
   const awaitingOutput = execution?.status === "awaiting_output";
-  const methodIssue = getMethodConfigurationIssue(method);
-  const runningExecutionId =
-    execution && ["running", "blocked_executor"].includes(execution.status)
-      ? execution.id
-      : undefined;
+  const methodIssue = getMethodConfigurationIssue(execution?.methodSnapshot ?? method);
+  const synchronizedExecutionId =
+    execution && !["completed", "cancelled"].includes(execution.status) ? execution.id : undefined;
 
   const scheduleNextProcess = useCallback(() => {
     if (!project || !channel || !nextProcess || nextNavigationTimer.current) return;
+    if (getMethodConfigurationIssue(channel.methods[nextProcess])) return;
     setIsAdvancing(true);
     nextNavigationTimer.current = window.setTimeout(() => {
-      if (channel.methods[nextProcess].blocks.length) {
-        startProcessExecution(project.id, nextProcess);
-      }
       navigate({ to: `/project/${project.id}/${PROCESS_ROUTE_SEGMENT[nextProcess]}` });
     }, NEXT_PROCESS_DELAY);
   }, [channel, navigate, nextProcess, project]);
@@ -142,18 +138,22 @@ export function ProcessRunner({
   );
 
   useEffect(() => {
-    if (!runningExecutionId) return;
+    if (!synchronizedExecutionId || !project?.id) return;
     let active = true;
     const refresh = () => {
-      if (active) void refreshProcessExecution(runningExecutionId);
+      if (active) void refreshProcessExecution(synchronizedExecutionId, project.id, processId);
     };
     refresh();
-    const timer = window.setInterval(refresh, 1_000);
+    const activelyRunning =
+      ["running", "blocked_executor", "in_progress"].includes(execution?.status ?? "") ||
+      activeExecution?.status === "in_progress" ||
+      activeExecution?.status === "blocked_executor";
+    const timer = window.setInterval(refresh, activelyRunning ? 1_000 : 3_000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [runningExecutionId]);
+  }, [activeExecution?.status, execution?.status, processId, project?.id, synchronizedExecutionId]);
 
   if (!project || !channel) return null;
   const projectId = project.id;
@@ -166,29 +166,37 @@ export function ProcessRunner({
     });
   }
 
-  function start() {
-    const started = startProcessExecution(projectId, processId);
-    if (!started) {
-      toast.error(methodIssue ?? `Crie um método de ${meta.label} antes de iniciar.`);
-      return;
+  async function start() {
+    try {
+      const started = await startProcessExecution(projectId, processId);
+      if (!started) {
+        toast.error(methodIssue ?? `Crie um método de ${meta.label} antes de iniciar.`);
+        return;
+      }
+      toast.success(`Processo de ${meta.label} iniciado`, {
+        description: "Os blocos serão executados na ordem definida no método.",
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível iniciar.");
     }
-    toast.success(`Processo de ${meta.label} iniciado`, {
-      description: "Os blocos serão executados na ordem definida no método.",
-    });
   }
 
-  function chooseItem(itemId: string) {
-    if (!execution || !activeBlock) return;
-    if (!chooseCollectionItem(execution.id, activeBlock.id, itemId)) {
-      toast.error("Não foi possível registrar esta escolha.");
-      return;
+  async function chooseItem(itemId: string) {
+    try {
+      if (!execution || !activeBlock) return;
+      if (!(await chooseCollectionItem(execution.id, activeBlock.id, itemId))) {
+        toast.error("Não foi possível registrar esta escolha.");
+        return;
+      }
+      if (execution.status === "completed") {
+        toast.success("Opção escolhida. O processo foi concluído.");
+        scheduleNextProcess();
+        return;
+      }
+      toast.success("Opção escolhida. O processo continuará.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível salvar a escolha.");
     }
-    if (execution.status === "completed") {
-      toast.success("Opção escolhida. O processo foi concluído.");
-      scheduleNextProcess();
-      return;
-    }
-    toast.success("Opção escolhida. O processo continuará.");
   }
 
   async function cancel() {
@@ -202,14 +210,18 @@ export function ProcessRunner({
     }
   }
 
-  function retry() {
-    if (
-      !execution ||
-      !activeExecution ||
-      !retryBlockExecution(execution.id, activeExecution.blockId)
-    )
-      return;
-    toast.success("Bloco preparado para uma nova tentativa.");
+  async function retry() {
+    try {
+      if (
+        !execution ||
+        !activeExecution ||
+        !(await retryBlockExecution(execution.id, activeExecution.blockId))
+      )
+        return;
+      toast.success("Bloco preparado para uma nova tentativa.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível repetir.");
+    }
   }
 
   return (
@@ -226,7 +238,13 @@ export function ProcessRunner({
             </div>
           </div>
           {completed || execution?.status === "cancelled" ? (
-            <Button variant="outline" size="sm" onClick={() => resetStage(project.id, processId)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void resetStage(project.id, processId).catch((error) => toast.error(error.message))
+              }
+            >
               <RotateCcw className="mr-1.5 size-3.5" /> Executar novamente
             </Button>
           ) : methodIssue ? (
@@ -259,7 +277,6 @@ export function ProcessRunner({
             collections={collections}
             libraryItems={libraryItems}
           />
-          <ProjectDeliveriesPanel executions={projectExecutions} />
           {waitingForHumanChoice && activeBlock ? (
             <HumanChoiceGate
               block={activeBlock}
@@ -277,7 +294,7 @@ export function ProcessRunner({
             />
           ) : waitingForHumanAction && activeBlock ? (
             <HumanBlockGate
-              key={activeBlock.id}
+              key={`${execution.id}:${activeBlock.id}:${activeExecution?.attempt ?? 1}`}
               block={activeBlock}
               execution={execution}
               project={project}
@@ -287,7 +304,11 @@ export function ProcessRunner({
               onProcessCompleted={scheduleNextProcess}
             />
           ) : awaitingOutput ? (
-            <ProcessOutputGate execution={execution} onCompleted={scheduleNextProcess} />
+            <ProcessOutputGate
+              key={execution.id}
+              execution={execution}
+              onCompleted={scheduleNextProcess}
+            />
           ) : blockedByPluginExecutor && activeBlock ? (
             activeBlock.plugin ? (
               <PluginExecutionGate
@@ -321,91 +342,6 @@ export function ProcessRunner({
         <MethodPreview method={method?.blocks ?? []} />
       )}
     </main>
-  );
-}
-
-function ProjectDeliveriesPanel({ executions }: { executions: ProcessExecution[] }) {
-  const deliveries = activeProjectDeliveries(executions).sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
-  if (!deliveries.length) return null;
-
-  return (
-    <section className="rounded-xl border border-border/70 bg-card p-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Produtos do projeto
-          </h3>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Todas as entregas e subentregas recebem IDs universais e podem alimentar blocos futuros.
-          </p>
-        </div>
-        <Badge variant="outline">
-          {deliveries.length} {deliveries.length === 1 ? "entrega" : "entregas"}
-        </Badge>
-      </div>
-      <div className="mt-3 space-y-2">
-        {deliveries.map((delivery) => {
-          const execution = executions.find((item) => item.id === delivery.executionId);
-          const block = execution?.methodSnapshot.blocks.find(
-            (item) => item.id === delivery.blockId,
-          );
-          return (
-            <details
-              key={delivery.id}
-              className="rounded-lg border border-border/60 bg-background/30"
-            >
-              <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5">
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-semibold">{delivery.label}</span>
-                  <span className="block truncate text-[10px] text-muted-foreground">
-                    {PROCESS_META[delivery.processType].label} /{" "}
-                    {block?.name ?? block?.type ?? "Bloco"}
-                  </span>
-                </span>
-                <Badge variant="secondary" className="text-[9px]">
-                  {delivery.items.length} {delivery.items.length === 1 ? "item" : "itens"}
-                </Badge>
-              </summary>
-              <div className="space-y-3 border-t border-border/60 p-3">
-                <div>
-                  <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    ID da entrega
-                  </p>
-                  <code className="mt-1 block break-all rounded bg-secondary px-2 py-1 text-[10px]">
-                    {delivery.id}
-                  </code>
-                </div>
-                <RuntimeValueViewer
-                  type={delivery.type}
-                  value={deliveryRuntimeValue(delivery)}
-                  compact
-                />
-                <div className="space-y-1">
-                  {delivery.items.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex min-w-0 items-center gap-2 rounded border border-border/50 px-2 py-1.5"
-                    >
-                      <span className="font-mono text-[9px] text-muted-foreground">
-                        {String(item.order + 1).padStart(2, "0")}
-                      </span>
-                      <code className="min-w-0 flex-1 break-all text-[9px]">{item.id}</code>
-                      {item.references?.length ? (
-                        <Badge variant="outline" className="shrink-0 text-[8px]">
-                          {item.references.length} ref.
-                        </Badge>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </details>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
@@ -524,7 +460,7 @@ function ExecutionResults({
         Resultados produzidos
       </h3>
       <div className="mt-3 space-y-2">
-        {visibleResults.map((blockExecution, index) => {
+        {visibleResults.map((blockExecution) => {
           const block = execution.methodSnapshot.blocks.find(
             (candidate) => candidate.id === blockExecution.blockId,
           );
@@ -545,7 +481,6 @@ function ExecutionResults({
             <details
               key={blockExecution.blockId}
               className="group rounded-lg border border-border/60 bg-background/30"
-              open={blockExecution.status === "in_progress" || index === visibleResults.length - 1}
             >
               <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium">
                 {blockExecution.status === "completed" ? (
@@ -623,6 +558,88 @@ function ResultValue({
       </div>
       <RuntimeValueViewer type={type} presentation={presentation} value={value} compact />
     </div>
+  );
+}
+
+function CollapsibleResultValue({
+  label,
+  type,
+  presentation,
+  value,
+  source,
+}: {
+  label: string;
+  type: Parameters<typeof RuntimeValueViewer>[0]["type"];
+  presentation?: Parameters<typeof RuntimeValueViewer>[0]["presentation"];
+  value: RuntimeValue | undefined;
+  source?: string;
+}) {
+  return (
+    <details
+      data-testid="context-value"
+      className="group min-w-0 rounded-lg border border-border/50 bg-card/60"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-3 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {label}
+            </p>
+            {source && (
+              <Badge variant="secondary" className="text-[9px]">
+                de {source}
+              </Badge>
+            )}
+          </div>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {summarizeRuntimeValue(value)}
+          </p>
+        </div>
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-border/50 p-3">
+        <RuntimeValueViewer type={type} presentation={presentation} value={value} compact />
+      </div>
+    </details>
+  );
+}
+
+function summarizeRuntimeValue(value: RuntimeValue | undefined) {
+  if (value == null || value === "") return "Não informado";
+  if (typeof value === "string") return truncateSummary(value);
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Sim" : "Não";
+  if (Array.isArray(value)) {
+    if (!value.length) return "Nenhum item";
+    const first = value[0];
+    if (typeof first === "string") {
+      return `${value.length} ${value.length === 1 ? "item" : "itens"} · ${truncateSummary(first)}`;
+    }
+    if (isStoredFileValue(first)) {
+      return `${value.length} ${value.length === 1 ? "arquivo" : "arquivos"} · ${first.name}`;
+    }
+    return `${value.length} ${value.length === 1 ? "registro" : "registros"}`;
+  }
+  if (isStoredFileValue(value)) return value.name;
+  if ("boxes" in value && Array.isArray(value.boxes)) {
+    return `Layout 16:9 · ${value.boxes.length} ${value.boxes.length === 1 ? "elemento" : "elementos"}`;
+  }
+  return "Conteúdo disponível";
+}
+
+function truncateSummary(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 150 ? `${normalized.slice(0, 147)}…` : normalized;
+}
+
+function isStoredFileValue(value: unknown): value is StoredFile {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "name" in value &&
+    typeof value.name === "string" &&
+    "url" in value &&
+    typeof value.url === "string",
   );
 }
 
@@ -973,7 +990,16 @@ function ValidationChoiceField({
         {fieldLabel}
         {fieldRequired && <span className="ml-1 text-destructive">*</span>}
       </Label>
-      {options.length ? (
+      {options.length > 0 &&
+      options.every(
+        (option) => isStoredFileOption(option) && option.mimeType.startsWith("image/"),
+      ) ? (
+        <ImageGallery
+          images={options as StoredFile[]}
+          selectedIds={selectedKeys}
+          onToggle={toggle}
+        />
+      ) : options.length ? (
         <div className="grid gap-2 md:grid-cols-2">
           {options.map((option) => {
             const key = validationOptionKey(option);
@@ -1040,8 +1066,8 @@ function HumanBlockGate({
 }) {
   const blockExecution = execution.blocks.find((item) => item.blockId === block.id);
   const retryFeedback = blockExecution?.retryFeedback;
-  const [values, setValues] = useState<Record<string, RuntimeValue>>(
-    structuredClone(blockExecution?.values ?? {}),
+  const [values, setValues] = useState<Record<string, RuntimeValue>>(() =>
+    structuredClone(readRuntimeDraft(execution.id, block.id) ?? blockExecution?.values ?? {}),
   );
   const blockIndex = execution.methodSnapshot.blocks.findIndex((item) => item.id === block.id);
   const previousExecutions = execution.blocks
@@ -1137,38 +1163,53 @@ function HumanBlockGate({
 
   function updateValues(nextValues: Record<string, RuntimeValue>) {
     setValues(nextValues);
-    if (blockExecution) saveHumanBlockDraft(execution.id, block.id, nextValues);
+    if (blockExecution)
+      void saveHumanBlockDraft(execution.id, block.id, nextValues).catch((error) =>
+        toast.error("Rascunho não salvo", { description: error.message }),
+      );
   }
 
-  function submit() {
-    if (missingInputs.length) {
-      toast.error("Existem entradas sem conexão", {
-        description: missingInputs.map((item) => item.input.label).join(", "),
-      });
-      return;
-    }
-    const result = completeHumanBlock(execution.id, block.id, values);
-    if (!result.ok) {
-      toast.error("A ação ainda não pode ser concluída", {
-        description: result.missing.join(", "),
-      });
-      return;
-    }
-    if (result.retriedBlock) {
-      toast.info(`Nova tentativa iniciada em “${result.retriedBlock}”.`, {
-        description: "Os blocos seguintes serão executados novamente com o novo resultado.",
-      });
-    } else if (result.pausedValidation) {
-      toast.info("Resultado reprovado. A validação permanece pausada para revisão.");
-    } else if (result.completedProcess) {
-      toast.success("Processo concluído.");
-      onProcessCompleted();
-    } else if (execution.status === "awaiting_output") {
-      toast.success("Ação concluída", {
-        description: "Registre agora o resultado final do processo.",
-      });
-    } else {
-      toast.success("Ação concluída. O próximo bloco está pronto.");
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  async function submit() {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      if (missingInputs.length) {
+        toast.error("Existem entradas sem conexão", {
+          description: missingInputs.map((item) => item.input.label).join(", "),
+        });
+        return;
+      }
+      const result = await completeHumanBlock(execution.id, block.id, values);
+      if (!result.ok) {
+        toast.error("A ação ainda não pode ser concluída", {
+          description: result.missing.join(", "),
+        });
+        return;
+      }
+      if (result.retriedBlock) {
+        toast.info(`Nova tentativa iniciada em “${result.retriedBlock}”.`, {
+          description: "Os blocos seguintes serão executados novamente com o novo resultado.",
+        });
+      } else if (result.pausedValidation) {
+        toast.info("Resultado reprovado. A validação permanece pausada para revisão.");
+      } else if (result.completedProcess) {
+        toast.success("Processo concluído.");
+        onProcessCompleted();
+      } else if (execution.status === "awaiting_output") {
+        toast.success("Ação concluída", {
+          description: "Registre agora o resultado final do processo.",
+        });
+      } else {
+        toast.success("Ação concluída. O próximo bloco está pronto.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível concluir a ação.");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -1208,14 +1249,25 @@ function HumanBlockGate({
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {resolvedInputs.map((item) =>
               item.resolved ? (
-                <ResultValue
-                  key={item.input.id}
-                  label={item.input.label}
-                  type={item.input.type}
-                  presentation={item.input.presentation}
-                  value={item.value}
-                  source={item.sourceLabel}
-                />
+                block.type === "VALIDAR" ? (
+                  <CollapsibleResultValue
+                    key={item.input.id}
+                    label={item.input.label}
+                    type={item.input.type}
+                    presentation={item.input.presentation}
+                    value={item.value}
+                    source={item.sourceLabel}
+                  />
+                ) : (
+                  <ResultValue
+                    key={item.input.id}
+                    label={item.input.label}
+                    type={item.input.type}
+                    presentation={item.input.presentation}
+                    value={item.value}
+                    source={item.sourceLabel}
+                  />
+                )
               ) : (
                 <div
                   key={item.input.id}
@@ -1239,7 +1291,7 @@ function HumanBlockGate({
           </h4>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {context.map((item, index) => (
-              <ResultValue key={`${item.label}-${index}`} {...item} />
+              <CollapsibleResultValue key={`${item.label}-${index}`} {...item} />
             ))}
           </div>
         </div>
@@ -1270,7 +1322,7 @@ function HumanBlockGate({
         ) : (
           <p className="text-xs text-muted-foreground">Esta ação não exige campos adicionais.</p>
         )}
-        <Button className="mt-5" disabled={missingInputs.length > 0} onClick={submit}>
+        <Button className="mt-5" disabled={submitting || missingInputs.length > 0} onClick={submit}>
           <CheckCircle2 className="mr-1.5 size-4" /> Concluir ação humana
         </Button>
       </div>
@@ -1291,17 +1343,29 @@ function ProcessOutputGate({
 }) {
   const fields = createProcessOutputFields(execution.processType);
   const [values, setValues] = useState<Record<string, RuntimeValue>>(
-    execution.output?.values ?? {},
+    () => readRuntimeDraft(execution.id, "__output__") ?? execution.output?.values ?? {},
   );
 
-  function submit() {
-    const result = completeProcessOutput(execution.id, values);
-    if (!result.ok) {
-      toast.error("Informe o resultado final", { description: result.missing.join(", ") });
-      return;
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  async function submit() {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const result = await completeProcessOutput(execution.id, values);
+      if (!result.ok) {
+        toast.error("Informe o resultado final", { description: result.missing.join(", ") });
+        return;
+      }
+      toast.success("Resultado salvo. Processo concluído.");
+      onCompleted();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível salvar o resultado.");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
-    toast.success("Resultado salvo. Processo concluído.");
-    onCompleted();
   }
 
   return (
@@ -1315,8 +1379,17 @@ function ProcessOutputGate({
         próximos processos.
       </p>
       <div className="mt-5 rounded-xl border border-border/70 bg-card p-4 sm:p-5">
-        <RuntimeFieldsForm fields={fields} values={values} onChange={setValues} />
-        <Button className="mt-5" onClick={submit}>
+        <RuntimeFieldsForm
+          fields={fields}
+          values={values}
+          onChange={(next) => {
+            setValues(next);
+            void saveProcessOutputDraft(execution.id, next).catch((error) =>
+              toast.error("Rascunho não salvo", { description: error.message }),
+            );
+          }}
+        />
+        <Button className="mt-5" disabled={submitting} onClick={submit}>
           <CheckCircle2 className="mr-1.5 size-4" /> Salvar resultado e concluir
         </Button>
       </div>
@@ -1436,7 +1509,7 @@ function ProcessCompleted({
         <LoaderCircle className="mx-auto mt-4 size-4 animate-spin text-muted-foreground" />
       )}
       {output && Object.keys(output).length > 0 && (
-        <div className="mx-auto mt-5 max-w-2xl border-t border-border pt-4 text-left">
+        <div className="mx-auto mt-5 w-full max-w-6xl border-t border-border pt-4 text-left">
           {createProcessOutputFields(processType).map((field) => (
             <ResultValue
               key={field.id}

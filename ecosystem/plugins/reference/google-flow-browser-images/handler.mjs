@@ -1,0 +1,5220 @@
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, platform } from "node:os";
+import { basename, join } from "node:path";
+
+let FLOW_ENGINE_CODE = "";
+try {
+  FLOW_ENGINE_CODE = readFileSync(new URL("./flow-engine.js", import.meta.url), "utf8");
+} catch {}
+
+const PLUGIN_ID = "local.contentflow.google-flow-batch-images";
+const FLOW_HOST = "flow.google.com";
+const LEGACY_FLOW_HOST = "labs.google";
+const FLOW_HOSTS = new Set([FLOW_HOST, LEGACY_FLOW_HOST]);
+const FLOW_LANDING_URL = "https://flow.google.com/";
+const GENERATION_SUFFIX = "/flowMedia:batchGenerateImages";
+const MEDIA_HOST = "flow-content.google";
+const FLOW_REST_API_BASE = "https://aisandbox-pa.googleapis.com/v1/flowWorkflows";
+const FLOW_PROJECTS_API_BASE = "https://aisandbox-pa.googleapis.com/v1/projects";
+const FLOW_PROJECTS_API_TOOL = "PINHOLE";
+const RE_SOBRECARGA =
+  /high demand|alta demanda|experiencing high demand|credits refunded|reembolsados/i;
+const RPC_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RPC_MEDIA_URL_RE = /^https:\/\/flow-content\.google\/(image|video)\/([0-9a-f-]{36})/i;
+const TIMING = Object.freeze({
+  SHORT: [350, 700],
+  MEDIUM: [600, 1100],
+  LONG: [900, 1600],
+  DOM_SETTLE: [300, 550],
+  HUMAN_PAUSE: [500, 1100],
+  HUMAN_READ: [900, 1800],
+  GENERATION_TIMEOUT: 300000,
+  TILE_CHECK_INTERVAL: 2500,
+  STABILIZE_TIME: 6000,
+});
+
+function dynamicSleep(range, signal) {
+  const [min, max] = Array.isArray(range) ? range : [range, range];
+  const ms = Math.round(min + Math.random() * Math.max(0, max - min));
+  return sleep(ms, signal);
+}
+
+function calculateJitteredDelay(baseMs) {
+  if (!baseMs || baseMs <= 0) return 0;
+  return Math.round(baseMs * (0.85 + Math.random() * 0.3));
+}
+
+function classifyTileErrorType(text) {
+  const txt = String(text || "").toLowerCase();
+  if (/atividade incomum|unusual activity|unusual traffic|suspicious activity/i.test(txt))
+    return "unusual_activity";
+  if (/muito r[áa]pido|aguarde um instante|too quickly|too fast|rate limit|slow down/i.test(txt))
+    return "rate_limit";
+  if (/pol[íi]tica|viol|policy|policies|guidelines/i.test(txt)) return "policy";
+  if (/captcha|recaptcha/i.test(txt)) return "captcha";
+  return "other";
+}
+
+function decodificarBatchExecute(texto) {
+  const out = [];
+  const linhas = String(texto || "").split("\n");
+  for (const linha of linhas) {
+    const l = linha.trim();
+    if (!l.startsWith("[[")) continue;
+    let arr;
+    try {
+      arr = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(arr)) continue;
+    for (const item of arr) {
+      if (!Array.isArray(item) || item[0] !== "wrb.fr") continue;
+      let payload = null;
+      if (typeof item[2] === "string" && item[2]) {
+        try {
+          payload = JSON.parse(item[2]);
+        } catch {
+          payload = null;
+        }
+      }
+      out.push({
+        rpcid: item[1],
+        payload,
+        erro: item[5] && item[5] !== "generic" ? item[5] : null,
+      });
+    }
+  }
+  return out;
+}
+
+function extrairMidiasRpc(payload) {
+  const achados = new Map();
+  const visitar = (node, trilha) => {
+    if (typeof node === "string") {
+      const m = RPC_MEDIA_URL_RE.exec(node);
+      if (m) {
+        const mediaId = m[2].toLowerCase();
+        const reg = achados.get(mediaId) || {
+          mediaId,
+          url: node,
+          kind: m[1] === "video" ? "video" : "image",
+          workflowId: null,
+          nome: null,
+          prompt: null,
+          largura: null,
+          altura: null,
+          poster: null,
+        };
+        if (m[1] === "video") {
+          if (reg.kind !== "video" && reg.url && reg.url !== node) reg.poster = reg.url;
+          reg.kind = "video";
+          reg.url = node;
+        } else if (reg.kind === "video") {
+          reg.poster = node;
+        } else {
+          reg.url = node;
+        }
+        for (let i = trilha.length - 1; i >= 0; i--) {
+          const a = trilha[i];
+          if (Array.isArray(a) && a[0] === mediaId) {
+            if (typeof a[2] === "string" && RPC_UUID_RE.test(a[2])) reg.workflowId = a[2];
+            break;
+          }
+        }
+        achados.set(mediaId, reg);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      trilha.push(node);
+      for (const x of node) visitar(x, trilha);
+      trilha.pop();
+    }
+  };
+  visitar(payload, []);
+  return [...achados.values()];
+}
+
+const PAGE_BOOTSTRAP_SCRIPT = `(() => {
+  if (window.trustedTypes && window.trustedTypes.createPolicy && !window.__cfPolicyCreated) {
+    try {
+      window.trustedTypes.createPolicy("default", {
+        createHTML: (s) => s,
+        createScriptURL: (s) => s,
+        createScript: (s) => s,
+      });
+      window.__cfPolicyCreated = true;
+    } catch {}
+  }
+  function setToken(t) {
+    if (!t || typeof t !== "string") return;
+    if (document.documentElement.dataset.faFlowToken === t) return;
+    try { document.documentElement.dataset.faFlowToken = t; } catch {}
+  }
+  function captureHeaders(headers) {
+    try {
+      if (!headers) return;
+      if (typeof headers.get === "function") {
+        const v = headers.get("authorization") || headers.get("Authorization");
+        if (v && v.startsWith("Bearer ")) setToken(v);
+        return;
+      }
+      if (Array.isArray(headers)) {
+        for (const [k, v] of headers) {
+          if (typeof k === "string" && k.toLowerCase() === "authorization" && typeof v === "string" && v.startsWith("Bearer ")) setToken(v);
+        }
+        return;
+      }
+      if (typeof headers === "object") {
+        for (const k of Object.keys(headers)) {
+          const v = headers[k];
+          if (k.toLowerCase() === "authorization" && typeof v === "string" && v.startsWith("Bearer ")) setToken(v);
+        }
+      }
+    } catch {}
+  }
+  const origFetch = window.fetch;
+  if (origFetch && !window.__cfFetchPatched) {
+    window.fetch = function(input, init) {
+      try {
+        if (init?.headers) captureHeaders(init.headers);
+        if (input instanceof Request) captureHeaders(init.headers);
+      } catch {}
+      return origFetch.apply(this, arguments);
+    };
+    window.__cfFetchPatched = true;
+  }
+  const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+  if (!XMLHttpRequest.prototype.__cfHeaderPatched) {
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+      try {
+        if (typeof name === "string" && name.toLowerCase() === "authorization" && typeof value === "string" && value.startsWith("Bearer ")) setToken(value);
+      } catch {}
+      return origSetHeader.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.__cfHeaderPatched = true;
+  }
+  function findReactKey(node) {
+    if (!node || typeof node !== "object") return null;
+    const keys = Object.keys(node);
+    return keys.find(k => k.startsWith("__reactProps")) || keys.find(k => k.startsWith("__reactEventHandlers")) || null;
+  }
+  function getReactOnClick(node) {
+    const key = findReactKey(node);
+    if (!key) return null;
+    const props = node[key];
+    if (props && typeof props.onClick === "function") return { onClick: props.onClick, key, source: node };
+    return null;
+  }
+  function cfFindOnClickInTree(start) {
+    const direct = getReactOnClick(start);
+    if (direct) return { ...direct, depth: "self" };
+    let cur = start.parentElement;
+    for (let i = 0; i < 5 && cur; i++) {
+      const f = getReactOnClick(cur);
+      if (f) return { ...f, depth: "parent+" + (i + 1) };
+      cur = cur.parentElement;
+    }
+    const queue = [{ node: start, depth: 0 }];
+    let visited = 0;
+    while (queue.length > 0 && visited < 30) {
+      const { node, depth } = queue.shift();
+      visited++;
+      if (depth > 0) {
+        const f = getReactOnClick(node);
+        if (f) return { ...f, depth: "child-" + depth };
+      }
+      if (depth < 3) {
+        for (const c of node.children) queue.push({ node: c, depth: depth + 1 });
+      }
+    }
+    return null;
+  }
+  function buildSyntheticEvent(target) {
+    const rect = target?.getBoundingClientRect ? target.getBoundingClientRect() : { left: 100, top: 100, width: 20, height: 20 };
+    const cx = Math.round(rect.left + rect.width / 2);
+    const cy = Math.round(rect.top + rect.height / 2);
+    return {
+      isTrusted: true,
+      preventDefault() {},
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+      type: "click",
+      target,
+      currentTarget: target,
+      bubbles: true,
+      cancelable: true,
+      defaultPrevented: false,
+      eventPhase: 2,
+      detail: 1,
+      button: 0,
+      buttons: 0,
+      clientX: cx, clientY: cy, screenX: cx + (window.screenX || 0), screenY: cy + (window.screenY || 0),
+      altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      view: window,
+      nativeEvent: { isTrusted: true, type: "click" },
+    };
+  }
+  function handleTrustedClick(e) {
+    const { id, selector } = e.detail || {};
+    if (!id || !selector) return;
+    try {
+      const el = document.querySelector(selector);
+      if (!el) {
+        window.dispatchEvent(new CustomEvent("fa-tc-result", { detail: { id, ok: false, error: "Elemento não encontrado" } }));
+        return;
+      }
+      const found = cfFindOnClickInTree(el);
+      if (!found) {
+        window.dispatchEvent(new CustomEvent("fa-tc-result", { detail: { id, ok: false, error: "Nenhum onClick React na árvore" } }));
+        return;
+      }
+      found.onClick(buildSyntheticEvent(found.source));
+      window.dispatchEvent(new CustomEvent("fa-tc-result", { detail: { id, ok: true, depth: found.depth, key: found.key } }));
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent("fa-tc-result", { detail: { id, ok: false, error: err?.message || String(err) } }));
+    }
+  }
+  if (!window.__cfTrustedClickHandlerRegistered) {
+    window.addEventListener("fa-tc-request", handleTrustedClick);
+    window.__cfTrustedClickHandlerRegistered = true;
+  }
+})();`;
+
+function createCredentialsTracker(client, sessionId, signal) {
+  let bearerToken = null;
+  let projectId = null;
+  let cookies = "";
+
+  const offRequest = client.on?.("Network.requestWillBeSent", (params, eventSessionId) => {
+    if (eventSessionId && eventSessionId !== sessionId) return;
+    const req = params?.request;
+    if (!req) return;
+    const auth = req.headers?.Authorization || req.headers?.authorization;
+    if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+      bearerToken = auth;
+    }
+    const cookie = req.headers?.Cookie || req.headers?.cookie;
+    if (typeof cookie === "string" && cookie) {
+      cookies = cookie;
+    }
+    const url = String(req.url || "");
+    const projMatch = url.match(/\/projects\/([a-zA-Z0-9_-]+)/);
+    if (projMatch) {
+      projectId = projMatch[1];
+    }
+  });
+
+  async function refreshCookies() {
+    try {
+      const res = await client.send("Network.getCookies", {}, sessionId);
+      if (Array.isArray(res?.cookies)) {
+        cookies = res.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+      }
+    } catch {}
+    return cookies;
+  }
+
+  async function readTokenFromDom() {
+    try {
+      const res = await evaluate(
+        client,
+        sessionId,
+        `document.documentElement.dataset.faFlowToken || null`,
+      );
+      if (typeof res === "string" && res.startsWith("Bearer ")) {
+        bearerToken = res;
+      }
+    } catch {}
+    return bearerToken;
+  }
+
+  async function waitForToken(timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) break;
+      if (bearerToken) return bearerToken;
+      const domToken = await readTokenFromDom();
+      if (domToken) return domToken;
+      await sleep(200, signal);
+    }
+    return bearerToken;
+  }
+
+  return {
+    getCredentials() {
+      return { bearerToken, projectId, cookies };
+    },
+    setBearerToken(val) {
+      bearerToken = val;
+    },
+    refreshCookies,
+    readTokenFromDom,
+    waitForToken,
+    close() {
+      if (typeof offRequest === "function") offRequest();
+    },
+  };
+}
+
+async function waitForFlowToken(tracker, timeoutMs = 10000, signal) {
+  if (typeof tracker?.waitForToken === "function") {
+    return await tracker.waitForToken(timeoutMs);
+  }
+  return null;
+}
+
+async function apiRenameProject(bearerToken, projectId, title) {
+  if (!projectId) throw codedError("INVALID_INPUT", "projectId ausente.");
+  const url = `${FLOW_PROJECTS_API_BASE}/${encodeURIComponent(projectId)}?clientContext.tool=${encodeURIComponent(FLOW_PROJECTS_API_TOOL)}&updateMask=projectTitle`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { Authorization: bearerToken, "Content-Type": "text/plain;charset=UTF-8" },
+    body: JSON.stringify({ projectTitle: title }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw codedError("JOB_FAILED", `apiRenameProject HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json().catch(() => ({}));
+}
+
+async function applyTileMetadataPatch(bearerToken, projectId, workflowId, metadata, updateMask) {
+  const url = `${FLOW_REST_API_BASE}/${encodeURIComponent(workflowId)}`;
+  const body = JSON.stringify({ workflow: { name: workflowId, projectId, metadata }, updateMask });
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { Authorization: bearerToken, "Content-Type": "text/plain;charset=UTF-8" },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw codedError(
+      "JOB_FAILED",
+      `applyTileMetadataPatch HTTP ${res.status}: ${text.slice(0, 200)}`,
+    );
+  }
+  return res.json().catch(() => ({}));
+}
+
+async function ensureAgentOff(client, sessionId, signal) {
+  const expression = `(() => {
+    const btns = [...document.querySelectorAll('button[aria-pressed]')];
+    const txt = (b) => ((b.querySelector('span.content') || b).textContent || '').trim().toLowerCase();
+    const byText = btns.filter(b => ['agente', 'agent'].includes(txt(b)));
+    const target = byText.length ? byText[0] : (btns.find(b => b.querySelector('span.content')) || null);
+    if (!target || target.getAttribute('aria-pressed') !== 'true') return { active: false };
+    target.click();
+    return { active: true, clicked: true };
+  })()`;
+  const res = await evaluate(client, sessionId, expression);
+  if (!res || (typeof res === "object" && !res.active)) return false;
+  if (typeof res === "boolean") return res;
+  for (let i = 0; i < 6; i++) {
+    if (signal?.aborted) break;
+    await dynamicSleep(TIMING.DOM_SETTLE, signal);
+    const check = await evaluate(
+      client,
+      sessionId,
+      `(() => {
+      const btns = [...document.querySelectorAll('button[aria-pressed]')];
+      const txt = (b) => ((b.querySelector('span.content') || b).textContent || '').trim().toLowerCase();
+      const byText = btns.filter(b => ['agente', 'agent'].includes(txt(b)));
+      const target = byText.length ? byText[0] : (btns.find(b => b.querySelector('span.content')) || null);
+      return Boolean(target && target.getAttribute('aria-pressed') === 'true');
+    })()`,
+    );
+    if (!check) return true;
+  }
+  return true;
+}
+
+async function triggerTrustedReactClick(client, sessionId, settings = {}) {
+  const customSelector = String(settings?.generateSelector || "").trim();
+  const expression = `(() => {
+    function findReactKey(node) {
+      if (!node || typeof node !== "object") return null;
+      const keys = Object.keys(node);
+      return keys.find(k => k.startsWith("__reactProps")) || keys.find(k => k.startsWith("__reactEventHandlers")) || null;
+    }
+    function getReactOnClick(node) {
+      const key = findReactKey(node);
+      if (!key) return null;
+      const props = node[key];
+      if (props && typeof props.onClick === "function") {
+        return { onClick: props.onClick, key, source: node };
+      }
+      return null;
+    }
+    function cfFindOnClickInTree(start) {
+      const direct = getReactOnClick(start);
+      if (direct) return { ...direct, depth: "self" };
+      let cur = start.parentElement;
+      for (let i = 0; i < 5 && cur; i++) {
+        const f = getReactOnClick(cur);
+        if (f) return { ...f, depth: "parent+" + (i + 1) };
+        cur = cur.parentElement;
+      }
+      const queue = [{ node: start, depth: 0 }];
+      let visited = 0;
+      while (queue.length > 0 && visited < 30) {
+        const { node, depth } = queue.shift();
+        visited++;
+        if (depth > 0) {
+          const f = getReactOnClick(node);
+          if (f) return { ...f, depth: "child-" + depth };
+        }
+        if (depth < 3) {
+          for (const c of node.children) queue.push({ node: c, depth: depth + 1 });
+        }
+      }
+      return null;
+    }
+    function buildSyntheticEvent(target) {
+      const rect = target?.getBoundingClientRect ? target.getBoundingClientRect() : { left: 100, top: 100, width: 20, height: 20 };
+      const cx = Math.round(rect.left + rect.width / 2);
+      const cy = Math.round(rect.top + rect.height / 2);
+      return {
+        isTrusted: true,
+        preventDefault() {},
+        stopPropagation() {},
+        stopImmediatePropagation() {},
+        type: "click",
+        target,
+        currentTarget: target,
+        bubbles: true,
+        cancelable: true,
+        defaultPrevented: false,
+        eventPhase: 2,
+        detail: 1,
+        button: 0,
+        buttons: 0,
+        clientX: cx, clientY: cy, screenX: cx + (window.screenX || 0), screenY: cy + (window.screenY || 0),
+        altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+        view: window,
+        nativeEvent: { isTrusted: true, type: "click" },
+      };
+    }
+    const selector = ${JSON.stringify(customSelector)};
+    const btn = (selector ? document.querySelector(selector) : null) || Array.from(document.querySelectorAll("button, [role='button']")).find(b => {
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const txt = (b.textContent || "").toLowerCase();
+      return /iniciar gera|start genera|iniciar creaci|iniciar generaci|criar|create|gerar|generate|enviar|submit/.test(aria) ||
+             /criar|create|gerar|generate|enviar|submit|arrow_forward/.test(txt);
+    });
+    if (!btn) return { ok: false, error: "Botão de envio não encontrado." };
+    const rect = btn.getBoundingClientRect();
+    const coords = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+    const found = cfFindOnClickInTree(btn);
+    if (!found) {
+      try { btn.click(); return { ok: true, fallback: true }; }
+      catch (e) { return { ok: false, error: e?.message || String(e) }; }
+    }
+    try {
+      found.onClick(buildSyntheticEvent(found.source));
+      return { ok: true, depth: found.depth, key: found.key };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  })()`;
+  const result = await evaluate(client, sessionId, expression);
+  if (!result?.ok) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      result?.error || "Falha ao acionar clique confiável no botão de envio.",
+    );
+  }
+  return result;
+}
+
+async function clickSubmit(client, sessionId, settings = {}, signal) {
+  await dynamicSleep(TIMING.MEDIUM, signal);
+  const customSelector = String(settings?.generateSelector || "").trim();
+  const checkExpression = `(() => {
+    const selector = ${JSON.stringify(customSelector)};
+    const btn = (selector ? document.querySelector(selector) : null) || Array.from(document.querySelectorAll("button, [role='button']")).find(b => {
+      const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+      const txt = (b.textContent || "").toLowerCase();
+      return /iniciar gera|start genera|iniciar creaci|iniciar generaci|criar|create|gerar|generate|enviar|submit/.test(aria) ||
+             /criar|create|gerar|generate|enviar|submit|arrow_forward/.test(txt);
+    });
+    if (!btn) return { exists: false };
+    const disabled = Boolean(btn.disabled || btn.getAttribute("aria-disabled") === "true");
+    return { exists: true, disabled, text: (btn.textContent || "").trim() };
+  })()`;
+  let btnState = null;
+  for (let i = 0; i < 30; i++) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    const rawState = await evaluate(client, sessionId, checkExpression);
+    btnState = rawState === true ? { exists: true, disabled: false, text: "Criar" } : rawState;
+    if (btnState?.exists && !btnState?.disabled) break;
+    await dynamicSleep(TIMING.SHORT, signal);
+  }
+  if (!btnState?.exists) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "Botão Enviar/Criar não foi encontrado na interface do Flow.",
+    );
+  }
+  if (btnState?.disabled) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "Botão Enviar/Criar permaneceu desabilitado após 30 verificações.",
+    );
+  }
+  const result = await triggerTrustedReactClick(client, sessionId, settings);
+  await dynamicSleep(TIMING.LONG, signal);
+  return { ok: true, text: btnState.text || "Criar", ...result };
+}
+
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_PORT = 9333;
+const PROFILE_SETUP_WAIT_MS = Number.POSITIVE_INFINITY;
+const EXTENSION_BRIDGE_ID = "com.contentflow.browser-bridge";
+const EXTENSION_PROTOCOL_VERSION = 2;
+const IMAGE_MODELS = Object.freeze({
+  flow_auto: null,
+  nano_banana_2: "NARWHAL",
+  nano_banana_2_lite: "HARBOR_SEAL",
+  nano_banana: "GEM_PIX",
+  nano_banana_pro: "GEM_PIX_2",
+});
+const MODEL_LABELS = Object.freeze({
+  flow_auto: "Automático do Flow",
+  nano_banana_2: "Nano Banana 2",
+  nano_banana_2_lite: "Nano Banana 2 Lite",
+  nano_banana: "Nano Banana",
+  nano_banana_pro: "Nano Banana Pro",
+});
+const IMAGE_MODEL_FALLBACK_ORDER = Object.freeze([
+  "nano_banana_pro",
+  "nano_banana_2",
+  "nano_banana_2_lite",
+]);
+const VIDEO_MODELS = Object.freeze({
+  veo_3_1_quality: "Veo 3.1 - Quality",
+  veo_3_1_fast: "Veo 3.1 - Fast",
+  veo_3_1_lite: "Veo 3.1 - Lite",
+  omni_1_1_flash: "Omni 1.1 Flash",
+});
+const VIDEO_MODEL_LABELS = Object.freeze({
+  veo_3_1_quality: "Veo 3.1 - Quality",
+  veo_3_1_fast: "Veo 3.1 - Fast",
+  veo_3_1_lite: "Veo 3.1 - Lite",
+  omni_1_1_flash: "Omni 1.1 Flash",
+});
+const VIDEO_RESOLUTIONS = Object.freeze({
+  flow_current: null,
+  res_720p: "720p",
+  res_1080p: "1080p",
+});
+const ASPECT_RATIOS = Object.freeze({
+  flow_current: null,
+  landscape: "IMAGE_ASPECT_RATIO_LANDSCAPE",
+  portrait: "IMAGE_ASPECT_RATIO_PORTRAIT",
+  square: "IMAGE_ASPECT_RATIO_SQUARE",
+});
+const ASPECT_RATIO_LABELS = Object.freeze({
+  flow_current: null,
+  landscape: "16:9",
+  portrait: "9:16",
+  square: "1:1",
+});
+
+function resultError(code, message, retryable = false, retryAfterMs) {
+  const out = { status: "error", code, message, retryable };
+  if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) out.retryAfterMs = retryAfterMs;
+  return out;
+}
+
+function codedError(code, message, retryable = false) {
+  const err = new Error(message);
+  err.code = code;
+  err.retryable = retryable;
+  return err;
+}
+
+function sleep(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(codedError("CANCELLED", "Execução cancelada."));
+    const timer = setTimeout(done, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(codedError("CANCELLED", "Execução cancelada."));
+    };
+    function done() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function normalizePrompts(value) {
+  const out = [];
+  const visit = (item) => {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) out.push(text);
+      return;
+    }
+    if (Array.isArray(item)) for (const nested of item) visit(nested);
+  };
+  visit(value);
+  return out;
+}
+
+function safeFilename(text, fallback) {
+  const stem = String(text ?? "")
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+  return stem || fallback;
+}
+
+function isFlowHost(hostname) {
+  return FLOW_HOSTS.has(String(hostname || "").toLowerCase());
+}
+
+function isFlowProjectPath(pathname) {
+  return (
+    /^\/project\//i.test(String(pathname || "")) ||
+    /\/tools\/flow\/project\//i.test(String(pathname || ""))
+  );
+}
+
+function isFlowUrl(raw, requireProject = false) {
+  try {
+    const url = new URL(raw);
+    return (
+      url.protocol === "https:" &&
+      isFlowHost(url.hostname) &&
+      (!requireProject || isFlowProjectPath(url.pathname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateFlowUrl(raw) {
+  const url = new URL(raw);
+  if (!isFlowUrl(url.toString(), true)) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "flowUrl precisa apontar para um projeto em https://flow.google.com/project/...",
+    );
+  }
+  return url.toString();
+}
+
+function resolveNavigationTarget(request) {
+  const projectMode = String(request?.configuration?.projectMode || "auto")
+    .trim()
+    .toLowerCase();
+  if (projectMode === "new") {
+    return { url: FLOW_LANDING_URL, pinned: false };
+  }
+
+  const projectInput =
+    typeof request?.inputs?.project_url === "string"
+      ? request.inputs.project_url.trim()
+      : typeof request?.inputs?.flow_url === "string"
+        ? request.inputs.flow_url.trim()
+        : "";
+
+  const projectConfig =
+    typeof request?.configuration?.projectUrl === "string"
+      ? request.configuration.projectUrl.trim()
+      : typeof request?.configuration?.project_url === "string"
+        ? request.configuration.project_url.trim()
+        : "";
+
+  const projectSetting =
+    typeof request?.settings?.flowUrl === "string" ? request.settings.flowUrl.trim() : "";
+
+  if (projectMode === "existing") {
+    const target = projectConfig || projectInput || projectSetting;
+    if (!target || !isFlowUrl(target, true)) {
+      throw codedError(
+        "INVALID_CONFIGURATION",
+        "O modo 'Usar projeto específico' exige uma URL de projeto em https://flow.google.com/project/...",
+      );
+    }
+    return { url: validateFlowUrl(target), pinned: true };
+  }
+
+  const validProjectUrl = [projectConfig, projectInput, projectSetting].find(
+    (item) => item && isFlowUrl(item, true),
+  );
+
+  if (validProjectUrl) {
+    return { url: validateFlowUrl(validProjectUrl), pinned: true };
+  }
+
+  return { url: FLOW_LANDING_URL, pinned: false };
+}
+
+function captchaRetryStatePath(request, services) {
+  if (typeof services?.getWorkspacePath !== "function") return undefined;
+  const key = createHash("sha256")
+    .update(`${request?.executionId || "execution"}:${request?.blockId || "block"}`)
+    .digest("hex")
+    .slice(0, 24);
+  return services.getWorkspacePath(`.flow-captcha-retry-${key}.json`);
+}
+
+async function readCaptchaRetryNavigation(request, services) {
+  const statePath = captchaRetryStatePath(request, services);
+  if (!statePath || Number(request?.attempt) <= 1) return undefined;
+  try {
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (
+      state?.executionId !== request.executionId ||
+      state?.blockId !== request.blockId ||
+      state?.failedAttempt !== Number(request.attempt) - 1
+    ) {
+      return undefined;
+    }
+    if (!state?.projectUrl || !isFlowUrl(state.projectUrl, true)) {
+      return undefined;
+    }
+    return {
+      url: validateFlowUrl(state.projectUrl),
+      pinned: true,
+      captchaRetry: !state.referencesAttached && !state.preparationRetry,
+      referencesAttached: state.referencesAttached === true,
+      captureLabel:
+        typeof state.captureLabel === "string" ? state.captureLabel.slice(0, 300) : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveCaptchaRetryNavigation(
+  request,
+  services,
+  projectUrl,
+  referencesAttached = false,
+) {
+  const statePath = captchaRetryStatePath(request, services);
+  if (!statePath || !projectUrl || !isFlowUrl(projectUrl, true)) return;
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      executionId: request.executionId,
+      blockId: request.blockId,
+      failedAttempt: Number(request.attempt),
+      projectUrl: validateFlowUrl(projectUrl),
+      referencesAttached,
+    }),
+    { encoding: "utf8", flag: "w" },
+  );
+}
+
+async function clearCaptchaRetryNavigation(request, services) {
+  const statePath = captchaRetryStatePath(request, services);
+  if (statePath) await rm(statePath, { force: true }).catch(() => undefined);
+}
+
+function generationCheckpointPath(request, services) {
+  if (typeof services?.getWorkspacePath !== "function") return undefined;
+  const key = createHash("sha256")
+    .update(`${request?.executionId || "execution"}:${request?.blockId || "block"}`)
+    .digest("hex")
+    .slice(0, 24);
+  return services.getWorkspacePath(`.flow-generation-${key}.json`);
+}
+
+function generationPromptDigest(prompts) {
+  return createHash("sha256").update(JSON.stringify(prompts)).digest("hex");
+}
+
+async function readGenerationCheckpoint(request, services, prompts) {
+  const statePath = generationCheckpointPath(request, services);
+  if (!statePath) return undefined;
+  try {
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (
+      state?.executionId !== request.executionId ||
+      state?.blockId !== request.blockId ||
+      state?.promptDigest !== generationPromptDigest(prompts) ||
+      !Array.isArray(state.completedPromptIndexes) ||
+      !Array.isArray(state.files)
+    ) {
+      return undefined;
+    }
+    return state;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveGenerationCheckpoint(request, services, prompts, state) {
+  const statePath = generationCheckpointPath(request, services);
+  if (!statePath) return;
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      executionId: request.executionId,
+      blockId: request.blockId,
+      promptDigest: generationPromptDigest(prompts),
+      completedPromptIndexes: [...new Set(state.completedPromptIndexes)].sort((a, b) => a - b),
+      files: state.files,
+      accountProfile: state.accountProfile,
+      projectUrl:
+        state.projectUrl && isFlowUrl(state.projectUrl, true)
+          ? validateFlowUrl(state.projectUrl)
+          : undefined,
+      updatedAt: new Date().toISOString(),
+    }),
+    { encoding: "utf8", flag: "w" },
+  );
+}
+
+async function clearGenerationCheckpoint(request, services) {
+  const statePath = generationCheckpointPath(request, services);
+  if (statePath) await rm(statePath, { force: true }).catch(() => undefined);
+}
+
+function defaultProfilePath() {
+  return join(homedir(), ".contentflow", "google-flow-chrome-profile");
+}
+
+function defaultProfilesRootPath() {
+  return join(homedir(), ".contentflow", "google-flow-chrome-profiles");
+}
+
+function normalizeAccountProfile(value) {
+  const profile = String(value || "default").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/.test(profile)) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "accountProfile deve usar 1 a 48 caracteres: letras, números, _ ou -.",
+    );
+  }
+  return profile;
+}
+
+function stableProfileOffset(profile) {
+  const digest = createHash("sha256").update(profile).digest();
+  return 1 + (digest.readUInt16BE(0) % 400);
+}
+
+function resolveProfileRuntime(request, services) {
+  const settings = request?.settings ?? {};
+  const accountProfile = normalizeAccountProfile(request?.configuration?.accountProfile);
+  const basePort = Number.isInteger(settings.remoteDebuggingPort)
+    ? settings.remoteDebuggingPort
+    : DEFAULT_PORT;
+  if (basePort < 1024 || basePort > 65134) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "remoteDebuggingPort deve ficar entre 1024 e 65134 para permitir perfis adicionais.",
+    );
+  }
+  if (accountProfile === "default") {
+    return {
+      accountProfile,
+      profilePath:
+        settings.profilePath?.trim?.() ||
+        (services ? services.getWorkspacePath(".") : defaultProfilePath()),
+      port: basePort,
+    };
+  }
+  const root = settings.profilesRootPath?.trim?.();
+  return {
+    accountProfile,
+    profilePath:
+      root || !services
+        ? join(root || defaultProfilesRootPath(), accountProfile)
+        : services.getWorkspacePath(accountProfile),
+    port: basePort + stableProfileOffset(accountProfile),
+  };
+}
+function profileMarkerPath(path) {
+  return join(path, ".contentflow-profile-ready.json");
+}
+async function profileIsPrepared(path, name) {
+  try {
+    const marker = JSON.parse(await readFile(profileMarkerPath(path), "utf8"));
+    return (
+      marker?.provider === FLOW_HOST &&
+      marker?.profile === name &&
+      marker?.extensionProtocol === EXTENSION_PROTOCOL_VERSION
+    );
+  } catch {
+    return false;
+  }
+}
+async function markProfilePrepared(path, name, extensionIdentity) {
+  await writeFile(
+    profileMarkerPath(path),
+    JSON.stringify({
+      provider: FLOW_HOST,
+      profile: name,
+      extensionProtocol: EXTENSION_PROTOCOL_VERSION,
+      extensionVersion: extensionIdentity?.extensionVersion || "unknown",
+      preparedAt: new Date().toISOString(),
+    }),
+    "utf8",
+  );
+}
+
+function resolveGenerationPreferences(configuration = {}) {
+  const requestedModelKey = configuration.imageModel || "flow_auto";
+  const aspectRatioKey = configuration.aspectRatio || "flow_current";
+  if (!Object.hasOwn(IMAGE_MODELS, requestedModelKey)) {
+    throw codedError("INVALID_CONFIGURATION", "imageModel não é reconhecido.");
+  }
+  if (!Object.hasOwn(ASPECT_RATIOS, aspectRatioKey)) {
+    throw codedError("INVALID_CONFIGURATION", "aspectRatio não é reconhecido.");
+  }
+  const modelKey = requestedModelKey === "flow_auto" ? "nano_banana_pro" : requestedModelKey;
+  return {
+    requestedModelKey,
+    modelKey,
+    imageModelName: IMAGE_MODELS[modelKey],
+    imageModelLabel: configuration.imageModelLabel || MODEL_LABELS[requestedModelKey] || null,
+    aspectRatioKey,
+    imageAspectRatio: ASPECT_RATIOS[aspectRatioKey],
+    fallbackOnModelLimit:
+      configuration.fallbackOnModelLimit !== undefined
+        ? configuration.fallbackOnModelLimit !== false
+        : requestedModelKey !== "flow_auto",
+  };
+}
+
+function nextImageModelFallback(modelKey) {
+  if (!modelKey || modelKey === "flow_auto" || modelKey === "nano_banana_pro") {
+    return "nano_banana_2";
+  }
+  const index = IMAGE_MODEL_FALLBACK_ORDER.indexOf(modelKey);
+  return index >= 0 ? IMAGE_MODEL_FALLBACK_ORDER[index + 1] || null : null;
+}
+
+function normalizeReferenceImages(value) {
+  const out = [];
+  const visit = (item) => {
+    if (!item) return;
+    if (Array.isArray(item)) {
+      for (const nested of item) visit(nested);
+      return;
+    }
+    if (typeof item === "object") out.push(item);
+  };
+  visit(value);
+  return out;
+}
+
+function requestsSingleImage(request) {
+  return (request?.outputContract ?? []).some(
+    (field) => field?.portKey === "images" && field?.type === "image",
+  );
+}
+
+function requestsSingleVideo(request) {
+  return (request?.outputContract ?? []).some(
+    (field) => field?.portKey === "video" && field?.type === "video",
+  );
+}
+
+function resolveVideoPreferences(configuration = {}) {
+  const videoModelKey = configuration.videoModel || "veo_3_1_fast";
+  const videoResolutionKey = configuration.videoResolution || "flow_current";
+  const aspectRatioKey = configuration.aspectRatio || "flow_current";
+  if (!Object.hasOwn(VIDEO_MODELS, videoModelKey)) {
+    throw codedError("INVALID_CONFIGURATION", "videoModel não é reconhecido.");
+  }
+  return {
+    videoModelKey,
+    videoModelName: configuration.videoModelLabel || VIDEO_MODELS[videoModelKey],
+    videoResolutionKey,
+    videoResolutionLabel: VIDEO_RESOLUTIONS[videoResolutionKey] || null,
+    aspectRatioKey,
+    imageAspectRatio: ASPECT_RATIOS[aspectRatioKey] || null,
+    videoReferenceMode: configuration.videoReferenceMode || "elements",
+    durationSeconds: configuration.videoDurationSeconds || 5,
+  };
+}
+
+function assertDedicatedProfilePath(path) {
+  const normalized = String(path).replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+  const looksLikeDefaultChrome =
+    normalized.endsWith("/google/chrome/user data") ||
+    normalized.endsWith("/google/chrome/default") ||
+    normalized.includes("/google/chrome/user data/default");
+  if (looksLikeDefaultChrome) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "Não use o perfil pessoal padrão do Chrome. Configure profilePath para uma pasta dedicada ao ContentFlow.",
+    );
+  }
+}
+
+function dedupeStrings(values) {
+  return [
+    ...new Set(
+      values
+        .filter(Boolean)
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+async function captureProcess(executable, args, timeoutMs = 4000) {
+  return await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(executable, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false,
+      });
+    } catch {
+      resolve({ ok: false, stdout: "", stderr: "" });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok, stdout, stderr });
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      finish(false);
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", () => finish(false));
+    child.once("close", (code) => finish(code === 0));
+  });
+}
+
+function parseRegistryDefaultValue(output) {
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    const match = line.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i);
+    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, "");
+  }
+  return "";
+}
+
+async function windowsChromeCandidates() {
+  const standardCandidates = [
+    process.env.PROGRAMFILES &&
+      join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+    process.env["PROGRAMFILES(X86)"] &&
+      join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+    process.env.LOCALAPPDATA &&
+      join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean);
+  const existing = standardCandidates.filter((p) => existsSync(p));
+  if (existing.length) return dedupeStrings(existing);
+
+  const found = [];
+  const registryKeys = [
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+    "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+    "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+  ];
+
+  for (const key of registryKeys) {
+    const result = await captureProcess("reg.exe", ["query", key, "/ve"]);
+    if (result.ok) {
+      const value = parseRegistryDefaultValue(result.stdout);
+      if (value) found.push(value);
+    }
+  }
+
+  const whereResult = await captureProcess("where.exe", ["chrome.exe"]);
+  if (whereResult.ok) {
+    found.push(
+      ...whereResult.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    );
+  }
+
+  return dedupeStrings(found);
+}
+
+async function chromeCandidates() {
+  const p = platform();
+  if (p === "win32") return await windowsChromeCandidates();
+  if (p === "darwin") return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+
+  const found = [];
+  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
+    const result = await captureProcess("which", [name]);
+    if (result.ok) found.push(...result.stdout.split(/\r?\n/));
+  }
+  found.push(
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  );
+  return dedupeStrings(found);
+}
+
+async function resolveChromeExecutables(settings) {
+  const explicit = settings?.chromeExecutable?.trim?.();
+  if (explicit) return [explicit];
+
+  const candidates = await chromeCandidates();
+  if (candidates.length) return candidates;
+
+  throw codedError(
+    "INVALID_CONFIGURATION",
+    "Google Chrome não foi localizado. Configure settings.chromeExecutable com o caminho do executável.",
+  );
+}
+
+async function fetchBrowserVersion(port, timeoutMs = 1500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const json = await response.json();
+    return typeof json?.webSocketDebuggerUrl === "string" ? json : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function launchOrReuseChrome({
+  executables,
+  profilePath,
+  port,
+  startMinimized,
+  keepBrowserOpen,
+  startUrl,
+  signal,
+}) {
+  const existing = await fetchBrowserVersion(port);
+  if (existing) return { version: existing, child: null, startedByPlugin: false };
+
+  const args = [
+    `--remote-debugging-port=${port}`,
+    "--remote-debugging-address=127.0.0.1",
+    `--user-data-dir=${profilePath}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--window-size=1280,800",
+    startUrl,
+  ];
+  if (startMinimized) args.unshift("--start-minimized");
+
+  const launchErrors = [];
+  for (const executable of executables) {
+    let child;
+    let spawnFailure = null;
+    try {
+      child = spawn(executable, args, {
+        detached: Boolean(keepBrowserOpen),
+        stdio: "ignore",
+
+        windowsHide: false,
+        shell: false,
+      });
+    } catch (cause) {
+      launchErrors.push(`${executable}: ${cause?.message ?? cause}`);
+      continue;
+    }
+
+    child.once("error", (cause) => {
+      spawnFailure = cause;
+    });
+    if (keepBrowserOpen) child.unref();
+
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+      if (spawnFailure) break;
+      const version = await fetchBrowserVersion(port);
+      if (version) return { version, child, startedByPlugin: true, executable };
+      await sleep(350, signal);
+    }
+
+    if (spawnFailure) {
+      launchErrors.push(`${executable}: ${spawnFailure.message}`);
+      continue;
+    }
+
+    launchErrors.push(`${executable}: processo iniciou, mas a porta CDP não respondeu.`);
+    try {
+      child.kill();
+    } catch {}
+  }
+
+  const detail = launchErrors.slice(0, 4).join(" | ");
+  throw codedError(
+    "PERMISSION_DENIED",
+    `Não consegui iniciar o Google Chrome automaticamente.${detail ? ` Tentativas: ${detail}` : ""} Configure settings.chromeExecutable somente se o Chrome estiver em um local não padrão.`,
+  );
+}
+
+function extensionExecutionKey(request, profileId) {
+  return createHash("sha256")
+    .update(
+      [
+        request?.executionId || "configuration",
+        request?.blockId || "profile",
+        request?.capabilityId || "google-flow",
+        Number(request?.attempt) || 1,
+        request?.batch?.itemId || request?.batch?.index || "single",
+        profileId,
+      ].join(":"),
+    )
+    .digest("hex");
+}
+
+function extensionCommandId(executionKey, action, operationKey) {
+  return createHash("sha256").update(`${executionKey}:${action}:${operationKey}`).digest("hex");
+}
+
+async function evaluateWorker(client, sessionId, expression) {
+  const evaluated = await client.send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, awaitPromise: true },
+    sessionId,
+  );
+  if (evaluated.exceptionDetails) return undefined;
+  return evaluated.result?.value;
+}
+
+async function attachExtensionBridge(
+  client,
+  flowSessionId,
+  { signal, request, profileId, waitMs = 10000 },
+) {
+  const deadline = Date.now() + waitMs;
+  const rejectedTargets = new Set();
+  let workerTarget;
+  let workerSessionId;
+  let extensionIdentity;
+
+  while (Date.now() < deadline && !workerSessionId) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    const { targetInfos = [] } = await client.send("Target.getTargets");
+    const candidates = targetInfos.filter(
+      (item) =>
+        item.type === "service_worker" &&
+        /^chrome-extension:\/\/[^/]+\/service-worker\.js$/i.test(String(item.url || "")) &&
+        !rejectedTargets.has(item.targetId),
+    );
+    for (const candidate of candidates) {
+      const attached = await client.send("Target.attachToTarget", {
+        targetId: candidate.targetId,
+        flatten: true,
+      });
+      await client.send("Runtime.enable", {}, attached.sessionId);
+      const identity = await evaluateWorker(
+        client,
+        attached.sessionId,
+        "globalThis.contentFlowBridge?.identity",
+      );
+      if (
+        identity?.bridgeId === EXTENSION_BRIDGE_ID &&
+        identity?.protocolVersion === EXTENSION_PROTOCOL_VERSION
+      ) {
+        workerTarget = candidate;
+        workerSessionId = attached.sessionId;
+        extensionIdentity = identity;
+        break;
+      }
+      rejectedTargets.add(candidate.targetId);
+      await client
+        .send("Target.detachFromTarget", { sessionId: attached.sessionId })
+        .catch(() => undefined);
+    }
+    if (!workerSessionId) await sleep(250, signal);
+  }
+
+  if (!workerTarget?.targetId || !workerSessionId) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "A ContentFlow Browser Bridge não está instalada neste perfil do Chrome. Abra chrome://extensions, ative o modo do desenvolvedor e use Carregar sem compactação na pasta contentflow-browser-bridge. O plugin não continuará usando teclado ou mouse como alternativa.",
+    );
+  }
+
+  const sessionToken = randomUUID();
+  const executionKey = extensionExecutionKey(request, profileId);
+  const handshake = await evaluateWorker(
+    client,
+    workerSessionId,
+    `globalThis.contentFlowBridge.connect(${JSON.stringify({
+      pluginId: PLUGIN_ID,
+      protocolVersion: EXTENSION_PROTOCOL_VERSION,
+      profileId,
+      sessionToken,
+    })})`,
+  );
+  if (!handshake?.ok) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      handshake?.message || "A extensão recusou a conexão efêmera do plugin.",
+    );
+  }
+
+  const dispatch = async (action, payload = {}, operationKey = action, timeoutMs = 30000) => {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    const page = await evaluate(
+      client,
+      flowSessionId,
+      "({ url: location.href, origin: location.origin })",
+    );
+    if (!isFlowUrl(page?.url)) {
+      throw codedError("OUTPUT_VALIDATION_FAILED", "A aba anexada deixou de ser o Google Flow.");
+    }
+    const issuedAt = Date.now();
+    const command = {
+      pluginId: PLUGIN_ID,
+      protocolVersion: EXTENSION_PROTOCOL_VERSION,
+      profileId,
+      sessionToken,
+      executionKey,
+      commandId: extensionCommandId(executionKey, action, operationKey),
+      issuedAt,
+      expiresAt: issuedAt + Math.max(1000, Math.min(30000, timeoutMs)),
+      expectedUrl: page.url,
+      action,
+      payload,
+    };
+    const response = await evaluateWorker(
+      client,
+      workerSessionId,
+      `globalThis.contentFlowBridge.dispatch(${JSON.stringify(command)})`,
+    );
+    if (!response?.ok) {
+      const code = String(response?.code || "");
+      if (code === "CANCELLED") throw codedError("CANCELLED", "Execução cancelada.");
+      if (["COMMAND_TIMEOUT", "CONTENT_SCRIPT_UNAVAILABLE"].includes(code)) {
+        throw codedError(
+          "UPSTREAM_UNAVAILABLE",
+          response?.message || "A extensão deixou de responder.",
+          true,
+        );
+      }
+      if (["SESSION_MISMATCH", "PROFILE_MISMATCH", "PROTOCOL_MISMATCH"].includes(code)) {
+        throw codedError(
+          "INVALID_CONFIGURATION",
+          response?.message || "A extensão instalada é incompatível.",
+        );
+      }
+      throw codedError(
+        "OUTPUT_VALIDATION_FAILED",
+        response?.message || `A extensão recusou a ação ${action}.`,
+      );
+    }
+    return response;
+  };
+
+  const cancel = () => {
+    const requestPayload = {
+      pluginId: PLUGIN_ID,
+      protocolVersion: EXTENSION_PROTOCOL_VERSION,
+      sessionToken,
+      profileId,
+      executionKey,
+      commandId: extensionCommandId(executionKey, "cancel", "execution"),
+    };
+    void client
+      .send(
+        "Runtime.evaluate",
+        {
+          expression: `globalThis.contentFlowBridge?.cancel(${JSON.stringify(requestPayload)})`,
+          returnByValue: true,
+          awaitPromise: true,
+        },
+        workerSessionId,
+      )
+      .catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  let disposed = false;
+
+  let ping;
+  try {
+    ping = await dispatch("ping", {}, "bridge-ready");
+  } catch (error) {
+    if (error?.code !== "UPSTREAM_UNAVAILABLE") throw error;
+    await client.send("Page.reload", { ignoreCache: true }, flowSessionId);
+    await sleep(1500, signal);
+    ping = await dispatch("ping", {}, "bridge-ready-after-reload");
+  }
+  if (ping.protocolVersion !== EXTENSION_PROTOCOL_VERSION) {
+    throw codedError("INVALID_CONFIGURATION", "A ContentFlow Browser Bridge está desatualizada.");
+  }
+  return {
+    dispatch,
+    identity: extensionIdentity,
+    sessionId: workerSessionId,
+    targetId: workerTarget.targetId,
+    async dispose() {
+      if (disposed) return;
+      disposed = true;
+      signal?.removeEventListener("abort", cancel);
+      const payload = {
+        pluginId: PLUGIN_ID,
+        protocolVersion: EXTENSION_PROTOCOL_VERSION,
+        profileId,
+        sessionToken,
+      };
+      try {
+        await client.send(
+          "Runtime.evaluate",
+          {
+            expression: `globalThis.contentFlowBridge?.disconnect(${JSON.stringify(payload)})`,
+            returnByValue: true,
+            awaitPromise: true,
+          },
+          workerSessionId,
+        );
+      } catch {
+      } finally {
+        await client
+          .send("Target.detachFromTarget", { sessionId: workerSessionId })
+          .catch(() => undefined);
+      }
+    },
+  };
+}
+
+function describeCdpParams(method, params) {
+  if (method === "Page.navigate" || method === "Target.createTarget") {
+    try {
+      const url = new URL(String(params?.url ?? ""));
+      return `url=${url.origin}${url.pathname}`;
+    } catch {
+      return "url=invalid";
+    }
+  }
+  return "";
+}
+
+async function waitForChildExit(child, timeoutMs = 5000) {
+  if (!child || child.exitCode !== null) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+}
+
+async function closeBrowserGracefully(client, child) {
+  try {
+    await client?.send("Browser.close");
+  } catch {}
+  const exited = await waitForChildExit(child);
+  client?.close();
+  if (!exited && child?.exitCode === null) {
+    try {
+      child.kill();
+    } catch {}
+  }
+}
+
+class CdpClient {
+  constructor(wsUrl, trace) {
+    this.wsUrl = wsUrl;
+    this.trace = trace;
+    this.ws = null;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.listeners = new Map();
+  }
+
+  async connect(signal) {
+    if (typeof WebSocket !== "function")
+      throw codedError("UPSTREAM_UNAVAILABLE", "Runtime Node sem WebSocket global para CDP.");
+    this.ws = new WebSocket(this.wsUrl);
+    await new Promise((resolve, reject) => {
+      const onAbort = () => reject(codedError("CANCELLED", "Execução cancelada."));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.ws.addEventListener(
+        "open",
+        () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        },
+        { once: true },
+      );
+      this.ws.addEventListener(
+        "error",
+        () => {
+          signal?.removeEventListener("abort", onAbort);
+          reject(
+            codedError(
+              "UPSTREAM_UNAVAILABLE",
+              "Não foi possível conectar ao Chrome DevTools Protocol.",
+            ),
+          );
+        },
+        { once: true },
+      );
+    });
+
+    this.ws.addEventListener("message", (event) => this.#onMessage(event));
+    this.ws.addEventListener("close", () =>
+      this.#rejectAll(codedError("UPSTREAM_UNAVAILABLE", "Conexão CDP encerrada.")),
+    );
+    return this;
+  }
+
+  #onMessage(event) {
+    let message;
+    try {
+      message = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+    if (message.id) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      if (message.error) {
+        this.trace?.(`CDP ← ${pending.method}: ERRO ${message.error.message}`);
+        pending.reject(
+          codedError("UPSTREAM_UNAVAILABLE", `CDP ${pending.method}: ${message.error.message}`),
+        );
+      } else {
+        this.trace?.(`CDP ← ${pending.method}: OK`);
+        pending.resolve(message.result ?? {});
+      }
+      return;
+    }
+
+    if (message.method) {
+      if (/^(Fetch\.|Page\.frameNavigated|Runtime\.executionContext)/.test(message.method)) {
+        this.trace?.(`CDP ← evento ${message.method}`);
+      }
+      const handlers = this.listeners.get(message.method);
+      if (!handlers) return;
+      for (const handler of [...handlers]) {
+        try {
+          handler(message.params ?? {}, message.sessionId);
+        } catch {}
+      }
+    }
+  }
+
+  #rejectAll(error) {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+
+  send(method, params = {}, sessionId) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
+      return Promise.reject(codedError("UPSTREAM_UNAVAILABLE", "CDP não conectado.", true));
+    const id = this.nextId++;
+    const message = { id, method, params };
+    if (sessionId) message.sessionId = sessionId;
+    const detail = describeCdpParams(method, params);
+    this.trace?.(`CDP → ${method}${detail ? `: ${detail}` : ""}`);
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, method });
+      this.ws.send(JSON.stringify(message));
+    });
+  }
+
+  on(method, handler) {
+    if (!this.listeners.has(method)) this.listeners.set(method, new Set());
+    this.listeners.get(method).add(handler);
+    return () => this.listeners.get(method)?.delete(handler);
+  }
+
+  close() {
+    try {
+      this.ws?.close();
+    } catch {}
+  }
+}
+
+async function waitForPageReady(client, sessionId, signal, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      const state = await evaluate(
+        client,
+        sessionId,
+        "({readyState: document.readyState, url: location.href})",
+      );
+      if (["interactive", "complete"].includes(state?.readyState)) return state;
+    } catch {}
+    await sleep(400, signal);
+  }
+}
+
+async function attachFlowPage(client, startUrl, pinned, signal, interactive = false) {
+  const { targetInfos = [] } = await client.send("Target.getTargets");
+  let target =
+    targetInfos.find((item) => item.type === "page" && isFlowUrl(item.url)) ||
+    targetInfos.find((item) => item.type === "page");
+
+  let targetId = target?.targetId;
+  if (!targetId) {
+    const created = await client.send("Target.createTarget", { url: FLOW_LANDING_URL });
+    targetId = created.targetId;
+  }
+
+  const { sessionId } = await client.send("Target.attachToTarget", { targetId, flatten: true });
+  if (interactive) {
+    try {
+      await client.send("Target.activateTarget", { targetId });
+    } catch {}
+  }
+  await client.send("Page.enable", {}, sessionId);
+  await client.send("Runtime.enable", {}, sessionId);
+  await client.send(
+    "Network.enable",
+    { maxTotalBufferSize: 50 * 1024 * 1024, maxResourceBufferSize: 25 * 1024 * 1024 },
+    sessionId,
+  );
+  await client.send("Page.setBypassCSP", { enabled: true }, sessionId);
+  await client.send(
+    "Page.addScriptToEvaluateOnNewDocument",
+    { source: PAGE_BOOTSTRAP_SCRIPT },
+    sessionId,
+  );
+  if (FLOW_ENGINE_CODE) {
+    await client
+      .send("Page.addScriptToEvaluateOnNewDocument", { source: FLOW_ENGINE_CODE }, sessionId)
+      .catch(() => undefined);
+  }
+  try {
+    await client.send("Runtime.evaluate", { expression: PAGE_BOOTSTRAP_SCRIPT }, sessionId);
+    if (FLOW_ENGINE_CODE) {
+      await client
+        .send("Runtime.evaluate", { expression: FLOW_ENGINE_CODE }, sessionId)
+        .catch(() => undefined);
+    }
+  } catch {}
+  if (interactive) {
+    try {
+      await client.send("Page.bringToFront", {}, sessionId);
+    } catch {}
+  }
+
+  const destinationUrl =
+    pinned && startUrl && isFlowUrl(startUrl, true) ? startUrl : FLOW_LANDING_URL;
+  await client.send("Page.navigate", { url: destinationUrl }, sessionId);
+  await waitForPageReady(client, sessionId, signal);
+
+  return { sessionId, targetId };
+}
+
+async function evaluate(client, sessionId, expression) {
+  const result = await client.send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, awaitPromise: true, userGesture: true },
+    sessionId,
+  );
+  if (result.exceptionDetails) {
+    const description =
+      result.exceptionDetails?.exception?.description ||
+      result.exceptionDetails?.text ||
+      "Erro JavaScript na página.";
+    throw codedError("OUTPUT_VALIDATION_FAILED", description);
+  }
+  return result.result?.value;
+}
+
+const DEEP_HELPERS = String.raw`
+function cfVisible(el) {
+  if (!el || !(el instanceof Element)) return false;
+  const style = getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 12 && r.height > 12 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+}
+function cfAll(selector, root = document) {
+  const out = [];
+  const walk = (node) => {
+    if (!node?.querySelectorAll) return;
+    for (const el of node.querySelectorAll(selector)) out.push(el);
+    for (const el of node.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(root);
+  return [...new Set(out)];
+}
+function cfText(el) {
+  return [el?.innerText, el?.textContent, el?.getAttribute?.('aria-label'), el?.getAttribute?.('title'), el?.getAttribute?.('placeholder'), el?.getAttribute?.('name'), el?.id]
+    .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+function cfEditableSelector() {
+  return '[data-slate-editor="true"], [contenteditable="true"], [contenteditable="plaintext-only"], textarea, input[type="text"], input:not([type]), [role="textbox"]';
+}
+function cfMatchesEditable(el) {
+  if (!el || !(el instanceof Element) || !cfVisible(el) || el.disabled || el.readOnly) return false;
+  const slate = (el.getAttribute?.('data-slate-editor') || '').toLowerCase();
+  const ce = (el.getAttribute?.('contenteditable') || '').toLowerCase();
+  if (slate === 'true' || ce === 'true' || ce === 'plaintext-only') return true;
+  return el.matches?.('textarea, input[type="text"], input:not([type]), [role="textbox"]') || false;
+}
+function cfFindPromptByPlaceholder() {
+  const placeholders = cfAll('[data-slate-placeholder="true"]').filter(el => {
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    return /^(o que você quer criar\?|what do you want to create\?)$/i.test(t);
+  });
+  for (const ph of placeholders) {
+    const closest = ph.closest?.('[data-slate-editor="true"], [contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"]');
+    if (cfMatchesEditable(closest)) return closest;
+    let cur = ph.parentElement;
+    for (let depth = 0; depth < 20 && cur; depth += 1, cur = cur.parentElement) {
+      if (cfMatchesEditable(cur)) return cur;
+      const slate = cur.querySelector?.('[data-slate-editor="true"]');
+      if (cfMatchesEditable(slate)) return slate;
+      const editable = cur.querySelector?.('[contenteditable="true"], [contenteditable="plaintext-only"]');
+      if (cfMatchesEditable(editable)) return editable;
+    }
+  }
+  return null;
+}
+function cfPromptCandidate(customSelector = '') {
+  if (customSelector) {
+    try {
+      const direct = cfAll(customSelector).find(el => cfMatchesEditable(el) || cfVisible(el));
+      if (cfMatchesEditable(direct)) return direct;
+      const nested = direct?.querySelector?.(cfEditableSelector());
+      if (cfMatchesEditable(nested)) return nested;
+    } catch { return null; }
+  }
+  const exact = cfFindPromptByPlaceholder();
+  if (exact) return exact;
+  const candidates = cfAll(cfEditableSelector()).filter(cfMatchesEditable);
+  let best = null;
+  let bestScore = -Infinity;
+  for (const el of candidates) {
+    const r = el.getBoundingClientRect();
+    const t = cfText(el);
+    const container = el.closest('form, section, article, div') || el.parentElement;
+    const around = container ? cfText(container).slice(0, 800) : '';
+    let score = 0;
+    if ((el.getAttribute('data-slate-editor') || '').toLowerCase() === 'true') score += 180;
+    if (el.isContentEditable) score += 60;
+    if ((el.getAttribute('contenteditable') || '').toLowerCase() === 'plaintext-only') score += 55;
+    if (el.tagName === 'TEXTAREA') score += 35;
+    if (el.getAttribute('role') === 'textbox') score += 20;
+    if (/(o que você quer criar|what do you want to create)/i.test(around)) score += 220;
+    if (/(search|buscar|pesquisar)/i.test(t)) score -= 200;
+    score += Math.min(40, (r.width * r.height) / 10000);
+    if (score > bestScore) { bestScore = score; best = el; }
+  }
+  return best;
+}
+function cfGenerateCandidate(prompt, customSelector = '', includeDisabled = false) {
+  let candidates = [];
+  if (customSelector) {
+    try { candidates = cfAll(customSelector); } catch { return null; }
+  } else {
+    const exact = cfAll('button').filter(btn => {
+      const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+      if (/iniciar gera|start genera|iniciar creaci|iniciar generaci/.test(aria)) return true;
+      return [...btn.querySelectorAll('span')]
+        .some(span => /^(criar|create|gerar|generate|arrow_forward)$/i.test((span.textContent || '').trim()));
+    });
+    candidates = exact.length ? exact : cfAll('button, [role="button"], input[type="submit"]');
+  }
+  candidates = candidates.filter(cfVisible);
+  let best = null;
+  let bestScore = -Infinity;
+  const pr = prompt?.getBoundingClientRect?.();
+  for (const el of candidates) {
+    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+    if (disabled && !includeDisabled) continue;
+    const t = cfText(el);
+    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+    const r = el.getBoundingClientRect();
+    const exactLabel = [...(el.querySelectorAll?.('span') || [])]
+      .some(span => /^(criar|create|gerar|generate)$/i.test((span.textContent || '').trim()));
+    let score = 0;
+    if (/iniciar gera|start genera|iniciar creaci|iniciar generaci/.test(aria)) score += 360;
+    if (exactLabel) score += 320;
+    if (/^(gerar|generate|criar|create)$/i.test(t)) score += 180;
+    else if (/(gerar|generate|criar|create)/i.test(t)) score += 120;
+    if (/arrow_forward/i.test(el.innerHTML || '')) score += 100;
+    if (/(novo projeto|new project|renomear|rename|excluir|delete|cancelar execução)/i.test(t)) score -= 300;
+    if (pr) {
+      const dx = Math.abs((r.left + r.width / 2) - (pr.left + pr.width / 2));
+      const dy = Math.abs((r.top + r.height / 2) - (pr.top + pr.height / 2));
+      score += Math.max(0, 80 - (dx + dy) / 14);
+      if (r.top >= pr.top - 260 && r.top <= pr.bottom + 260) score += 45;
+    }
+    if (disabled) score -= 20;
+    if (score > bestScore) { bestScore = score; best = el; }
+  }
+  return best;
+}
+`;
+
+function pageStateExpression(promptSelector) {
+  return String.raw`(() => { ${DEEP_HELPERS}
+    const prompt = cfPromptCandidate(${JSON.stringify(promptSelector || "")});
+    const iframes = cfAll('iframe').filter(cfVisible);
+    const challenge = iframes.some(f => /recaptcha|challenge/i.test((f.src || '') + ' ' + (f.title || '')));
+    const host = location.hostname;
+    const href = location.href;
+    const projectLike = /^\/project\//i.test(location.pathname) || /\/tools\/flow\/project\//i.test(location.pathname);
+    const loginLike = host === 'accounts.google.com' || /signin|login|challenge/i.test(href);
+    const links = cfAll('a[href]').filter(cfVisible).map(a => ({ href: a.href, text: cfText(a) }));
+    const projectLinks = links.filter(x => /https:\/\/(?:flow\.google\.com\/project\/|labs\.google\/.*\/tools\/flow\/project\/)/i.test(x.href)).slice(0, 10);
+    const clickables = cfAll('button, [role="button"], a[href]').filter(cfVisible).map(el => ({
+      text: cfText(el),
+      tag: el.tagName,
+      href: el.href || ''
+    }));
+    const hasNewProject = clickables.some(x => /(^|\s)(novo projeto|new project)(\s|$)/i.test(x.text));
+    const hasFlowCta = clickables.some(x => /(create with google flow|criar com o google flow|try in google flow|experimentar no google flow|começar|start creating)/i.test(x.text));
+    return { url: href, host, promptFound: !!prompt, challenge, loginLike, projectLike, projectLinks, hasNewProject, hasFlowCta };
+  })()`;
+}
+
+async function getPageState(client, sessionId, promptSelector) {
+  return evaluate(client, sessionId, pageStateExpression(promptSelector));
+}
+
+function bootstrapActionPointExpression(action) {
+  return String.raw`(() => { ${DEEP_HELPERS}
+    const candidates = cfAll('button, [role="button"], a[href]').filter(cfVisible);
+    let match = null;
+    if (${JSON.stringify(action)} === 'new-project') {
+      match = candidates.find(el => {
+        const text = cfText(el);
+        const aria = (el.getAttribute?.('aria-label') || '').toLowerCase();
+        return /(^|\s)(novo projeto|new project|criar projeto|create project)(\s|$)/i.test(text) ||
+               /(novo projeto|new project|criar projeto|create project)/i.test(aria);
+      });
+    } else if (${JSON.stringify(action)} === 'flow-cta') {
+      match = candidates.find(el => /(create with google flow|criar com o google flow|try in google flow|experimentar no google flow|começar|start creating)/i.test(cfText(el)));
+    }
+    if (!match) return { ok: false };
+    match.scrollIntoView({ block: 'center', inline: 'center' });
+    match.focus({ preventScroll: true });
+    const r = match.getBoundingClientRect();
+    match.click();
+    return {
+      ok: true,
+      text: (match.innerText || match.textContent || '').replace(/\s+/g, ' ').trim(),
+      x: r.left + r.width / 2,
+      y: r.top + r.height / 2
+    };
+  })()`;
+}
+
+async function clickBootstrapAction(client, sessionId, action) {
+  const point = await evaluate(client, sessionId, bootstrapActionPointExpression(action));
+  return point?.ok ? point : { ok: false };
+}
+
+async function ensureFlowProjectReady(
+  client,
+  sessionId,
+  settings,
+  signal,
+  shortWait = false,
+  trace,
+  createFreshProject = false,
+) {
+  const seconds = shortWait
+    ? Math.min(
+        90,
+        Number.isInteger(settings?.interactiveWaitSeconds) ? settings.interactiveWaitSeconds : 600,
+      )
+    : Number.isInteger(settings?.interactiveWaitSeconds)
+      ? settings.interactiveWaitSeconds
+      : 600;
+  const deadline = Date.now() + seconds * 1000;
+  let last = null;
+  let lastActionAt = 0;
+  let actionCount = 0;
+  let freshProjectRequested = !createFreshProject;
+  let freshProjectRequestedAt = 0;
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      last = await getPageState(client, sessionId, settings?.promptSelector || "");
+      trace?.(
+        `Flow state: projectLike=${Boolean(last?.projectLike)}; promptFound=${Boolean(last?.promptFound)}; newProject=${Boolean(last?.hasNewProject)}; projectLinks=${last?.projectLinks?.length ?? 0}`,
+      );
+      if (last?.projectLike && last?.promptFound && freshProjectRequested) return last;
+
+      if (!last?.loginLike && !last?.challenge && Date.now() - lastActionAt > 2500) {
+        if (createFreshProject && !freshProjectRequested) {
+          if (settings?.autoCreateProject === false) {
+            throw codedError(
+              "INVALID_CONFIGURATION",
+              "A criação de um projeto novo por execução exige autoCreateProject ativo.",
+            );
+          }
+          const clicked = await clickBootstrapAction(client, sessionId, "new-project");
+          trace?.(
+            `Flow action fresh-project: matched=${Boolean(clicked?.ok)}; text=${String(clicked?.text ?? "").slice(0, 80)}`,
+          );
+          if (clicked?.ok) {
+            freshProjectRequested = true;
+            freshProjectRequestedAt = Date.now();
+            lastActionAt = Date.now();
+            actionCount += 1;
+          }
+        } else if (createFreshProject) {
+          if (!last?.projectLike && Date.now() - freshProjectRequestedAt >= 15_000) {
+            freshProjectRequested = false;
+          }
+        } else if (Array.isArray(last?.projectLinks) && last.projectLinks.length > 0) {
+          const candidate = last.projectLinks[0]?.href;
+          if (typeof candidate === "string" && isFlowUrl(candidate, true)) {
+            await client.send("Page.navigate", { url: candidate }, sessionId);
+            lastActionAt = Date.now();
+            actionCount += 1;
+          }
+        } else if (settings?.autoCreateProject !== false) {
+          const clicked = await clickBootstrapAction(client, sessionId, "new-project");
+          trace?.(
+            `Flow action new-project: matched=${Boolean(clicked?.ok)}; text=${String(clicked?.text ?? "").slice(0, 80)}`,
+          );
+          if (clicked?.ok) {
+            lastActionAt = Date.now();
+            actionCount += 1;
+          }
+        } else if (last?.hasFlowCta) {
+          const clicked = await clickBootstrapAction(client, sessionId, "flow-cta");
+          trace?.(
+            `Flow action flow-cta: matched=${Boolean(clicked?.ok)}; text=${String(clicked?.text ?? "").slice(0, 80)}`,
+          );
+          if (clicked?.ok) {
+            lastActionAt = Date.now();
+            actionCount += 1;
+          }
+        }
+      }
+    } catch (cause) {
+      trace?.(`Flow probe error: ${String(cause?.message ?? cause).slice(0, 240)}`);
+    }
+    await sleep(1000, signal);
+  }
+
+  if (last?.loginLike || last?.challenge) {
+    throw codedError(
+      "AUTHENTICATION_FAILED",
+      "O Google Flow ainda está aguardando login, reautenticação ou CAPTCHA. Conclua a etapa na janela do Chrome e execute novamente.",
+    );
+  }
+  if (!last?.projectLike) {
+    throw codedError(
+      "AUTHENTICATION_FAILED",
+      "Não foi possível entrar em um projeto do Google Flow. Na janela aberta, faça login e escolha/crie um projeto; depois execute novamente.",
+    );
+  }
+  throw codedError(
+    "OUTPUT_VALIDATION_FAILED",
+    `Entrei no projeto, mas não encontrei a caixa de comando do Google Flow${actionCount ? ` após ${actionCount} ação(ões) de onboarding` : ""}. Se a interface mudou, configure promptSelector.`,
+  );
+}
+
+async function waitForFlowProfile(client, sessionId, settings, signal, timeoutMs) {
+  const seconds = Number.isInteger(settings?.interactiveWaitSeconds)
+    ? settings.interactiveWaitSeconds
+    : 600;
+  const deadline =
+    timeoutMs === Number.POSITIVE_INFINITY
+      ? Number.POSITIVE_INFINITY
+      : Date.now() +
+        (Number.isFinite(timeoutMs)
+          ? Math.max(30_000, Number(timeoutMs))
+          : Math.min(900, Math.max(30, seconds)) * 1000);
+  let state;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      state = await getPageState(client, sessionId, settings?.promptSelector || "");
+      const authenticatedSurface =
+        state?.promptFound ||
+        state?.projectLike ||
+        state?.hasNewProject ||
+        (Array.isArray(state?.projectLinks) && state.projectLinks.length > 0);
+      if (isFlowHost(state?.host) && !state?.loginLike && !state?.challenge && authenticatedSurface)
+        return;
+    } catch {}
+    await sleep(750, signal);
+  }
+  throw codedError(
+    "AUTHENTICATION_FAILED",
+    "Conclua o login do Google Flow na janela dedicada até aparecer a lista de projetos ou o editor.",
+    true,
+  );
+}
+
+async function setBrowserWindowState(client, targetId, windowState) {
+  try {
+    const { windowId } = await client.send("Browser.getWindowForTarget", { targetId });
+    if (Number.isInteger(windowId)) {
+      await client.send("Browser.setWindowBounds", { windowId, bounds: { windowState } });
+    }
+  } catch {}
+}
+
+async function showBrowserWindow(client, sessionId, targetId) {
+  await setBrowserWindowState(client, targetId, "normal");
+  try {
+    await client.send("Target.activateTarget", { targetId });
+    await client.send("Page.bringToFront", {}, sessionId);
+  } catch {}
+}
+
+function ensureImageModeExpression(promptSelector) {
+  return String.raw`(() => { ${DEEP_HELPERS}
+    const prompt = cfPromptCandidate(${JSON.stringify(promptSelector || "")});
+    if (!prompt) return { ok: false, reason: 'prompt-not-found' };
+    const pr = prompt.getBoundingClientRect();
+    const candidates = cfAll('button, [role="button"], [role="menuitem"], [role="option"]').filter(el => cfVisible(el) && !el.disabled);
+    let best = null;
+    let bestScore = -Infinity;
+    for (const el of candidates) {
+      const t = cfText(el);
+      if (!/(^|\\s)(imagem|image)(\\s|$)/i.test(t)) continue;
+      if (/(todas as imagens|all images|biblioteca|library|filtro|filter)/i.test(t)) continue;
+      const r = el.getBoundingClientRect();
+      const dx = Math.abs((r.left + r.width / 2) - (pr.left + pr.width / 2));
+      const dy = Math.abs((r.top + r.height / 2) - (pr.top + pr.height / 2));
+      let score = 100 - (dx + dy) / 18;
+      const role = el.getAttribute('role') || '';
+      if (role === 'menuitem' || role === 'option') score += 120;
+      if (r.top >= pr.top - 250 && r.top <= pr.bottom + 250) score += 40;
+      if (score > bestScore) { bestScore = score; best = el; }
+    }
+    if (!best || bestScore < 40) return { ok: true, changed: false };
+    best.click();
+    return { ok: true, changed: true };
+  })()`;
+}
+
+async function ensureImageMode(client, sessionId, settings, signal) {
+  const first = await evaluate(
+    client,
+    sessionId,
+    ensureImageModeExpression(settings?.promptSelector || ""),
+  );
+  if (!first?.ok || !first.changed) return;
+  await sleep(300, signal);
+
+  try {
+    await evaluate(client, sessionId, ensureImageModeExpression(settings?.promptSelector || ""));
+  } catch {}
+  await sleep(250, signal);
+}
+
+function cdpNodeAttributes(node) {
+  const attributes = {};
+  const raw = Array.isArray(node?.attributes) ? node.attributes : [];
+  for (let index = 0; index + 1 < raw.length; index += 2)
+    attributes[String(raw[index]).toLowerCase()] = String(raw[index + 1]);
+  return attributes;
+}
+
+function findImageFileInputNode(node) {
+  if (!node || typeof node !== "object") return null;
+  if (String(node.nodeName || "").toLowerCase() === "input") {
+    const attributes = cdpNodeAttributes(node);
+    if (String(attributes.type || "").toLowerCase() === "file") {
+      const accept = String(attributes.accept || "").toLowerCase();
+      if (!accept || accept.includes("image") || /png|jpe?g|webp/.test(accept)) return node;
+    }
+  }
+  for (const child of [
+    ...(node.children || []),
+    ...(node.shadowRoots || []),
+    ...(node.contentDocument ? [node.contentDocument] : []),
+  ]) {
+    const found = findImageFileInputNode(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function locateImageFileInput(client, sessionId) {
+  const documentResult = await client.send(
+    "DOM.getDocument",
+    { depth: -1, pierce: true },
+    sessionId,
+  );
+  return findImageFileInputNode(documentResult?.root);
+}
+
+async function uploadMediaActionIsVisible(client, sessionId) {
+  return Boolean(
+    await evaluate(
+      client,
+      sessionId,
+      `(() => { ${DEEP_HELPERS}
+        return cfAll('button, [role="button"], [role="menuitem"], [role="option"]')
+          .filter(cfVisible)
+          .some((element) => /(?:enviar|upload|carregar|fazer upload)(?:\\s+de)?\\s+(?:mídia|media|arquivo|file)/i.test(cfText(element)));
+      })()`,
+    ),
+  );
+}
+
+async function prepareReferenceImagePaths(referenceImages, services, maximum) {
+  if (referenceImages.length > maximum) {
+    throw codedError(
+      "INVALID_INPUT",
+      `Recebi ${referenceImages.length} imagens de referência; o limite configurado é ${maximum}.`,
+    );
+  }
+  const paths = [];
+  for (const image of referenceImages) {
+    const mimeType = String(image?.mimeType || "").toLowerCase();
+    if (mimeType && !mimeType.startsWith("image/")) {
+      throw codedError(
+        "INVALID_INPUT",
+        `A referência ${String(image?.name || "sem nome")} não é uma imagem.`,
+      );
+    }
+    const resolved = await services.resolveInputFile(image);
+    const info = await stat(resolved);
+    if (!info.isFile() || info.size < 1 || info.size > MAX_IMAGE_BYTES) {
+      throw codedError(
+        "INVALID_INPUT",
+        `A referência ${String(image?.name || "sem nome")} está vazia ou excede 25 MB.`,
+      );
+    }
+    paths.push(resolved);
+  }
+  return paths;
+}
+
+async function uploadReferenceImages(client, sessionId, bridge, filePaths, settings, signal, step) {
+  if (filePaths.length === 0) return;
+
+  await client.send("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId);
+  try {
+    await uploadReferenceImagesInPage(client, sessionId, bridge, filePaths, settings, signal, step);
+  } finally {
+    await client.send("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId);
+  }
+}
+
+async function uploadReferenceImagesInPage(
+  client,
+  sessionId,
+  bridge,
+  filePaths,
+  settings,
+  signal,
+  step,
+) {
+  await ensureImageMode(client, sessionId, settings, signal);
+  let input = await locateImageFileInput(client, sessionId);
+  if (!input) {
+    let uploadMenuVisible = await uploadMediaActionIsVisible(client, sessionId);
+    for (let clickAttempt = 1; !uploadMenuVisible && clickAttempt <= 3; clickAttempt += 1) {
+      await bridge.dispatch(
+        "click",
+        {
+          selectors: ["button", '[role="button"]'],
+          textIncludes: [
+            "adicionar elementos à caixa de comando",
+            "add elements to prompt box",
+            "adicionar referência",
+            "add reference",
+          ],
+        },
+        `open-reference-menu:${clickAttempt}`,
+      );
+      const menuDeadline = Date.now() + 3_000;
+      while (!uploadMenuVisible && Date.now() < menuDeadline) {
+        await sleep(250, signal);
+        uploadMenuVisible = await uploadMediaActionIsVisible(client, sessionId);
+      }
+    }
+    if (!uploadMenuVisible) {
+      throw codedError(
+        "OUTPUT_VALIDATION_FAILED",
+        "O controle de referência do Google Flow não abriu o menu de envio de mídia.",
+      );
+    }
+    step?.("Controle de referência aberto.");
+    input = await locateImageFileInput(client, sessionId);
+    if (!input) {
+      await bridge.dispatch(
+        "click",
+        {
+          selectors: ["button", '[role="button"]', '[role="menuitem"]', '[role="option"]'],
+          textIncludes: ["enviar mídia", "upload media", "carregar mídia", "upload file"],
+        },
+        "choose-reference-upload",
+      );
+      step?.("Opção de envio de mídia selecionada.");
+    }
+    const deadline = Date.now() + 10_000;
+    while (!input && Date.now() < deadline) {
+      await sleep(250, signal);
+      input = await locateImageFileInput(client, sessionId);
+    }
+  }
+  if (!input?.nodeId) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O Google Flow abriu o seletor de referências, mas nenhum input de imagem ficou disponível.",
+    );
+  }
+  await client.send("DOM.setFileInputFiles", { files: filePaths, nodeId: input.nodeId }, sessionId);
+  step?.(
+    `${filePaths.length} imagem(ns) de referência selecionada(s); aguardando o Flow concluir o envio.`,
+  );
+  await waitReferenceUploadReady(
+    client,
+    sessionId,
+    settings,
+    signal,
+    step,
+    90_000,
+    bridge,
+    filePaths.map((filePath) => basename(filePath)),
+  );
+  step?.("Envio da referência concluído e editor disponível.");
+}
+
+function referenceUploadStateExpression(promptSelector, referenceNames = []) {
+  return `(() => { ${DEEP_HELPERS}
+    const dialogs = cfAll('[role="dialog"]').filter(cfVisible);
+    const consent = dialogs.some(el => /direitos de uso|rights to use|usage rights/i.test(cfText(el)));
+    const prompt = cfPromptCandidate(${JSON.stringify(promptSelector || "")});
+    const editable = !!prompt && prompt.getAttribute('contenteditable') !== 'false';
+    const pickerOpen = cfAll('button, [role="button"]').filter(cfVisible)
+      .some(el => /enviar mídia|upload media/i.test(cfText(el)));
+    const includeReady = cfAll('button, [role="button"]').filter(cfVisible)
+      .some(el => !el.disabled && el.getAttribute('aria-disabled') !== 'true' && /incluir no comando|add to prompt|include in prompt/i.test(cfText(el)));
+    const names = ${JSON.stringify(referenceNames.map((name) => name.toLowerCase()))};
+    const referenceMatches = names.length > 0 && names.every(name =>
+      cfAll('[role="option"], img').filter(cfVisible).some(el =>
+        (cfText(el) + ' ' + (el.getAttribute('alt') || '').toLowerCase()).includes(name)));
+    return { consent, dialogs: dialogs.length, pickerOpen, editable, includeReady, referenceMatches };
+  })()`;
+}
+
+async function attachedReferenceCount(client, sessionId) {
+  return (
+    Number(
+      await evaluate(
+        client,
+        sessionId,
+        `(() => { ${DEEP_HELPERS}
+    return cfAll('button, [role="button"]').filter(cfVisible).filter(el =>
+      /^(elemento|element|ingredient)$/i.test((el.getAttribute('aria-label') || '').trim()) &&
+      !!el.querySelector('img')).length;
+  })()`,
+      ),
+    ) || 0
+  );
+}
+
+async function waitReferenceUploadReady(
+  client,
+  sessionId,
+  settings,
+  signal,
+  step,
+  timeoutMs = 90_000,
+  bridge,
+  referenceNames = [],
+) {
+  const deadline = Date.now() + timeoutMs;
+  let state;
+  let consentReported = false;
+  let included = false;
+  let includeAttempts = 0;
+  while (Date.now() < deadline) {
+    state = await evaluate(
+      client,
+      sessionId,
+      referenceUploadStateExpression(settings?.promptSelector, referenceNames),
+    );
+    if (state?.consent && !consentReported) {
+      step?.(
+        "O Flow solicita confirmação dos direitos da imagem. Confirme na janela do Flow para continuar.",
+      );
+      consentReported = true;
+    }
+    if (state?.editable && !state.dialogs && !state.pickerOpen) return;
+    if (!state?.consent && state?.includeReady && state?.referenceMatches && !included && bridge) {
+      includeAttempts += 1;
+      try {
+        await bridge.dispatch(
+          "click",
+          {
+            selectors: ["button", '[role="button"]'],
+            textIncludes: ["incluir", "add to prompt", "include in prompt"],
+          },
+          `include-uploaded-reference:${includeAttempts}`,
+        );
+        included = true;
+        step?.("Referência enviada incluída no comando do Flow.");
+      } catch (error) {
+        if (includeAttempts >= 3 || !/Controle não encontrado/.test(error?.message || ""))
+          throw error;
+      }
+    }
+    await sleep(500, signal);
+  }
+  throw codedError(
+    state?.consent ? "HUMAN_INTERVENTION_REQUIRED" : "OUTPUT_VALIDATION_FAILED",
+    state?.consent
+      ? "O Flow aguarda sua confirmação dos direitos de uso da referência. Confirme na janela do Flow e retome a etapa."
+      : `O envio da referência não liberou o editor do Flow. Estado: ${JSON.stringify(state)}.`,
+  );
+}
+
+async function setPromptWithExtension(
+  bridge,
+  prompt,
+  customSelector,
+  operationKey,
+  signal,
+  client,
+  sessionId,
+) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      if (client && sessionId) {
+        await evaluate(
+          client,
+          sessionId,
+          `(() => {
+            const editor = document.querySelector('.ProseMirror, [contenteditable="true"], [data-slate-editor="true"]');
+            if (editor) {
+              editor.focus();
+              try {
+                const sel = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                sel.removeAllRanges();
+                sel.addRange(range);
+              } catch {}
+              try { document.execCommand('delete'); } catch {}
+              if (editor.textContent.trim()) {
+                editor.innerHTML = '<p><br></p>';
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+            }
+          })()`,
+        ).catch(() => undefined);
+      }
+      const res = await bridge.dispatch(
+        "setPrompt",
+        {
+          text: prompt,
+          promptSelector: customSelector || "",
+          selectors: customSelector
+            ? [customSelector]
+            : [
+                ".ProseMirror",
+                '[data-slate-editor="true"]',
+                '[contenteditable="true"]',
+                '[contenteditable="plaintext-only"]',
+                '[role="textbox"]',
+              ],
+        },
+        `${operationKey}:${attempt}`,
+      );
+      if (client && sessionId) {
+        await evaluate(
+          client,
+          sessionId,
+          `(() => {
+            const editor = document.querySelector('.ProseMirror, [contenteditable="true"], [data-slate-editor="true"]');
+            if (editor) {
+              editor.focus();
+              if (!editor.textContent.trim() || editor.textContent.includes('O que você quer criar?')) {
+                try {
+                  const sel = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(editor);
+                  sel.removeAllRanges();
+                  sel.addRange(range);
+                } catch {}
+                try { document.execCommand('delete'); } catch {}
+                editor.innerHTML = '<p><br></p>';
+                document.execCommand('insertText', false, ${JSON.stringify(prompt)});
+              }
+              editor.dispatchEvent(new Event('input', { bubbles: true }));
+              editor.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
+              editor.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          })()`,
+        ).catch(() => undefined);
+      }
+      return res;
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== "OUTPUT_VALIDATION_FAILED" || attempt === 3) {
+        const state = await evaluate(
+          client,
+          sessionId,
+          `(() => { ${DEEP_HELPERS}
+          const editor = cfPromptCandidate(${JSON.stringify(customSelector || "")});
+          const focused = document.activeElement;
+          return { editorFound: !!editor, editorCharacters: (editor?.innerText || '').length,
+            focusedTag: focused?.tagName, focusedRole: focused?.getAttribute('role'),
+            editorFocused: editor === focused || !!editor?.contains(focused),
+            visibleDialogs: cfAll('[role="dialog"]').filter(cfVisible).length };
+        })()`,
+        ).catch(() => undefined);
+        error.message += ` Diagnóstico do editor: ${JSON.stringify(state)}.`;
+        throw error;
+      }
+      await sleep(750 * attempt, signal);
+    }
+  }
+  throw lastError;
+}
+
+async function waitForPromptEditorStable(client, sessionId, customSelector, signal) {
+  const deadline = Date.now() + 12_000;
+  let stableReadings = 0;
+  let previousSignature = "";
+  while (Date.now() < deadline) {
+    const state = await evaluate(
+      client,
+      sessionId,
+      `(() => { ${DEEP_HELPERS}
+        const editor = cfPromptCandidate(${JSON.stringify(customSelector || "")});
+        const rect = editor?.getBoundingClientRect?.();
+        return {
+          found: Boolean(editor),
+          connected: Boolean(editor?.isConnected),
+          dialogs: cfAll('[role="dialog"]').filter(cfVisible).length,
+          signature: editor && rect
+            ? [editor.tagName, Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(':')
+            : '',
+        };
+      })()`,
+    );
+    if (state?.found && state?.connected && state.dialogs === 0 && state.signature) {
+      stableReadings = state.signature === previousSignature ? stableReadings + 1 : 1;
+      previousSignature = state.signature;
+      if (stableReadings >= 3) return state;
+    } else {
+      stableReadings = 0;
+      previousSignature = "";
+    }
+    await sleep(500, signal);
+  }
+  throw codedError(
+    "OUTPUT_VALIDATION_FAILED",
+    "O editor do Flow não estabilizou antes do preenchimento; o prompt não foi enviado.",
+  );
+}
+
+async function waitGenerateEnabled(client, sessionId, settings, signal, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await evaluate(
+      client,
+      sessionId,
+      `(() => { ${DEEP_HELPERS}
+      const prompt = cfPromptCandidate(${JSON.stringify(settings?.promptSelector || "")});
+      const btn = cfGenerateCandidate(prompt, ${JSON.stringify(settings?.generateSelector || "")}, true);
+      return {
+        found: !!btn,
+        disabled: btn ? (btn.disabled || btn.getAttribute('aria-disabled') === 'true') : null,
+        text: btn ? cfText(btn) : '',
+        ariaDisabled: btn ? (btn.getAttribute('aria-disabled') || '') : ''
+      };
+    })()`,
+    );
+    if (last?.found && !last?.disabled) return last;
+    await sleep(250, signal);
+  }
+  if (!last?.found)
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "Não encontrei o botão Criar/Gerar do Google Flow.",
+    );
+  throw codedError(
+    "OUTPUT_VALIDATION_FAILED",
+    "O botão Criar foi encontrado, mas continuou com aria-disabled=true após preencher o prompt.",
+  );
+}
+
+async function clickGenerateWithExtension(bridge, settings, operationKey) {
+  return await bridge.dispatch(
+    "clickGenerate",
+    {
+      promptSelector: settings?.promptSelector || "",
+      generateSelector: settings?.generateSelector || "",
+      textIncludes: [
+        "iniciar geração",
+        "iniciar geracao",
+        "start generation",
+        "criar",
+        "create",
+        "gerar",
+        "generate",
+      ],
+    },
+    operationKey,
+  );
+}
+
+async function getActiveFlowProjectUrl(client, sessionId) {
+  try {
+    const url = await evaluate(client, sessionId, "location.href");
+    const match = String(url || "").match(
+      /https?:\/\/(?:flow\.google\.com|labs\.google)\/(?:tools\/flow\/)?project\/([a-zA-Z0-9_-]+)/i,
+    );
+    return match ? match[0] : isFlowUrl(url, true) ? String(url) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureFlowModelAndRatio(
+  client,
+  sessionId,
+  bridge,
+  {
+    modelName,
+    ratioLabel,
+    resolutionLabel,
+    outputCount,
+    forceImageMode = false,
+    settings = {},
+    signal,
+  },
+  step,
+) {
+  const settingsPanelIsOpen = () =>
+    evaluate(
+      client,
+      sessionId,
+      `(() => { ${DEEP_HELPERS}
+        return cfAll('[role="radio"]')
+          .filter(cfVisible)
+          .some(el => /^(?:image|imagem|video|vídeo|frames|x[1-4]|\\d+:\\d+)$/i.test(cfText(el).replace(/^(?:image|videocam|crop_[^ ]+)\s+/i, '')));
+      })()`,
+    );
+  if (modelName) {
+    step?.(`Configurando modelo no Google Flow: ${modelName}...`);
+    try {
+      let current = await evaluate(
+        client,
+        sessionId,
+        `(() => { ${DEEP_HELPERS}
+          const btn = cfAll('button[aria-label], [role="button"][aria-label]')
+            .filter(cfVisible)
+            .find(el => /(gatilho de configura|settings trigger|generation settings)/i.test(el.getAttribute('aria-label') || ''));
+          return btn ? cfText(btn) : '';
+        })()`,
+      );
+      if (
+        forceImageMode &&
+        !/(?:imagem|image|nano\s+banana|gem[_\s-]*pix)/i.test(String(current || ""))
+      ) {
+        let modeSelectionError;
+        for (let modeAttempt = 1; modeAttempt <= 3; modeAttempt += 1) {
+          if (!(await settingsPanelIsOpen())) {
+            await bridge.dispatch(
+              "click",
+              {
+                selectors: [
+                  'button[aria-label*="gatilho de configura" i]',
+                  'button[aria-label*="settings trigger" i]',
+                  'button[aria-label*="generation settings" i]',
+                ],
+              },
+              `image-mode:open-settings:${modeAttempt}`,
+            );
+            await sleep(800, signal);
+          }
+          let imageModeSelector = "";
+          for (let controlWait = 0; controlWait < 12; controlWait += 1) {
+            imageModeSelector = await evaluate(
+              client,
+              sessionId,
+              `(() => { ${DEEP_HELPERS}
+                const control = cfAll('button[role="radio"], [role="radio"]')
+                  .filter(cfVisible)
+                  .find(el => /(?:^|\\s)(?:imagem|image)(?:\\s|$)/i.test(cfText(el)));
+                if (!control) return '';
+                const id = String(control.id || '').trim();
+                return id && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(id) ? '#' + id : '';
+              })()`,
+            );
+            if (imageModeSelector) break;
+            await sleep(250, signal);
+          }
+          try {
+            await bridge.dispatch(
+              "click",
+              {
+                selectors: [
+                  ...(imageModeSelector ? [imageModeSelector] : []),
+                  'button[role="radio"]',
+                  '[role="radio"]',
+                ],
+                textIncludes: ["Imagem", "Image"],
+              },
+              `image-mode:select-image:${modeAttempt}`,
+            );
+            await sleep(1_200, signal);
+            current = await evaluate(
+              client,
+              sessionId,
+              `(() => { ${DEEP_HELPERS}
+                const btn = cfAll('button[aria-label], [role="button"][aria-label]')
+                  .filter(cfVisible)
+                  .find(el => /(gatilho de configura|settings trigger|generation settings)/i.test(el.getAttribute('aria-label') || ''));
+                return btn ? cfText(btn) : '';
+              })()`,
+            );
+            if (/(?:imagem|image|nano\s+banana|gem[_\s-]*pix)/i.test(String(current || ""))) {
+              modeSelectionError = undefined;
+              break;
+            }
+          } catch (cause) {
+            modeSelectionError = cause;
+          }
+          await sleep(500, signal);
+        }
+        if (!/(?:imagem|image|nano\s+banana|gem[_\s-]*pix)/i.test(String(current || ""))) {
+          throw codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            `O Flow não confirmou a troca de Vídeo para Imagem${modeSelectionError?.message ? ` (${modeSelectionError.message})` : ""}; o prompt não será enviado.`,
+          );
+        }
+        step?.(`Modo Imagem confirmado (${current}).`);
+      }
+      if (
+        !String(current || "")
+          .toLowerCase()
+          .includes(modelName.toLowerCase())
+      ) {
+        let setViaEngine = false;
+        try {
+          setViaEngine = await evaluate(
+            client,
+            sessionId,
+            `Boolean(window.FlowAuto?.adapter?.setModel && await window.FlowAuto.adapter.setModel(${JSON.stringify(modelName)}))`,
+          );
+        } catch {}
+
+        if (setViaEngine) {
+          step?.(`Modelo de imagem confirmado via engine: ${modelName}.`);
+        } else {
+          await bridge.dispatch("click", {
+            selectors: [
+              'button[aria-label*="gatilho de configura" i]',
+              'button[aria-label*="settings trigger" i]',
+              'button[aria-label*="generation settings" i]',
+            ],
+          });
+          await sleep(700);
+          await bridge.dispatch("click", {
+            selectors: [
+              'button[aria-label*="família de modelos" i]',
+              'button[aria-label*="model family" i]',
+              'button[aria-label*="familia de modelos" i]',
+            ],
+          });
+          await sleep(500);
+          await bridge.dispatch("click", {
+            selectors: ['[role="menuitem"]', '[role="option"]', "button"],
+            textIncludes: [modelName],
+          });
+          await sleep(1_000);
+
+          const confirmed = await evaluate(
+            client,
+            sessionId,
+            `(() => { ${DEEP_HELPERS}
+              const btn = cfAll('button[aria-label], [role="button"][aria-label]')
+                .filter(cfVisible)
+                .find(el => /(gatilho de configura|settings trigger|generation settings)/i.test(el.getAttribute('aria-label') || ''));
+              return btn ? cfText(btn) : '';
+            })()`,
+          );
+          if (
+            !String(confirmed || "")
+              .toLowerCase()
+              .includes(modelName.toLowerCase())
+          ) {
+            throw codedError(
+              "OUTPUT_VALIDATION_FAILED",
+              `O Flow não confirmou o modelo de imagem ${modelName}; o prompt não será enviado.`,
+            );
+          }
+          step?.(`Modelo de imagem confirmado: ${modelName}.`);
+        }
+      } else {
+        step?.(`Modelo de imagem já confirmado: ${modelName}.`);
+      }
+    } catch (err) {
+      if (err?.code === "OUTPUT_VALIDATION_FAILED") throw err;
+      throw codedError(
+        "OUTPUT_VALIDATION_FAILED",
+        `Não foi possível confirmar o modelo de imagem ${modelName}: ${err?.message || err}. O prompt não foi enviado.`,
+      );
+    }
+  }
+
+  if (ratioLabel) {
+    step?.(`Configurando proporção no Google Flow: ${ratioLabel}...`);
+    try {
+      if (!(await settingsPanelIsOpen())) {
+        await bridge.dispatch("click", {
+          selectors: [
+            'button[aria-label*="configura" i]',
+            'button[aria-label*="setting" i]',
+            'button[aria-label*="ajuste" i]',
+          ],
+        });
+        await sleep(500, signal);
+      }
+      await bridge.dispatch("click", {
+        selectors: ['button[role="radio"]', '[role="radio"]'],
+        textIncludes: [ratioLabel, `crop_${ratioLabel.replace(":", "_")}`],
+      });
+      await sleep(600, signal);
+      step?.(`Proporção selecionada: ${ratioLabel}.`);
+    } catch (err) {
+      step?.(`Aviso ao aplicar proporção (${err?.message || err}). Continuando.`);
+    }
+  }
+
+  if (Number.isInteger(outputCount) && outputCount >= 1 && outputCount <= 4) {
+    const targetCount = `x${outputCount}`;
+    const readCountState = () =>
+      evaluate(
+        client,
+        sessionId,
+        `(() => { ${DEEP_HELPERS}
+          const btn = cfAll('button[aria-label], [role="button"][aria-label]')
+            .filter(cfVisible)
+            .find(el => /(gatilho de configura|settings trigger|generation settings)/i.test(el.getAttribute('aria-label') || ''));
+          return btn ? cfText(btn) : '';
+        })()`,
+      );
+    let current = await readCountState();
+    if (!new RegExp(`(?:^|\\s)${targetCount}(?:\\s|$)`, "i").test(String(current || ""))) {
+      step?.(`Configurando quantidade por prompt no Google Flow: ${targetCount}...`);
+      let selectionError;
+      for (let countAttempt = 1; countAttempt <= 3; countAttempt += 1) {
+        if (!(await settingsPanelIsOpen())) {
+          await bridge.dispatch(
+            "click",
+            {
+              selectors: [
+                'button[aria-label*="gatilho de configura" i]',
+                'button[aria-label*="settings trigger" i]',
+                'button[aria-label*="generation settings" i]',
+              ],
+            },
+            `image-count:open-settings:${countAttempt}`,
+          );
+          await sleep(700, signal);
+        }
+        try {
+          await bridge.dispatch(
+            "click",
+            {
+              selectors: ['button[role="radio"]', '[role="radio"]'],
+              textIncludes: [targetCount],
+            },
+            `image-count:select:${targetCount}:${countAttempt}`,
+          );
+          await sleep(1_000, signal);
+          current = await readCountState();
+          if (new RegExp(`(?:^|\\s)${targetCount}(?:\\s|$)`, "i").test(String(current || ""))) {
+            selectionError = undefined;
+            break;
+          }
+        } catch (cause) {
+          selectionError = cause;
+        }
+        await sleep(500, signal);
+      }
+      if (!new RegExp(`(?:^|\\s)${targetCount}(?:\\s|$)`, "i").test(String(current || ""))) {
+        throw codedError(
+          "OUTPUT_VALIDATION_FAILED",
+          `O Flow não confirmou ${targetCount}${selectionError?.message ? ` (${selectionError.message})` : ""}; o prompt não será enviado.`,
+        );
+      }
+    }
+    step?.(`Quantidade por prompt confirmada: ${targetCount}.`);
+    if (await settingsPanelIsOpen()) {
+      await bridge.dispatch(
+        "click",
+        {
+          selectors: [
+            'button[aria-label*="gatilho de configura" i]',
+            'button[aria-label*="settings trigger" i]',
+            'button[aria-label*="generation settings" i]',
+          ],
+        },
+        "image-settings:close",
+      );
+      await sleep(500, signal);
+    }
+  } else if (ratioLabel && (await settingsPanelIsOpen())) {
+    await bridge.dispatch("click", {
+      selectors: [
+        'button[aria-label*="gatilho de configura" i]',
+        'button[aria-label*="settings trigger" i]',
+        'button[aria-label*="generation settings" i]',
+      ],
+    });
+    await sleep(500, signal);
+  }
+
+  if (resolutionLabel) {
+    try {
+      await bridge.dispatch("click", {
+        textIncludes: [resolutionLabel],
+      });
+      step?.(`Resolução selecionada: ${resolutionLabel}.`);
+    } catch {}
+  }
+}
+
+async function triggerAnimateOnImage(client, sessionId, bridge, step) {
+  step?.("Localizando card de imagem no Google Flow para animar...");
+  try {
+    await bridge.dispatch("click", {
+      selectors: [
+        'button[aria-label*="mais opç" i]',
+        'button[aria-label*="more option" i]',
+        'button[aria-label*="más opci" i]',
+      ],
+      textIncludes: ["more_vert"],
+    });
+    await sleep(400);
+    await bridge.dispatch("click", {
+      selectors: ['[role="menuitem"]', "button"],
+      textIncludes: ["Animar", "Animate", "motion_blur"],
+    });
+    step?.("Ação Animar acionada no Google Flow.");
+  } catch (err) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      `Não consegui acionar o menu Animar na imagem: ${err?.message || err}`,
+    );
+  }
+}
+
+function createBatchResponseTracker(client, sessionId, signal) {
+  const waiting = [];
+  const byRequestId = new Map();
+  let stopped = false;
+
+  const removeWaiting = (reservation) => {
+    const index = waiting.indexOf(reservation);
+    if (index >= 0) waiting.splice(index, 1);
+  };
+  const settle = (reservation, ok, value) => {
+    if (!reservation || reservation.settled) return;
+    reservation.settled = true;
+    clearTimeout(reservation.timer);
+    removeWaiting(reservation);
+    if (reservation.requestId) byRequestId.delete(reservation.requestId);
+    if (ok) reservation.resolve(value);
+    else reservation.reject(value);
+  };
+
+  const offRequest = client.on("Network.requestWillBeSent", (params, eventSessionId) => {
+    if (stopped || eventSessionId !== sessionId) return;
+    if (params?.request?.method !== "POST") return;
+    const reqUrl = String(params?.request?.url || "");
+    const postData = String(params?.request?.postData || "");
+    const isOldGen = reqUrl.includes(GENERATION_SUFFIX);
+    const isRpcGen =
+      reqUrl.includes("batchexecute") &&
+      (reqUrl.includes("ogiZ0b") ||
+        reqUrl.includes("eb1hJf") ||
+        reqUrl.includes("MZZa6b") ||
+        postData.includes("ogiZ0b") ||
+        postData.includes("eb1hJf") ||
+        postData.includes("MZZa6b"));
+    if (!isOldGen && !isRpcGen) return;
+
+    const reservation = waiting.find((item) => !item.requestId && !item.settled);
+    if (!reservation) return;
+    reservation.requestId = params.requestId;
+    byRequestId.set(params.requestId, reservation);
+  });
+
+  const offResponse = client.on("Network.responseReceived", (params, eventSessionId) => {
+    if (stopped || eventSessionId !== sessionId) return;
+    const reservation = byRequestId.get(params.requestId);
+    if (reservation) reservation.responseStatus = params?.response?.status;
+  });
+
+  const offFinished = client.on("Network.loadingFinished", (params, eventSessionId) => {
+    if (stopped || eventSessionId !== sessionId) return;
+    const reservation = byRequestId.get(params.requestId);
+    if (!reservation || reservation.readingBody) return;
+    reservation.readingBody = true;
+    void (async () => {
+      try {
+        const bodyResult = await client.send(
+          "Network.getResponseBody",
+          { requestId: params.requestId },
+          sessionId,
+        );
+        const bodyText = bodyResult.base64Encoded
+          ? Buffer.from(bodyResult.body || "", "base64").toString("utf8")
+          : String(bodyResult.body || "");
+        if (bodyText.includes("wrb.fr") || bodyText.startsWith(")]}'")) {
+          const rpcs = decodificarBatchExecute(bodyText);
+          const hasError = rpcs.some((r) => r.erro);
+          const hasMedia = rpcs.some((r) => extrairMidiasRpc(r.payload).length > 0);
+          if (!hasError && !hasMedia) {
+            reservation.readingBody = false;
+            reservation.requestId = null;
+            byRequestId.delete(params.requestId);
+            return;
+          }
+        }
+        settle(reservation, true, { status: reservation.responseStatus, bodyText });
+      } catch (cause) {
+        settle(
+          reservation,
+          false,
+          codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            `Não consegui ler a resposta da geração no Chrome: ${cause.message}`,
+          ),
+        );
+      }
+    })();
+  });
+
+  const offFailed = client.on("Network.loadingFailed", (params, eventSessionId) => {
+    if (stopped || eventSessionId !== sessionId) return;
+    const reservation = byRequestId.get(params.requestId);
+    if (reservation) {
+      settle(
+        reservation,
+        false,
+        codedError(
+          "UPSTREAM_UNAVAILABLE",
+          `A requisição de geração falhou no Chrome: ${params.errorText || "erro de rede"}`,
+          true,
+        ),
+      );
+    }
+  });
+
+  const abortError = () => codedError("CANCELLED", "Execução cancelada.");
+  const onAbort = () => {
+    for (const reservation of [...waiting, ...byRequestId.values()])
+      settle(reservation, false, abortError());
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  return {
+    reserve(timeoutMs) {
+      if (stopped)
+        throw codedError("UPSTREAM_UNAVAILABLE", "Rastreador de gerações já foi encerrado.");
+      let resolve;
+      let reject;
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const reservation = {
+        resolve,
+        reject,
+        promise,
+        requestId: null,
+        responseStatus: null,
+        settled: false,
+        readingBody: false,
+        timer: null,
+      };
+      reservation.timer = setTimeout(() => {
+        settle(
+          reservation,
+          false,
+          codedError(
+            "TIMEOUT",
+            "Nenhuma resposta de geração chegou a tempo. Como o envio pode ter sido aceito pelo Flow, o plugin não repetirá automaticamente esta imagem. Verifique a janela do Chrome para login, CAPTCHA/reautenticação ou erro da interface.",
+            false,
+          ),
+        );
+      }, timeoutMs);
+      waiting.push(reservation);
+      return {
+        promise,
+        cancel(error) {
+          settle(reservation, false, error);
+        },
+      };
+    },
+    close() {
+      if (stopped) return;
+      stopped = true;
+      offRequest();
+      offResponse();
+      offFinished();
+      offFailed();
+      signal?.removeEventListener("abort", onAbort);
+      const error = codedError(
+        "UPSTREAM_UNAVAILABLE",
+        "Rastreador de gerações encerrado antes da conclusão.",
+        true,
+      );
+      for (const reservation of [...waiting, ...byRequestId.values()])
+        settle(reservation, false, error);
+    },
+  };
+}
+
+function createAdaptiveConcurrencyController(maxConcurrency = 1, baseIntervalMs = 6000) {
+  const targetConcurrency = Math.max(1, maxConcurrency);
+  let effConcurrency = targetConcurrency;
+  const baseInterval = Array.isArray(baseIntervalMs)
+    ? baseIntervalMs
+    : [baseIntervalMs, Math.round(baseIntervalMs * 1.5)];
+  let effInterval = [...baseInterval];
+  let successStreak = 0;
+  const THROTTLE_MULT = 1.5;
+  const MAX_INTERVAL = 45000;
+  const RESTORE_AFTER = 2;
+
+  function throttleDown() {
+    effConcurrency = Math.max(1, effConcurrency - 1);
+    effInterval = [
+      Math.min(MAX_INTERVAL, Math.round(effInterval[0] * THROTTLE_MULT)),
+      Math.min(MAX_INTERVAL, Math.round(effInterval[1] * THROTTLE_MULT)),
+    ];
+  }
+
+  function maybeRestore() {
+    if (successStreak <= 0 || successStreak % RESTORE_AFTER !== 0) return;
+    if (effConcurrency < targetConcurrency) effConcurrency += 1;
+    if (effInterval[0] > baseInterval[0] || effInterval[1] > baseInterval[1]) {
+      effInterval = [
+        Math.max(baseInterval[0], Math.round(effInterval[0] / THROTTLE_MULT)),
+        Math.max(baseInterval[1], Math.round(effInterval[1] / THROTTLE_MULT)),
+      ];
+    }
+  }
+
+  return {
+    getLimit() {
+      return effConcurrency;
+    },
+    getDelayMs() {
+      const [min, max] = effInterval;
+      return Math.round(min + Math.random() * Math.max(0, max - min));
+    },
+    success() {
+      successStreak += 1;
+      maybeRestore();
+    },
+    failure(error) {
+      successStreak = 0;
+      const isRate =
+        error?.code === "RATE_LIMIT" ||
+        error?.isUnusualActivity === true ||
+        error?.httpStatus === 403;
+      if (isRate) {
+        effConcurrency = 1;
+        throttleDown();
+        return { activated: true, delayMs: error?.retryAfterMs || 45000 };
+      }
+      return { activated: false };
+    },
+  };
+}
+
+async function runSubmissionRound(tasks, maxInFlight, submit, onState, options = {}) {
+  const pending = [...tasks];
+  const active = new Map();
+  const succeeded = [];
+  const failed = [];
+  const minDelayMs = Math.max(0, Number(options.minDelayMs) || 0);
+  const wait = options.wait ?? ((ms) => sleep(ms, options.signal));
+  let nextSubmissionAt = 0;
+
+  const currentLimit = () => {
+    const value = typeof maxInFlight === "function" ? maxInFlight() : maxInFlight;
+    return Math.max(1, Number(value) || 1);
+  };
+  const recordOutcome = (outcome) => {
+    active.delete(outcome.task.index);
+    if (outcome.ok) succeeded.push({ task: outcome.task, value: outcome.value });
+    else failed.push({ task: outcome.task, error: outcome.error });
+    onState?.({
+      type: outcome.ok ? "succeeded" : "failed",
+      task: outcome.task,
+      error: outcome.error,
+      active: active.size,
+      pending: pending.length,
+    });
+    if (!outcome.ok && options.failFast === true) pending.length = 0;
+  };
+
+  while (pending.length > 0 || active.size > 0) {
+    const canSubmit = pending.length > 0 && active.size < currentLimit();
+    if (canSubmit && Date.now() >= nextSubmissionAt) {
+      const task = pending.shift();
+      try {
+        const submission = await submit(task);
+        const settled = Promise.resolve(submission.completion).then(
+          (value) => ({ ok: true, task, value }),
+          (error) => ({ ok: false, task, error }),
+        );
+        active.set(task.index, settled);
+        nextSubmissionAt = Date.now() + minDelayMs;
+        onState?.({ type: "submitted", task, active: active.size, pending: pending.length });
+      } catch (error) {
+        failed.push({ task, error });
+        onState?.({ type: "failed", task, error, active: active.size, pending: pending.length });
+        if (options.failFast === true) pending.length = 0;
+      }
+      continue;
+    }
+
+    if (active.size > 0) {
+      const delayRemaining = canSubmit ? Math.max(0, nextSubmissionAt - Date.now()) : Infinity;
+      if (Number.isFinite(delayRemaining) && delayRemaining > 0) {
+        const event = await Promise.race([
+          Promise.race(active.values()).then((outcome) => ({ type: "settled", outcome })),
+          wait(delayRemaining).then(() => ({ type: "ready" })),
+        ]);
+        if (event.type === "settled") recordOutcome(event.outcome);
+      } else {
+        recordOutcome(await Promise.race(active.values()));
+      }
+      continue;
+    }
+
+    const delayRemaining = Math.max(0, nextSubmissionAt - Date.now());
+    if (delayRemaining > 0) await wait(delayRemaining);
+  }
+
+  return { succeeded, failed };
+}
+
+async function runGenerationPlan({
+  prompts,
+  maxInFlight = 1,
+  retryAttempts = 1,
+  rateLimitRetryAttempts = 8,
+  failFast = false,
+  minDelayMs = 0,
+  submit,
+  onState,
+  onItemCompleted,
+  wait = sleep,
+  signal,
+}) {
+  const results = new Array(prompts.length);
+  const errors = new Array(prompts.length);
+  const controller = createAdaptiveConcurrencyController(maxInFlight, minDelayMs);
+
+  if (maxInFlight === 1) {
+    for (let index = 0; index < prompts.length; index += 1) {
+      if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+      const prompt = prompts[index];
+      let task = { index, prompt, attempt: 1 };
+      let completed = false;
+      let rateRetries = 0;
+
+      while (!completed) {
+        if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+        try {
+          const submission = await submit(task);
+          results[index] = await submission.completion;
+          errors[index] = undefined;
+          completed = true;
+          controller.success();
+          await onItemCompleted?.({ task, value: results[index] });
+        } catch (error) {
+          errors[index] = error;
+          const isRate = error?.code === "RATE_LIMIT" || error?.isUnusualActivity === true;
+          if (isRate && rateRetries < rateLimitRetryAttempts) {
+            rateRetries += 1;
+            const throttle = controller.failure(error);
+            const waitMs = error?.retryAfterMs || throttle.delayMs || 45000;
+            onState?.({ type: "rate-limit-backoff", task, waitMs, attempt: rateRetries });
+            await wait(waitMs, signal);
+            continue;
+          }
+          if (failFast) throw error;
+          if (task.attempt > retryAttempts || !shouldRetryGenerationError(error)) {
+            break;
+          }
+          task = { ...task, attempt: task.attempt + 1 };
+          onState?.({ type: "retry-round", attempt: task.attempt, tasks: [task] });
+        }
+      }
+      if (!completed && failFast) {
+        throw errors[index] ?? codedError("JOB_FAILED", "A geração não foi concluída.");
+      }
+      if (completed && index + 1 < prompts.length) {
+        const nextDelay = controller.getDelayMs();
+        if (nextDelay > 0) {
+          await wait(nextDelay, signal);
+        }
+      }
+    }
+    return {
+      results,
+      failures: prompts
+        .map((prompt, index) => ({ task: { index, prompt, attempt: 1 }, error: errors[index] }))
+        .filter((item) => item.error !== undefined),
+    };
+  }
+
+  let tasks = prompts.map((prompt, index) => ({ index, prompt, attempt: 1 }));
+  for (let round = 0; round <= retryAttempts && tasks.length > 0; round += 1) {
+    const outcome = await runSubmissionRound(tasks, controller.getLimit(), submit, onState, {
+      minDelayMs: controller.getDelayMs(),
+      signal,
+      failFast,
+    });
+    for (const success of outcome.succeeded) {
+      results[success.task.index] = success.value;
+      errors[success.task.index] = undefined;
+      controller.success();
+      await onItemCompleted?.(success);
+    }
+    for (const failure of outcome.failed) {
+      errors[failure.task.index] = failure.error;
+      controller.failure(failure.error);
+    }
+    if (failFast && outcome.failed.length > 0) throw outcome.failed[0].error;
+    tasks = outcome.failed
+      .sort((left, right) => left.task.index - right.task.index)
+      .map(({ task }) => ({ ...task, attempt: task.attempt + 1 }));
+    if (tasks.length > 0 && round < retryAttempts) {
+      onState?.({ type: "retry-round", attempt: round + 2, tasks: [...tasks] });
+    }
+  }
+
+  return {
+    results,
+    failures: tasks.map((task) => ({
+      task: { ...task, attempt: task.attempt - 1 },
+      error: errors[task.index],
+    })),
+  };
+}
+
+function shouldRetryGenerationError(error) {
+  return (
+    error?.retryable !== false &&
+    ["UPSTREAM_UNAVAILABLE", "TIMEOUT", "JOB_FAILED", "RATE_LIMIT"].includes(error?.code)
+  );
+}
+
+function classifyGenerationHttpError(status, bodyText) {
+  let providerStatus = "";
+  let providerMessage = "";
+  try {
+    const body = JSON.parse(String(bodyText || ""));
+    providerStatus = typeof body?.error?.status === "string" ? body.error.status.slice(0, 80) : "";
+    providerMessage =
+      typeof body?.error?.message === "string" ? body.error.message.slice(0, 500) : "";
+  } catch {}
+
+  const hint = `${providerStatus} ${providerMessage}`.toLowerCase();
+  let error;
+  const modelSpecificLimit =
+    /(daily|di.rio|quota|limit).{0,120}(model|nano banana|gem.pix)|(?:model|nano banana|gem.pix).{0,120}(daily|di.rio|quota|limit)/i.test(
+      hint,
+    );
+  if (/atividade incomum|unusual activity|unusual traffic|suspicious activity/i.test(hint)) {
+    error = codedError(
+      "RATE_LIMIT",
+      "O Google Flow detectou atividade incomum na rede ou conta.",
+      true,
+    );
+    error.isUnusualActivity = true;
+    error.retryAfterMs = 45000;
+  } else if (/pol[íi]tica|viol|policy|policies|guidelines/i.test(hint)) {
+    error = codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O prompt viola as políticas de segurança de conteúdo do Google Flow.",
+      false,
+    );
+    error.isPolicyViolation = true;
+  } else if (status === 401 || /unauthenticated|login|credential|session expired/.test(hint)) {
+    error = codedError(
+      "AUTHENTICATION_FAILED",
+      "O Google Flow exige login ou reautenticação na janela do Chrome.",
+      true,
+    );
+  } else if (/recaptcha|captcha|challenge/.test(hint)) {
+    error = codedError(
+      "AUTHENTICATION_FAILED",
+      "O Google Flow recusou o CAPTCHA/reCAPTCHA desta geração. Conclua a verificação na janela do Chrome e execute novamente.",
+      false,
+    );
+  } else if (modelSpecificLimit) {
+    error = codedError(
+      "MODEL_LIMIT",
+      "O limite diário do modelo de imagem selecionado foi atingido.",
+      false,
+    );
+  } else if (status === 429 || /quota|credit|resource_exhausted|rate.?limit|too many/.test(hint)) {
+    const creditsExhausted = /credit|saldo|cota|esgotad|exhausted/.test(hint);
+    error = codedError(
+      "RATE_LIMIT",
+      "O Google Flow recusou a geração por limite, cota ou créditos disponíveis.",
+      !creditsExhausted,
+    );
+    if (!creditsExhausted) {
+      error.retryAfterMs = 60_000;
+    }
+  } else if (status === 403) {
+    error = codedError(
+      "PERMISSION_DENIED",
+      `O Google Flow recusou a geração (HTTP 403${providerStatus ? `, ${providerStatus}` : ""}). Verifique a janela do Chrome.`,
+      false,
+    );
+  } else if (Number.isFinite(status) && status >= 500) {
+    error = codedError("UPSTREAM_UNAVAILABLE", `Google Flow indisponível (HTTP ${status}).`, true);
+  } else {
+    error = codedError("JOB_FAILED", `Google Flow recusou a geração (HTTP ${status}).`);
+  }
+  error.httpStatus = status;
+  error.providerStatus = providerStatus;
+  return error;
+}
+
+function parseGenerationResponse(captured) {
+  const status = Number(captured?.status);
+  if (Number.isFinite(status) && status >= 400) {
+    throw classifyGenerationHttpError(status, captured?.bodyText);
+  }
+
+  const raw = String(captured?.bodyText || "");
+  if (raw.includes("wrb.fr") || raw.startsWith(")]}'")) {
+    const rpcs = decodificarBatchExecute(raw);
+    for (const r of rpcs) {
+      if (r.erro) {
+        const errStr = String(r.erro);
+        if (
+          /UNUSUAL_ACTIVITY|atividade incomum|unusual activity|suspicious activity/i.test(errStr)
+        ) {
+          const err = codedError(
+            "RATE_LIMIT",
+            "O Google Flow detectou atividade incomum na rede ou conta.",
+            true,
+          );
+          err.isUnusualActivity = true;
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (/muito r[áa]pido|rate.?limit|slow down|too many|RESOURCE_EXHAUSTED/i.test(errStr)) {
+          const err = codedError(
+            "RATE_LIMIT",
+            "Você está solicitando gerações muito rápido.",
+            true,
+          );
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (/pol[íi]tica|viol|policy|policies|guidelines/i.test(errStr)) {
+          const err = codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            "O comando viola as políticas de segurança de conteúdo do Google Flow.",
+            false,
+          );
+          err.isPolicyViolation = true;
+          throw err;
+        }
+        throw codedError("JOB_FAILED", `Erro RPC retornado pelo Flow: ${r.erro}`, true);
+      }
+    }
+    const allExtracted = [];
+    for (const r of rpcs) {
+      if (r.payload) {
+        const found = extrairMidiasRpc(r.payload);
+        for (const m of found) allExtracted.push(m);
+      }
+    }
+    if (allExtracted.length === 0) {
+      throw codedError("JOB_FAILED", "Nenhuma mídia encontrada na resposta batchexecute.", true);
+    }
+    return {
+      media: allExtracted.map((m) => ({
+        image: {
+          generatedImage: {
+            fifeUrl: m.url,
+            mediaId: m.mediaId,
+          },
+        },
+      })),
+    };
+  }
+
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "A resposta de geração capturada não é JSON válido.",
+    );
+  }
+
+  if (!Array.isArray(body?.media) || body.media.length === 0) {
+    throw codedError("OUTPUT_VALIDATION_FAILED", "A resposta do Google Flow não contém media[].");
+  }
+  if (
+    body.media.some(
+      (item) =>
+        typeof item?.image?.generatedImage?.fifeUrl !== "string" ||
+        !item.image.generatedImage.fifeUrl,
+    )
+  ) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O Google Flow retornou mídia que não é imagem; poster ou frame de vídeo não será aceito.",
+    );
+  }
+  return body;
+}
+
+function mediaItemsFromImageUrls(urls) {
+  const seen = new Set();
+  const media = [];
+  for (const raw of Array.isArray(urls) ? urls : []) {
+    try {
+      const parsed = new URL(String(raw || ""));
+      if (
+        parsed.protocol !== "https:" ||
+        parsed.hostname !== MEDIA_HOST ||
+        !/^\/image\/[^/]+\/?$/i.test(parsed.pathname) ||
+        seen.has(parsed.href)
+      ) {
+        continue;
+      }
+      seen.add(parsed.href);
+      const mediaId =
+        parsed.pathname.split("/").filter(Boolean).at(-1) || `image-${media.length + 1}`;
+      media.push({ image: { generatedImage: { fifeUrl: parsed.href, mediaId } } });
+    } catch {}
+  }
+  return media;
+}
+
+function mediaItemsFromImageCandidates(candidates) {
+  return mediaItemsFromImageUrls(
+    (Array.isArray(candidates) ? candidates : [])
+      .filter((candidate) => candidate?.cardType === "image")
+      .map((candidate) => candidate.url),
+  );
+}
+
+async function generatedMediaOnPage(client, sessionId) {
+  const candidates = await evaluate(
+    client,
+    sessionId,
+    `(() => { ${DEEP_HELPERS}
+      return cfAll('img')
+        .filter(cfVisible)
+        .map(img => {
+          const url = img.currentSrc || img.src || '';
+          if (!String(url).toLowerCase().startsWith('https://flow-content.google/image/')) return null;
+          let node = img;
+          for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+            const videoHotbar = node.querySelector?.('flow-video-hotbar');
+            const imageHotbar = node.querySelector?.('flow-image-hotbar');
+            if (videoHotbar) return { url, cardType: 'video' };
+            if (imageHotbar) return { url, cardType: 'image' };
+          }
+          return { url, cardType: 'unknown' };
+        })
+        .filter(Boolean);
+    })()`,
+  );
+  return mediaItemsFromImageCandidates(candidates);
+}
+
+async function recoverMediaByLabel(client, sessionId, label) {
+  const urls = await evaluate(
+    client,
+    sessionId,
+    `(() => { ${DEEP_HELPERS}
+    const label = ${JSON.stringify(label.toLowerCase())};
+    const candidates = cfAll('img, [alt], [aria-label], [title], [role="group"], span, div')
+      .filter(el => [el.getAttribute('alt'), el.getAttribute('aria-label'), el.getAttribute('title'), el.textContent,
+        (el.getAttribute('aria-labelledby') || '').split(/\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ')]
+        .some(value => String(value || '').trim().toLowerCase() === label));
+    const urls = new Set();
+    for (const candidate of candidates) {
+      if (candidate instanceof HTMLImageElement && cfVisible(candidate)) {
+        urls.add(candidate.currentSrc || candidate.src);
+        continue;
+      }
+      let node = candidate;
+      for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+        const images = [...node.querySelectorAll('img')].filter(cfVisible);
+        if (images.length === 1) { urls.add(images[0].currentSrc || images[0].src); break; }
+        if (images.length > 1) break;
+      }
+    }
+    return [...urls];
+  })()`,
+  );
+  const media = mediaItemsFromImageUrls(urls);
+  if (media.length !== 1)
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "Não foi possível identificar uma única imagem para a recuperação solicitada. Nenhuma geração foi disparada.",
+    );
+  return media[0];
+}
+
+async function waitForGeneratedMediaOnPage(
+  client,
+  sessionId,
+  baselineUrls,
+  signal,
+  timeoutMs,
+  isCancelled = () => false,
+) {
+  const baseline = new Set(baselineUrls);
+  const deadline = Date.now() + timeoutMs;
+  let initialErrorCount = 0;
+  try {
+    const rawCount = await evaluate(
+      client,
+      sessionId,
+      `document.querySelectorAll('.error-tile, flow-image-tile .error-tile-content').length`,
+    );
+    initialErrorCount = Number(rawCount) || 0;
+  } catch {}
+  while (Date.now() < deadline && !isCancelled()) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      const tileErr = await evaluate(
+        client,
+        sessionId,
+        `(() => {
+          const currentCount = document.querySelectorAll('.error-tile, flow-image-tile .error-tile-content').length;
+          if (currentCount <= ${initialErrorCount}) {
+            const banners = Array.from(document.querySelectorAll('flow-banner, [role="alert"], .banner'));
+            for (const b of banners) {
+              const txt = (b.textContent || "").toLowerCase();
+              if (/notamos uma atividade incomum|unusual activity/i.test(txt)) return { type: "unusual_activity", text: b.textContent };
+              if (/muito r[áa]pido|aguarde um instante/i.test(txt)) return { type: "rate_limit", text: b.textContent };
+              if (/high demand|alta demanda|experiencing high demand/i.test(txt)) return { type: "high_demand", text: b.textContent };
+            }
+            return null;
+          }
+          const tiles = Array.from(document.querySelectorAll('[data-tile-id], [role="group"], flow-video-tile, flow-image-tile, [class*="tile"]'));
+          for (const t of tiles) {
+            const txt = (t.textContent || "").toLowerCase();
+            if (/notamos uma atividade incomum|unusual activity|unusual traffic|suspicious activity/i.test(txt)) return { type: "unusual_activity", text: t.textContent };
+            if (/muito r[áa]pido|aguarde um instante|too quickly|too fast|rate limit|slow down/i.test(txt)) return { type: "rate_limit", text: t.textContent };
+            if (/pol[íi]tica|viol|policy|policies|guidelines/i.test(txt)) return { type: "policy", text: t.textContent };
+            if (/falha|warning|error/i.test(txt) && /atividade incomum/i.test(txt)) return { type: "unusual_activity", text: t.textContent };
+          }
+          return null;
+        })()`,
+      );
+      if (tileErr) {
+        if (tileErr.type === "unusual_activity") {
+          const err = codedError(
+            "RATE_LIMIT",
+            "Notamos uma atividade incomum na sua conta ou rede.",
+            true,
+          );
+          err.isUnusualActivity = true;
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (tileErr.type === "rate_limit") {
+          const err = codedError(
+            "RATE_LIMIT",
+            "Você está solicitando gerações muito rápido.",
+            true,
+          );
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (tileErr.type === "policy") {
+          const err = codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            "O comando viola as políticas de conteúdo do Google Flow.",
+            false,
+          );
+          err.isPolicyViolation = true;
+          throw err;
+        }
+        if (tileErr.type === "high_demand") {
+          const err = codedError("RATE_LIMIT", "Alta demanda no Google Flow no momento.", true);
+          err.retryAfterMs = 60000;
+          throw err;
+        }
+      }
+      const fresh = (await generatedMediaOnPage(client, sessionId)).filter(
+        (item) => !baseline.has(item.image.generatedImage.fifeUrl),
+      );
+      if (fresh.length > 0) return { media: fresh };
+    } catch (err) {
+      if (
+        err?.code === "RATE_LIMIT" ||
+        err?.code === "OUTPUT_VALIDATION_FAILED" ||
+        err?.code === "CANCELLED"
+      ) {
+        throw err;
+      }
+    }
+    await sleep(750, signal);
+  }
+  throw codedError(
+    "TIMEOUT",
+    "Nenhuma imagem nova apareceu no projeto do Google Flow dentro do tempo limite.",
+  );
+}
+
+function extensionForMime(mimeType) {
+  const mime = String(mimeType).toLowerCase();
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("webp")) return ".webp";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return ".jpg";
+  return ".img";
+}
+
+async function downloadGeneratedImage(item, prompt, promptOrdinal, variantOrdinal, services) {
+  const generated = item?.image?.generatedImage;
+  const mediaUrl = generated?.fifeUrl;
+  const mediaId = generated?.mediaId || item?.name || `image-${promptOrdinal}-${variantOrdinal}`;
+  if (typeof mediaUrl !== "string" || !mediaUrl)
+    throw codedError("OUTPUT_VALIDATION_FAILED", "Imagem gerada sem fifeUrl.");
+
+  const parsed = new URL(mediaUrl);
+  if (parsed.protocol !== "https:" || parsed.hostname !== MEDIA_HOST) {
+    throw codedError("OUTPUT_VALIDATION_FAILED", `Host de mídia inesperado: ${parsed.hostname}`);
+  }
+  if (!/^\/image\/[^/]+\/?$/i.test(parsed.pathname)) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      `A mídia não usa o endpoint original de imagem do Flow: ${parsed.pathname}`,
+    );
+  }
+  const urlMediaId = parsed.pathname.split("/").filter(Boolean).at(-1);
+  if (generated?.mediaId && urlMediaId && String(generated.mediaId) !== urlMediaId) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O mediaId retornado pelo Flow não corresponde ao arquivo de imagem solicitado.",
+    );
+  }
+
+  let response;
+  try {
+    response = await fetch(mediaUrl, { signal: services.signal, redirect: "error" });
+  } catch (cause) {
+    if (services.signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    throw codedError(
+      "UPSTREAM_UNAVAILABLE",
+      `Falha ao baixar imagem gerada: ${cause?.message ?? cause}`,
+      true,
+    );
+  }
+  if (!response.ok)
+    throw codedError(
+      "UPSTREAM_UNAVAILABLE",
+      `Falha ao baixar imagem gerada (HTTP ${response.status}).`,
+      response.status >= 500,
+    );
+
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES)
+    throw codedError("OUTPUT_VALIDATION_FAILED", "Imagem excede 25 MB.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_IMAGE_BYTES)
+    throw codedError("OUTPUT_VALIDATION_FAILED", "Imagem vazia ou maior que 25 MB.");
+
+  const mimeType = (response.headers.get("content-type") || "image/jpeg")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+  if (!mimeType.startsWith("image/"))
+    throw codedError("OUTPUT_VALIDATION_FAILED", `MIME inesperado: ${mimeType}`);
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a;
+  const isWebp =
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50;
+  if (!isJpeg && !isPng && !isWebp) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O download do Flow declarou imagem, mas os bytes não têm assinatura JPEG, PNG ou WebP válida.",
+    );
+  }
+  if (
+    (mimeType.includes("jpeg") && !isJpeg) ||
+    (mimeType.includes("png") && !isPng) ||
+    (mimeType.includes("webp") && !isWebp)
+  ) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      `O MIME ${mimeType} não corresponde à assinatura binária do arquivo baixado.`,
+    );
+  }
+
+  const ext = extensionForMime(mimeType);
+  const promptPart = String(promptOrdinal).padStart(3, "0");
+  const variantPart = String(variantOrdinal).padStart(2, "0");
+  const filename = `${promptPart}_v${variantPart}_${safeFilename(prompt, String(mediaId))}${ext}`;
+  const artifactId = `google-flow-image-${promptPart}-v${variantPart}`;
+  const outputPath =
+    typeof services?.getOutputPath === "function"
+      ? services.getOutputPath(filename)
+      : services?.getWorkspacePath
+        ? services.getWorkspacePath(filename)
+        : filename;
+  await writeFile(outputPath, bytes);
+
+  return {
+    file: {
+      id: artifactId,
+      name: filename,
+      mimeType,
+      size: bytes.byteLength,
+      url: `artifact://${artifactId}`,
+    },
+    artifact: {
+      id: artifactId,
+      name: filename,
+      mimeType,
+      size: bytes.byteLength,
+      source: { kind: "path", path: filename },
+    },
+  };
+}
+
+function mediaItemsFromVideoUrls(urls) {
+  const seen = new Set();
+  const media = [];
+  for (const raw of Array.isArray(urls) ? urls : []) {
+    try {
+      const parsed = new URL(String(raw || ""));
+      if (parsed.protocol !== "https:" || parsed.hostname !== MEDIA_HOST || seen.has(parsed.href)) {
+        continue;
+      }
+      if (!parsed.pathname.includes("/video/")) continue;
+      seen.add(parsed.href);
+      const mediaId =
+        parsed.pathname.split("/").filter(Boolean).at(-1) || `video-${media.length + 1}`;
+      media.push({ video: { fifeUrl: parsed.href, mediaId } });
+    } catch {}
+  }
+  return media;
+}
+
+async function generatedVideosOnPage(client, sessionId) {
+  const urls = await evaluate(
+    client,
+    sessionId,
+    `(() => { ${DEEP_HELPERS}
+      const list = cfAll('video, video source')
+        .map(el => el.currentSrc || el.src || '')
+        .filter(src => String(src).toLowerCase().includes('flow-content.google/video/'));
+      return Array.from(new Set(list));
+    })()`,
+  );
+  return mediaItemsFromVideoUrls(urls);
+}
+
+async function waitForGeneratedVideosOnPage(
+  client,
+  sessionId,
+  baselineUrls,
+  signal,
+  timeoutMs,
+  isCancelled = () => false,
+) {
+  const baseline = new Set(baselineUrls);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !isCancelled()) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      const tileErr = await evaluate(
+        client,
+        sessionId,
+        `(() => {
+          const tiles = Array.from(document.querySelectorAll('[data-tile-id], [role="group"], flow-video-tile, flow-image-tile, [class*="tile"]'));
+          for (const t of tiles) {
+            const txt = (t.textContent || "").toLowerCase();
+            if (/notamos uma atividade incomum|unusual activity|unusual traffic|suspicious activity/i.test(txt)) return { type: "unusual_activity", text: t.textContent };
+            if (/muito r[áa]pido|aguarde um instante|too quickly|too fast|rate limit|slow down/i.test(txt)) return { type: "rate_limit", text: t.textContent };
+            if (/pol[íi]tica|viol|policy|policies|guidelines/i.test(txt)) return { type: "policy", text: t.textContent };
+            if (/falha|warning|error/i.test(txt) && /atividade incomum/i.test(txt)) return { type: "unusual_activity", text: t.textContent };
+          }
+          const banners = Array.from(document.querySelectorAll('flow-banner, [role="alert"], .banner'));
+          for (const b of banners) {
+            const txt = (b.textContent || "").toLowerCase();
+            if (/notamos uma atividade incomum|unusual activity/i.test(txt)) return { type: "unusual_activity", text: b.textContent };
+            if (/muito r[áa]pido|aguarde um instante/i.test(txt)) return { type: "rate_limit", text: b.textContent };
+            if (/high demand|alta demanda|experiencing high demand/i.test(txt)) return { type: "high_demand", text: b.textContent };
+          }
+          return null;
+        })()`,
+      );
+      if (tileErr) {
+        if (tileErr.type === "unusual_activity") {
+          const err = codedError(
+            "RATE_LIMIT",
+            "Notamos uma atividade incomum na sua conta ou rede.",
+            true,
+          );
+          err.isUnusualActivity = true;
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (tileErr.type === "rate_limit") {
+          const err = codedError(
+            "RATE_LIMIT",
+            "Você está solicitando gerações muito rápido.",
+            true,
+          );
+          err.retryAfterMs = 45000;
+          throw err;
+        }
+        if (tileErr.type === "policy") {
+          const err = codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            "O comando viola as políticas de conteúdo do Google Flow.",
+            false,
+          );
+          err.isPolicyViolation = true;
+          throw err;
+        }
+        if (tileErr.type === "high_demand") {
+          const err = codedError("RATE_LIMIT", "Alta demanda no Google Flow no momento.", true);
+          err.retryAfterMs = 60000;
+          throw err;
+        }
+      }
+      const fresh = (await generatedVideosOnPage(client, sessionId)).filter(
+        (item) => !baseline.has(item.video.fifeUrl),
+      );
+      if (fresh.length > 0) return { media: fresh };
+    } catch (err) {
+      if (
+        err?.code === "RATE_LIMIT" ||
+        err?.code === "OUTPUT_VALIDATION_FAILED" ||
+        err?.code === "CANCELLED"
+      ) {
+        throw err;
+      }
+    }
+    await sleep(1000, signal);
+  }
+  throw codedError(
+    "TIMEOUT",
+    "Nenhum vídeo novo apareceu no projeto do Google Flow dentro do tempo limite.",
+  );
+}
+
+async function downloadGeneratedVideo(item, prompt, promptOrdinal, services) {
+  const mediaUrl = item?.video?.fifeUrl;
+  const mediaId = item?.video?.mediaId || `video-${promptOrdinal}`;
+  if (typeof mediaUrl !== "string" || !mediaUrl) {
+    throw codedError("OUTPUT_VALIDATION_FAILED", "Vídeo gerado sem fifeUrl.");
+  }
+
+  const parsed = new URL(mediaUrl);
+  if (parsed.protocol !== "https:" || parsed.hostname !== MEDIA_HOST) {
+    throw codedError("OUTPUT_VALIDATION_FAILED", `Host de mídia inesperado: ${parsed.hostname}`);
+  }
+
+  let response;
+  try {
+    response = await fetch(mediaUrl, { signal: services.signal, redirect: "error" });
+  } catch (cause) {
+    if (services.signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    throw codedError(
+      "UPSTREAM_UNAVAILABLE",
+      `Falha ao baixar vídeo gerado: ${cause?.message ?? cause}`,
+      true,
+    );
+  }
+  if (!response.ok) {
+    throw codedError(
+      "UPSTREAM_UNAVAILABLE",
+      `Falha ao baixar vídeo gerado (HTTP ${response.status}).`,
+      response.status >= 500,
+    );
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength < 1) {
+    throw codedError("OUTPUT_VALIDATION_FAILED", "Vídeo gerado está vazio.");
+  }
+
+  const mimeType = (response.headers.get("content-type") || "video/mp4")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+
+  const promptPart = String(promptOrdinal).padStart(3, "0");
+  const filename = `${promptPart}_video_${safeFilename(prompt, String(mediaId))}.mp4`;
+  const artifactId = `google-flow-video-${promptPart}`;
+  const outputPath =
+    typeof services?.getOutputPath === "function"
+      ? services.getOutputPath(filename)
+      : services?.getWorkspacePath
+        ? services.getWorkspacePath(filename)
+        : filename;
+  await writeFile(outputPath, bytes);
+
+  return {
+    file: {
+      id: artifactId,
+      name: filename,
+      mimeType,
+      size: bytes.byteLength,
+      url: `artifact://${artifactId}`,
+    },
+    artifact: {
+      id: artifactId,
+      name: filename,
+      mimeType,
+      size: bytes.byteLength,
+      source: { kind: "path", path: filename },
+    },
+  };
+}
+
+async function maybeCloseBrowser(client, browserInfo, keepBrowserOpen) {
+  if (!keepBrowserOpen) {
+    try {
+      await client.send("Browser.close");
+    } catch {}
+  }
+  client.close();
+}
+
+async function configureProfile(request, services) {
+  const settings = request?.settings ?? {};
+  let runtime;
+  try {
+    runtime = resolveProfileRuntime(request, services);
+    assertDedicatedProfilePath(runtime.profilePath);
+  } catch (error) {
+    return resultError(
+      error?.code || "INVALID_CONFIGURATION",
+      error?.message || "Perfil inválido.",
+    );
+  }
+  if (request?.invocation?.action === "status") {
+    return {
+      status: "success",
+      values: { ready: await profileIsPrepared(runtime.profilePath, runtime.accountProfile) },
+    };
+  }
+  if (request?.invocation?.action !== "prepare") {
+    return resultError("INVALID_CONFIGURATION", "Ação de configuração de perfil inválida.");
+  }
+
+  let client, child, extensionBridge;
+  try {
+    const launched = await launchOrReuseChrome({
+      executables: await resolveChromeExecutables(settings),
+      profilePath: runtime.profilePath,
+      port: runtime.port,
+      startMinimized: false,
+      keepBrowserOpen: false,
+      startUrl: FLOW_LANDING_URL,
+      signal: services.signal,
+    });
+    child = launched.child;
+    client = await new CdpClient(launched.version.webSocketDebuggerUrl).connect(services.signal);
+    const page = await attachFlowPage(client, FLOW_LANDING_URL, true, services.signal, true);
+    const extensionWaitMs = PROFILE_SETUP_WAIT_MS;
+    [extensionBridge] = await Promise.all([
+      attachExtensionBridge(client, page.sessionId, {
+        signal: services.signal,
+        request,
+        profileId: runtime.accountProfile,
+        waitMs: extensionWaitMs,
+      }),
+      waitForFlowProfile(client, page.sessionId, settings, services.signal, PROFILE_SETUP_WAIT_MS),
+    ]);
+    await markProfilePrepared(
+      runtime.profilePath,
+      runtime.accountProfile,
+      extensionBridge.identity,
+    );
+    return {
+      status: "success",
+      values: {
+        ready: true,
+        message: `Perfil ${runtime.accountProfile} validado no Google Flow.`,
+      },
+    };
+  } catch (error) {
+    return resultError(
+      error?.code || "AUTHENTICATION_FAILED",
+      error?.message || "Não foi possível validar o login do Google Flow.",
+      Boolean(error?.retryable),
+    );
+  } finally {
+    await extensionBridge?.dispose();
+    await closeBrowserGracefully(client, child);
+  }
+}
+
+export async function execute(request, services) {
+  if (request?.invocation?.mode === "configure") return await configureProfile(request, services);
+  if (request?.invocation?.mode !== "start") {
+    return resultError(
+      "INVALID_CONFIGURATION",
+      "Esta capability suporta somente invocation.mode=start.",
+    );
+  }
+
+  const capabilityId = String(request?.capabilityId ?? "generate-images-in-browser");
+  const isVideoGeneration = capabilityId === "generate-video-in-browser";
+  const isImageAnimation = capabilityId === "animate-image-in-browser";
+  const isVideoCapability = isVideoGeneration || isImageAnimation;
+
+  if (
+    ![
+      "generate-images-in-browser",
+      "animate-image-in-browser",
+      "generate-video-in-browser",
+    ].includes(capabilityId)
+  ) {
+    return resultError("INVALID_CONFIGURATION", `Capability não suportada: ${capabilityId}`);
+  }
+
+  let prompts = normalizePrompts(request?.inputs?.prompts);
+  const singleImageOutput = requestsSingleImage(request);
+  const singleVideoOutput = requestsSingleVideo(request);
+
+  if (capabilityId === "generate-images-in-browser") {
+    if (prompts.length === 0) return resultError("INVALID_INPUT", "Informe pelo menos um prompt.");
+    if (singleImageOutput && prompts.length !== 1) {
+      return resultError(
+        "INVALID_INPUT",
+        "Um output image exige exatamente um prompt. Use files para gerar um lote.",
+      );
+    }
+  } else if (isVideoGeneration) {
+    if (prompts.length === 0)
+      return resultError("INVALID_INPUT", "Informe pelo menos um prompt de vídeo.");
+  } else if (isImageAnimation) {
+    if (prompts.length === 0) prompts = [""];
+  }
+
+  let rawReferences = request?.inputs?.reference_images;
+  if (isImageAnimation && !rawReferences) {
+    rawReferences = request?.inputs?.images ?? request?.inputs?.image;
+  }
+  const referenceImages = normalizeReferenceImages(rawReferences);
+  const coreBatchIndex = Number.isInteger(request?.batch?.index) ? request.batch.index : undefined;
+  const coreBatchTotal = Number.isInteger(request?.batch?.total) ? request.batch.total : undefined;
+
+  const settings = request?.settings ?? {};
+  const keepBrowserOpen = settings.keepBrowserOpen === true;
+  const startMinimized = settings.startMinimized !== false;
+  const requestTimeoutSeconds = Number.isInteger(settings.requestTimeoutSeconds)
+    ? settings.requestTimeoutSeconds
+    : isVideoCapability
+      ? 450
+      : 240;
+  const delayBetweenPromptsMs = Number.isInteger(request?.configuration?.delayBetweenPromptsMs)
+    ? request.configuration.delayBetweenPromptsMs
+    : 6000;
+  const requestedConcurrentGenerations = Number.isInteger(
+    request?.configuration?.maxConcurrentGenerations,
+  )
+    ? request.configuration.maxConcurrentGenerations
+    : 1;
+  const retryAttempts = Number.isInteger(request?.configuration?.retryAttempts)
+    ? request.configuration.retryAttempts
+    : 1;
+  const maxReferenceImages = Number.isInteger(request?.configuration?.maxReferenceImages)
+    ? request.configuration.maxReferenceImages
+    : isImageAnimation
+      ? 1
+      : 10;
+  const requestedMaxImagesPerPrompt = Number.isInteger(request?.configuration?.maxImagesPerPrompt)
+    ? request.configuration.maxImagesPerPrompt
+    : 1;
+  if (requestedConcurrentGenerations < 1 || requestedConcurrentGenerations > 3) {
+    return resultError("INVALID_CONFIGURATION", "maxConcurrentGenerations deve ficar entre 1 e 3.");
+  }
+  if (retryAttempts < 0 || retryAttempts > 2) {
+    return resultError("INVALID_CONFIGURATION", "retryAttempts deve ficar entre 0 e 2.");
+  }
+  if (maxReferenceImages < 0 || maxReferenceImages > 10) {
+    return resultError("INVALID_CONFIGURATION", "maxReferenceImages deve ficar entre 0 e 10.");
+  }
+  if (requestedMaxImagesPerPrompt < 1 || requestedMaxImagesPerPrompt > 4) {
+    return resultError("INVALID_CONFIGURATION", "maxImagesPerPrompt deve ficar entre 1 e 4.");
+  }
+  const maxImagesPerPrompt = singleImageOutput ? 1 : requestedMaxImagesPerPrompt;
+  const stepLogs = [];
+  const diagnosticLogs = [];
+  const diagnosticFile =
+    settings.diagnosticTrace === false || typeof services?.getWorkspacePath !== "function"
+      ? null
+      : services.getWorkspacePath(
+          `diagnostics/${String(request?.executionId || "execution")}-${String(request?.blockId || "block")}-attempt-${Number(request?.attempt || 1)}-${randomUUID()}.json`,
+        );
+  const step = (message) => {
+    stepLogs.push(message);
+    if (stepLogs.length > 240) stepLogs.shift();
+    try {
+      console.error(`[Google Flow] ${message}`);
+    } catch {}
+  };
+  const trace = (message) => {
+    if (settings.diagnosticTrace === false) return;
+    diagnosticLogs.push(message);
+    if (diagnosticLogs.length > 5_000) diagnosticLogs.shift();
+  };
+  step(
+    settings.diagnosticTrace === false
+      ? "Depuração contínua desativada explicitamente na configuração do plugin."
+      : "Depuração contínua ativa durante o job inteiro.",
+  );
+
+  const generationCheckpoint =
+    capabilityId === "generate-images-in-browser" && coreBatchIndex === undefined
+      ? await readGenerationCheckpoint(request, services, prompts)
+      : undefined;
+  const completedPromptIndexes = new Set(
+    (generationCheckpoint?.completedPromptIndexes ?? []).filter(
+      (index) => Number.isInteger(index) && index >= 0 && index < prompts.length,
+    ),
+  );
+  if (completedPromptIndexes.size > 0) {
+    step(
+      `Retomando a fila interna com ${completedPromptIndexes.size} prompt(s) já concluído(s), sem reenviá-los.`,
+    );
+  }
+
+  let navigation;
+  let chromeExecutables;
+  let profileRuntime;
+  let generationPreferences;
+  let videoPreferences;
+  let referencePaths;
+  try {
+    profileRuntime = resolveProfileRuntime(request, services);
+    if (isVideoCapability) {
+      videoPreferences = resolveVideoPreferences(request?.configuration ?? {});
+    } else {
+      generationPreferences = resolveGenerationPreferences(request?.configuration ?? {});
+    }
+    assertDedicatedProfilePath(profileRuntime.profilePath);
+    if (!(await profileIsPrepared(profileRuntime.profilePath, profileRuntime.accountProfile))) {
+      throw codedError(
+        "AUTHENTICATION_FAILED",
+        `O perfil ${profileRuntime.accountProfile} ainda não foi salvo. Abra a configuração do Método e use Salvar perfil antes de executar.`,
+      );
+    }
+    const checkpointNavigation =
+      generationCheckpoint?.accountProfile === profileRuntime.accountProfile &&
+      generationCheckpoint?.projectUrl &&
+      isFlowUrl(generationCheckpoint.projectUrl, true)
+        ? { url: validateFlowUrl(generationCheckpoint.projectUrl), pinned: true }
+        : undefined;
+    navigation =
+      (await readCaptchaRetryNavigation(request, services)) ??
+      checkpointNavigation ??
+      resolveNavigationTarget(request);
+    if (navigation.captchaRetry) {
+      step("Retomando o projeto recém-verificado após CAPTCHA.");
+    }
+    chromeExecutables = await resolveChromeExecutables(settings);
+    referencePaths = await prepareReferenceImagePaths(
+      referenceImages,
+      services,
+      maxReferenceImages,
+    );
+    step(`Chrome detectado: ${chromeExecutables[0] || "candidato automático"}.`);
+    step(`Perfil de conta selecionado: ${profileRuntime.accountProfile}.`);
+    if (diagnosticFile) step(`Captura integral deste job: ${diagnosticFile}.`);
+  } catch (cause) {
+    return resultError(
+      cause?.code ?? "INVALID_CONFIGURATION",
+      cause?.message ?? String(cause),
+      Boolean(cause?.retryable),
+    );
+  }
+
+  let browserInfo;
+  let client;
+  let responseTracker;
+  let extensionBridge;
+  let activeProjectUrl;
+  let referencesAttached = navigation.referencesAttached === true;
+  let generationSubmitted = false;
+  const files = Array.isArray(generationCheckpoint?.files)
+    ? structuredClone(generationCheckpoint.files)
+    : [];
+  const artifacts = [];
+  try {
+    browserInfo = await launchOrReuseChrome({
+      executables: chromeExecutables,
+      profilePath: profileRuntime.profilePath,
+      port: profileRuntime.port,
+      startMinimized,
+      keepBrowserOpen,
+      startUrl: FLOW_LANDING_URL,
+      signal: services.signal,
+    });
+    step(
+      browserInfo.startedByPlugin
+        ? "Chrome iniciado pelo plugin."
+        : "Chrome existente reutilizado.",
+    );
+
+    client = await new CdpClient(browserInfo.version.webSocketDebuggerUrl, trace).connect(
+      services.signal,
+    );
+    step(`CDP conectado em 127.0.0.1:${profileRuntime.port}.`);
+    const page = await attachFlowPage(
+      client,
+      navigation.url,
+      navigation.pinned,
+      services.signal,
+      false,
+    );
+    const sessionId = page.sessionId;
+    step("Página do Google Flow anexada ao CDP.");
+    extensionBridge = await attachExtensionBridge(client, sessionId, {
+      signal: services.signal,
+      request,
+      profileId: profileRuntime.accountProfile,
+      waitMs: 10000,
+    });
+    step("ContentFlow Browser Bridge conectada; teclado e mouse permanecem isolados.");
+
+    let activePreferences = { ...generationPreferences };
+    if (!isVideoCapability) {
+      step(
+        activePreferences.modelKey || activePreferences.aspectRatioKey
+          ? `Preferências explícitas serão aplicadas pelos controles visíveis do Flow (modelo=${MODEL_LABELS[activePreferences.modelKey] || "Flow"}; proporção=${ASPECT_RATIO_LABELS[activePreferences.aspectRatioKey] || "Flow"}).`
+          : "Modo Automático do Flow ativo: modelo e proporção não serão alterados pelo plugin.",
+      );
+    }
+    const credentialsTracker = createCredentialsTracker(client, sessionId, services.signal);
+    responseTracker = createBatchResponseTracker(client, sessionId, services.signal);
+
+    if (!startMinimized) {
+      await showBrowserWindow(client, sessionId, page.targetId);
+      step("Janela do Chrome confirmada em modo visível (headless desativado).");
+    }
+    const initialProjectState = await ensureFlowProjectReady(
+      client,
+      sessionId,
+      settings,
+      services.signal,
+      false,
+      trace,
+      !navigation.pinned,
+    );
+    activeProjectUrl =
+      (await getActiveFlowProjectUrl(client, sessionId)) || initialProjectState?.url;
+    step(`Projeto do Google Flow pronto: ${activeProjectUrl || "URL não detectada"}.`);
+    if (navigation.captureLabel) {
+      await sleep(3_000, services.signal);
+      const media = await recoverMediaByLabel(client, sessionId, navigation.captureLabel);
+      const recovered = await downloadGeneratedImage(media, prompts[0], 1, 1, services);
+      responseTracker?.close();
+      responseTracker = null;
+      await extensionBridge.dispose();
+      extensionBridge = null;
+      await maybeCloseBrowser(client, browserInfo, keepBrowserOpen);
+      client = null;
+      await clearCaptchaRetryNavigation(request, services);
+      return {
+        status: "success",
+        values: {
+          images: singleImageOutput ? recovered.file : [recovered.file],
+          project_url: activeProjectUrl,
+        },
+        artifacts: [recovered.artifact],
+        logs: [
+          ...stepLogs,
+          "Resultado existente recuperado por seleção explícita do operador; nenhuma nova geração foi enviada.",
+        ],
+      };
+    }
+
+    if (isImageAnimation) {
+      step("Iniciando fluxo de animação de imagem no Google Flow...");
+      if (
+        referencePaths.length > 0 &&
+        (!referencesAttached ||
+          (await attachedReferenceCount(client, sessionId)) < referencePaths.length)
+      ) {
+        await uploadReferenceImages(
+          client,
+          sessionId,
+          extensionBridge,
+          referencePaths,
+          settings,
+          services.signal,
+          step,
+        );
+        referencesAttached = true;
+      }
+
+      await triggerAnimateOnImage(client, sessionId, extensionBridge, step);
+      await sleep(1000, services.signal);
+
+      if (videoPreferences) {
+        await ensureFlowModelAndRatio(
+          client,
+          sessionId,
+          extensionBridge,
+          {
+            modelName: videoPreferences.videoModelName,
+            resolutionLabel: videoPreferences.videoResolutionLabel,
+          },
+          step,
+        );
+      }
+
+      const promptText = prompts[0] || "";
+      if (promptText) {
+        await waitForPromptEditorStable(
+          client,
+          sessionId,
+          settings.promptSelector || "",
+          services.signal,
+        );
+        await setPromptWithExtension(
+          extensionBridge,
+          promptText,
+          settings.promptSelector || "",
+          "animate:0:prompt",
+          services.signal,
+          client,
+          sessionId,
+        );
+        step(`Instrução de animação preenchida (${promptText.length} caracteres).`);
+      }
+
+      await waitGenerateEnabled(client, sessionId, settings, services.signal, 15000);
+      const baselineMedia = await generatedVideosOnPage(client, sessionId);
+      const baselineUrls = baselineMedia.map((item) => item.video.fifeUrl);
+
+      generationSubmitted = true;
+      await clickSubmit(client, sessionId, settings, services.signal);
+      step("Geração de animação confirmada. Aguardando conclusão do vídeo...");
+
+      const responseTimeoutMs = requestTimeoutSeconds * 1000;
+      const videoResult = await waitForGeneratedVideosOnPage(
+        client,
+        sessionId,
+        baselineUrls,
+        services.signal,
+        responseTimeoutMs,
+      );
+      const selectedVideo = videoResult.media[0];
+      const result = await downloadGeneratedVideo(
+        selectedVideo,
+        promptText || "animacao",
+        1,
+        services,
+      );
+      files.push(result.file);
+      artifacts.push(result.artifact);
+      step(`Vídeo animado salvo (${result.file.name}).`);
+
+      activeProjectUrl = (await getActiveFlowProjectUrl(client, sessionId)) || activeProjectUrl;
+      if (settings.minimizeWhenReady === true)
+        await setBrowserWindowState(client, page.targetId, "minimized");
+      responseTracker?.close();
+      responseTracker = null;
+      await extensionBridge.dispose();
+      extensionBridge = null;
+      await maybeCloseBrowser(client, browserInfo, keepBrowserOpen);
+      client = null;
+      await clearCaptchaRetryNavigation(request, services);
+
+      return {
+        status: "success",
+        values: {
+          video: singleVideoOutput ? files[0] : files,
+          project_url: activeProjectUrl,
+        },
+        artifacts,
+        usage: { provider: "Google Labs / Flow", outputUnits: files.length, unit: "video" },
+        logs: [
+          ...stepLogs,
+          ...diagnosticLogs,
+          `${files.length} vídeo(s) animado(s) do Google Flow finalizado(s).`,
+        ],
+      };
+    }
+
+    if (isVideoGeneration) {
+      step("Iniciando fluxo de geração de vídeo no Google Flow...");
+      if (videoPreferences) {
+        await ensureFlowModelAndRatio(
+          client,
+          sessionId,
+          extensionBridge,
+          {
+            modelName: videoPreferences.videoModelName,
+            ratioLabel: ASPECT_RATIO_LABELS[videoPreferences.aspectRatioKey] || null,
+            resolutionLabel: videoPreferences.videoResolutionLabel,
+          },
+          step,
+        );
+      }
+
+      for (let index = 0; index < prompts.length; index += 1) {
+        if (services.signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+        const currentPrompt = prompts[index];
+        const label = `Vídeo ${index + 1}/${prompts.length}`;
+        step(`${label}: preparando prompt.`);
+
+        await waitForPromptEditorStable(
+          client,
+          sessionId,
+          settings.promptSelector || "",
+          services.signal,
+        );
+        await setPromptWithExtension(
+          extensionBridge,
+          currentPrompt,
+          settings.promptSelector || "",
+          `video:${index}:prompt`,
+          services.signal,
+          client,
+          sessionId,
+        );
+        step(`${label}: prompt preenchido (${currentPrompt.length} caracteres).`);
+
+        await waitGenerateEnabled(client, sessionId, settings, services.signal, 15000);
+        const baselineMedia = await generatedVideosOnPage(client, sessionId);
+        const baselineUrls = baselineMedia.map((item) => item.video.fifeUrl);
+
+        generationSubmitted = true;
+        await clickSubmit(client, sessionId, settings, services.signal);
+        step(`${label}: envio confirmado. Aguardando vídeo...`);
+
+        const responseTimeoutMs = requestTimeoutSeconds * 1000;
+        const videoResult = await waitForGeneratedVideosOnPage(
+          client,
+          sessionId,
+          baselineUrls,
+          services.signal,
+          responseTimeoutMs,
+        );
+        const selectedVideo = videoResult.media[0];
+        const result = await downloadGeneratedVideo(
+          selectedVideo,
+          currentPrompt,
+          index + 1,
+          services,
+        );
+        files.push(result.file);
+        artifacts.push(result.artifact);
+        step(`${label}: salvo (${result.file.name}).`);
+
+        if (index + 1 < prompts.length && delayBetweenPromptsMs > 0) {
+          await sleep(delayBetweenPromptsMs, services.signal);
+        }
+      }
+
+      activeProjectUrl = (await getActiveFlowProjectUrl(client, sessionId)) || activeProjectUrl;
+      if (settings.minimizeWhenReady === true)
+        await setBrowserWindowState(client, page.targetId, "minimized");
+      responseTracker?.close();
+      responseTracker = null;
+      await extensionBridge.dispose();
+      extensionBridge = null;
+      await maybeCloseBrowser(client, browserInfo, keepBrowserOpen);
+      client = null;
+      await clearCaptchaRetryNavigation(request, services);
+
+      return {
+        status: "success",
+        values: {
+          video: singleVideoOutput ? files[0] : files,
+          project_url: activeProjectUrl,
+        },
+        artifacts,
+        usage: { provider: "Google Labs / Flow", outputUnits: files.length, unit: "video" },
+        logs: [
+          ...stepLogs,
+          ...diagnosticLogs,
+          `${files.length} vídeo(s) do Google Flow finalizado(s).`,
+        ],
+      };
+    }
+
+    let targetModelLabel = MODEL_LABELS[activePreferences.modelKey] || null;
+    const targetRatioLabel = ASPECT_RATIO_LABELS[activePreferences.aspectRatioKey] || null;
+    if (targetModelLabel || targetRatioLabel) {
+      try {
+        await ensureFlowModelAndRatio(
+          client,
+          sessionId,
+          extensionBridge,
+          {
+            modelName: targetModelLabel,
+            ratioLabel: targetRatioLabel,
+            outputCount: maxImagesPerPrompt,
+            forceImageMode: true,
+            settings,
+            signal: services.signal,
+          },
+          step,
+        );
+      } catch (err) {
+        if (activePreferences.fallbackOnModelLimit) {
+          const fallbackModelKey = nextImageModelFallback(activePreferences.modelKey);
+          if (fallbackModelKey) {
+            activePreferences = {
+              ...activePreferences,
+              modelKey: fallbackModelKey,
+              imageModelName: IMAGE_MODELS[fallbackModelKey],
+            };
+            targetModelLabel = MODEL_LABELS[fallbackModelKey];
+            step(`Modelo inicial não disponível; acionando fallback para ${targetModelLabel}.`);
+            await ensureFlowModelAndRatio(
+              client,
+              sessionId,
+              extensionBridge,
+              {
+                modelName: targetModelLabel,
+                ratioLabel: targetRatioLabel,
+                outputCount: maxImagesPerPrompt,
+                forceImageMode: true,
+                settings,
+                signal: services.signal,
+              },
+              step,
+            );
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    step("Editor Slate detectado.");
+    if (
+      !referencesAttached ||
+      (await attachedReferenceCount(client, sessionId)) < referencePaths.length
+    )
+      await uploadReferenceImages(
+        client,
+        sessionId,
+        extensionBridge,
+        referencePaths,
+        settings,
+        services.signal,
+        step,
+      );
+    referencesAttached = referencePaths.length > 0;
+    if (navigation.referencesAttached)
+      step("Retomando o projeto com a referência já anexada, sem repetir o upload.");
+
+    const pendingPromptEntries = prompts
+      .map((prompt, index) => ({ prompt, index }))
+      .filter((entry) => !completedPromptIndexes.has(entry.index));
+    const pendingPrompts = pendingPromptEntries.map((entry) => entry.prompt);
+    const originalPromptIndex = (queueIndex) =>
+      pendingPromptEntries[queueIndex]?.index ?? queueIndex;
+    const maxConcurrentGenerations = Math.min(2, Math.max(1, requestedConcurrentGenerations));
+    let submissionLock = Promise.resolve();
+    const submit = async (task) => {
+      if (services.signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+      task = { ...task, index: originalPromptIndex(task.index) };
+      const absolutePromptIndex = coreBatchIndex ?? task.index;
+      const promptTotal = coreBatchTotal ?? prompts.length;
+      const label = `Prompt ${absolutePromptIndex + 1}/${promptTotal} (tentativa ${task.attempt}/${retryAttempts + 1})`;
+      return {
+        completion: (async () => {
+          const fallbackModelsTried = new Set();
+          const switchToNextImageModel = async (reason) => {
+            const fallbackModelKey = nextImageModelFallback(activePreferences.modelKey);
+            if (
+              !activePreferences.fallbackOnModelLimit ||
+              !fallbackModelKey ||
+              fallbackModelsTried.has(fallbackModelKey)
+            ) {
+              return false;
+            }
+            activePreferences = {
+              ...activePreferences,
+              modelKey: fallbackModelKey,
+              imageModelName: IMAGE_MODELS[fallbackModelKey],
+            };
+            fallbackModelsTried.add(fallbackModelKey);
+            step(
+              `${label}: ${reason}; repetindo com ${MODEL_LABELS[fallbackModelKey]} na mesma conta.`,
+            );
+            try {
+              await evaluate(
+                client,
+                sessionId,
+                `window.FlowAuto?.adapter?.setModel ? window.FlowAuto.adapter.setModel(${JSON.stringify(MODEL_LABELS[fallbackModelKey])}) : null`,
+              );
+            } catch {}
+            await ensureFlowModelAndRatio(
+              client,
+              sessionId,
+              extensionBridge,
+              {
+                modelName: MODEL_LABELS[fallbackModelKey],
+                forceImageMode: true,
+                outputCount: maxImagesPerPrompt,
+                settings,
+                signal: services.signal,
+              },
+              step,
+            );
+            await sleep(2_000, services.signal);
+            return true;
+          };
+          while (true) {
+            step(`${label}: preparando interface.`);
+            await ensureFlowProjectReady(client, sessionId, settings, services.signal, true, trace);
+
+            let selectedMedia = null;
+            const hasEngine = await evaluate(
+              client,
+              sessionId,
+              "Boolean(window.FlowAuto?.adapter?.generate)",
+            ).catch(() => false);
+            if (hasEngine && referencePaths.length === 0) {
+              step(`${label}: gerando via FlowAuto adapter.`);
+              generationSubmitted = true;
+              let releaseLock;
+              const lockWait = new Promise((resolve) => {
+                releaseLock = resolve;
+              });
+              const priorLock = submissionLock;
+              submissionLock = priorLock.then(() => lockWait);
+              let ticketInfo;
+              await priorLock;
+              try {
+                ticketInfo = await evaluate(
+                  client,
+                  sessionId,
+                  `window.FlowAuto.adapter.prepareAndSubmit({
+                    prompt: ${JSON.stringify(task.prompt)},
+                    expectedCount: ${JSON.stringify(maxImagesPerPrompt)}
+                  })`,
+                );
+              } finally {
+                releaseLock();
+              }
+
+              const engineRes = await evaluate(
+                client,
+                sessionId,
+                `window.FlowAuto.adapter.waitForResults({
+                  slots: ${JSON.stringify(maxImagesPerPrompt)},
+                  bilhete: ${JSON.stringify(ticketInfo?.bilhete)}
+                })`,
+              );
+
+              if (engineRes?.results && Array.isArray(engineRes.results)) {
+                const okResults = engineRes.results.filter((r) => !r.failed && r.url);
+                if (okResults.length > 0) {
+                  selectedMedia = okResults.map((r) => ({
+                    image: {
+                      generatedImage: {
+                        fifeUrl: r.url,
+                        mediaId: r.mediaUuid || r.tileId,
+                      },
+                    },
+                  }));
+                } else {
+                  const firstFail = engineRes.results.find((r) => r.failed);
+                  const reason = firstFail?.failedReason || "Falha na geração pelo FlowAuto.";
+                  const isModelLimit =
+                    firstFail?.errorType === "model_limit" ||
+                    /limite de uso|cota|quota|daily limit|limite di[áa]rio|n[ãa]o houve cobran[çc]a|voc[êe] chegou ao limite/i.test(
+                      reason,
+                    );
+                  if (isModelLimit) {
+                    const switched = await switchToNextImageModel("limite do modelo atingido");
+                    if (switched) {
+                      continue;
+                    }
+                    throw codedError("MODEL_LIMIT", reason);
+                  }
+                  if (
+                    firstFail?.errorType === "unusual_activity" ||
+                    /incomum|unusual/i.test(reason)
+                  ) {
+                    const err = codedError("RATE_LIMIT", reason, true);
+                    err.isUnusualActivity = true;
+                    err.retryAfterMs = 45000;
+                    throw err;
+                  }
+                  if (firstFail?.errorType === "rate_limit" || /rate/i.test(reason)) {
+                    const err = codedError("RATE_LIMIT", reason, true);
+                    err.retryAfterMs = 45000;
+                    throw err;
+                  }
+                  throw codedError("JOB_FAILED", reason);
+                }
+              }
+            }
+
+            if (!selectedMedia) {
+              await ensureAgentOff(client, sessionId, services.signal);
+              await ensureFlowModelAndRatio(
+                client,
+                sessionId,
+                extensionBridge,
+                {
+                  modelName: MODEL_LABELS[activePreferences.modelKey],
+                  outputCount: maxImagesPerPrompt,
+                  forceImageMode: true,
+                  settings,
+                  signal: services.signal,
+                },
+                step,
+              );
+              await waitForPromptEditorStable(
+                client,
+                sessionId,
+                settings.promptSelector || "",
+                services.signal,
+              );
+              await dynamicSleep(TIMING.HUMAN_PAUSE, services.signal);
+              const promptResult = await setPromptWithExtension(
+                extensionBridge,
+                task.prompt,
+                settings.promptSelector || "",
+                `${task.index}:${task.attempt}:prompt`,
+                services.signal,
+                client,
+                sessionId,
+              );
+              step(`${label}: Slate preenchido (${promptResult?.readbackLength || 0} caracteres).`);
+              await dynamicSleep(TIMING.HUMAN_READ, services.signal);
+              let generateState;
+              try {
+                generateState = await waitGenerateEnabled(
+                  client,
+                  sessionId,
+                  settings,
+                  services.signal,
+                  20_000,
+                );
+              } catch (cause) {
+                const disabledAfterPrompt =
+                  cause?.code === "OUTPUT_VALIDATION_FAILED" &&
+                  /aria-disabled=true/i.test(String(cause?.message || ""));
+                if (
+                  disabledAfterPrompt &&
+                  (await switchToNextImageModel("o modelo não habilitou a geração"))
+                ) {
+                  continue;
+                }
+                throw cause;
+              }
+              if (
+                referencePaths.length > 0 &&
+                (await attachedReferenceCount(client, sessionId)) < referencePaths.length
+              ) {
+                throw codedError(
+                  "OUTPUT_VALIDATION_FAILED",
+                  "A referência não está anexada ao comando do Flow. O prompt não foi enviado.",
+                );
+              }
+              step(`${label}: botão habilitado (${generateState?.text || "Criar"}).`);
+
+              const baselineMedia = await generatedMediaOnPage(client, sessionId);
+              const baselineUrls = baselineMedia.map((item) => item.image.generatedImage.fifeUrl);
+              const responseTimeoutMs = requestTimeoutSeconds * 1000;
+              const reservation = responseTracker.reserve(responseTimeoutMs);
+              let stopPageFallback = false;
+              let pageFallback;
+              try {
+                generationSubmitted = true;
+                const clickResult = await clickSubmit(client, sessionId, settings, services.signal);
+                step(`${label}: envio confirmado (${clickResult?.text || "Criar"}).`);
+                pageFallback = waitForGeneratedMediaOnPage(
+                  client,
+                  sessionId,
+                  baselineUrls,
+                  services.signal,
+                  responseTimeoutMs,
+                  () => stopPageFallback,
+                );
+              } catch (cause) {
+                stopPageFallback = true;
+                reservation.cancel(cause);
+                await reservation.promise.catch(() => undefined);
+                throw cause;
+              }
+
+              const completed = await Promise.race([
+                reservation.promise.then((captured) => ({ source: "network", captured })),
+                pageFallback.then((body) => ({
+                  source: "page",
+                  captured: { status: 200, bodyText: JSON.stringify(body) },
+                })),
+              ]);
+              stopPageFallback = true;
+              if (completed.source === "page") {
+                reservation.cancel(codedError("CANCELLED", "Fallback visual concluiu primeiro."));
+                await reservation.promise.catch(() => undefined);
+                step(`${label}: imagem nova detectada no projeto do Flow.`);
+              } else {
+                step(`${label}: resposta HTTP ${completed.captured?.status ?? "?"} capturada.`);
+              }
+              const captured = completed.captured;
+              let generation;
+              try {
+                generation = parseGenerationResponse(captured);
+              } catch (cause) {
+                if (
+                  cause?.code === "MODEL_LIMIT" &&
+                  (await switchToNextImageModel("limite do modelo atingido"))
+                )
+                  continue;
+                throw cause;
+              }
+
+              selectedMedia = generation.media.slice(0, maxImagesPerPrompt);
+              if (generation.media.length > selectedMedia.length) {
+                step(
+                  `${label}: ${generation.media.length} mídias recebidas; ${selectedMedia.length} preservada(s) conforme maxImagesPerPrompt.`,
+                );
+              }
+            }
+            const results = [];
+            for (let variantIndex = 0; variantIndex < selectedMedia.length; variantIndex += 1) {
+              const result = await downloadGeneratedImage(
+                selectedMedia[variantIndex],
+                task.prompt,
+                absolutePromptIndex + 1,
+                variantIndex + 1,
+                services,
+              );
+              results.push(result);
+              step(`${label}: artifact salvo (${result.file.name}).`);
+            }
+            return results;
+          }
+        })(),
+      };
+    };
+
+    step(
+      `Gerenciador iniciado: ${pendingPrompts.length} prompt(s) pendente(s) de ${prompts.length}, até ${maxConcurrentGenerations} geração(ões) simultânea(s), ${retryAttempts} nova(s) tentativa(s) após a fila inicial.`,
+    );
+    await runGenerationPlan({
+      prompts: pendingPrompts,
+      maxInFlight: maxConcurrentGenerations,
+      retryAttempts,
+      submit,
+      minDelayMs: delayBetweenPromptsMs,
+      signal: services.signal,
+      failFast: true,
+      async onItemCompleted({ task, value }) {
+        const index = originalPromptIndex(task.index);
+        if (!Array.isArray(value) || value.length === 0)
+          throw codedError(
+            "OUTPUT_VALIDATION_FAILED",
+            `A fila terminou sem resultado para o prompt ${index + 1}.`,
+          );
+        for (const result of value) {
+          if (!result?.file || !result?.artifact)
+            throw codedError(
+              "OUTPUT_VALIDATION_FAILED",
+              `A fila terminou com um artifact inválido no prompt ${index + 1}.`,
+            );
+          files.push(result.file);
+          artifacts.push(result.artifact);
+        }
+        completedPromptIndexes.add(index);
+        await saveGenerationCheckpoint(request, services, prompts, {
+          completedPromptIndexes: [...completedPromptIndexes],
+          files,
+          projectUrl: activeProjectUrl,
+          accountProfile: profileRuntime.accountProfile,
+        });
+        step(`Fila: prompt ${index + 1} persistido localmente antes de avançar.`);
+      },
+      onState(event) {
+        const index = originalPromptIndex(event.task?.index ?? 0);
+        if (event.type === "submitted") {
+          step(
+            `Fila: prompt ${index + 1} enviado; ${event.active}/${maxConcurrentGenerations} em andamento; ${event.pending} aguardando nesta rodada.`,
+          );
+        } else if (event.type === "succeeded") {
+          step(
+            `Fila: prompt ${index + 1} concluído; ${event.active}/${maxConcurrentGenerations} em andamento.`,
+          );
+        } else if (event.type === "failed") {
+          step(
+            `Fila interrompida no prompt ${index + 1} (${event.error?.code || "JOB_FAILED"}: ${event.error?.message || "erro não detalhado"}).`,
+          );
+        } else if (event.type === "retry-round") {
+          step(
+            `Nova rodada de tentativas ${event.attempt}/${retryAttempts + 1}: ${event.tasks.length} prompt(s) com erro.`,
+          );
+        } else if (event.type === "rate-limit-backoff") {
+          step(
+            `Fila: desacelerando (rate-limit / atividade incomum detectada). Aguardando ${Math.round(event.waitMs / 1000)}s antes de re-tentar prompt ${index + 1} (tentativa ${event.attempt}).`,
+          );
+        }
+      },
+    });
+
+    activeProjectUrl = (await getActiveFlowProjectUrl(client, sessionId)) || activeProjectUrl;
+    if (settings.minimizeWhenReady === true)
+      await setBrowserWindowState(client, page.targetId, "minimized");
+    responseTracker.close();
+    responseTracker = null;
+    await extensionBridge.dispose();
+    extensionBridge = null;
+    await maybeCloseBrowser(client, browserInfo, keepBrowserOpen);
+    client = null;
+    await clearCaptchaRetryNavigation(request, services);
+    await clearGenerationCheckpoint(request, services);
+
+    return {
+      status: "success",
+      values: {
+        images: singleImageOutput ? files[0] : files,
+        project_url: activeProjectUrl,
+      },
+      artifacts,
+      usage: { provider: "Google Labs / Flow", outputUnits: files.length, unit: "image" },
+      logs: [
+        ...stepLogs,
+        ...diagnosticLogs,
+        `${files.length} imagem(ns) real(is) do Google Flow finalizada(s).`,
+      ],
+    };
+  } catch (cause) {
+    if (responseTracker) {
+      try {
+        responseTracker.close();
+      } catch {}
+    }
+    if (client) {
+      try {
+        await maybeCloseBrowser(client, browserInfo, keepBrowserOpen);
+      } catch {}
+    }
+    await extensionBridge?.dispose();
+    const recent = stepLogs.slice(-8).join(" | ");
+    const suffix = recent ? ` Etapas: ${recent}` : "";
+
+    if (cause?.code === "CANCELLED") {
+      return resultError("CANCELLED", "Execução cancelada.", false);
+    }
+
+    if (
+      cause?.code === "AUTHENTICATION_FAILED" &&
+      /recaptcha|captcha/i.test(String(cause?.message || "")) &&
+      activeProjectUrl
+    ) {
+      await saveCaptchaRetryNavigation(request, services, activeProjectUrl).catch(() => undefined);
+    }
+    if (
+      !generationSubmitted &&
+      referencesAttached &&
+      activeProjectUrl &&
+      cause?.code !== "CANCELLED"
+    ) {
+      await saveCaptchaRetryNavigation(request, services, activeProjectUrl, true).catch(
+        () => undefined,
+      );
+    }
+
+    const errorResponse = resultError(
+      cause?.code ?? "UPSTREAM_UNAVAILABLE",
+      `${cause?.message ?? "Falha na automação do Chrome."}${suffix}`,
+      Boolean(cause?.retryable),
+      cause?.retryAfterMs,
+    );
+    if (files.length > 0) {
+      if (isVideoCapability) {
+        errorResponse.partialValues = {
+          video: singleVideoOutput ? files[0] : files,
+          ...(activeProjectUrl ? { project_url: activeProjectUrl } : {}),
+        };
+      } else {
+        errorResponse.partialValues = {
+          images: singleImageOutput ? files[0] : files,
+          ...(activeProjectUrl ? { project_url: activeProjectUrl } : {}),
+        };
+      }
+    }
+    if (artifacts.length > 0) {
+      errorResponse.partialArtifacts = artifacts;
+    }
+    errorResponse.logs = [...stepLogs, ...diagnosticLogs];
+    return errorResponse;
+  } finally {
+    if (diagnosticFile) {
+      await writeFile(
+        diagnosticFile,
+        JSON.stringify(
+          {
+            pluginId: PLUGIN_ID,
+            capabilityId,
+            executionId: request?.executionId,
+            blockId: request?.blockId,
+            attempt: request?.attempt,
+            startedWithProfile: request?.configuration?.accountProfile,
+            endedAt: new Date().toISOString(),
+            steps: stepLogs,
+            cdpTrace: diagnosticLogs,
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      ).catch(() => undefined);
+    }
+  }
+}
+export const __test = {
+  uploadReferenceImages,
+  waitReferenceUploadReady,
+  referenceUploadStateExpression,
+  isFlowHost,
+  normalizePrompts,
+  safeFilename,
+  validateFlowUrl,
+  resolveNavigationTarget,
+  captchaRetryStatePath,
+  readCaptchaRetryNavigation,
+  saveCaptchaRetryNavigation,
+  clearCaptchaRetryNavigation,
+  generationCheckpointPath,
+  readGenerationCheckpoint,
+  saveGenerationCheckpoint,
+  clearGenerationCheckpoint,
+  defaultProfilePath,
+  defaultProfilesRootPath,
+  normalizeAccountProfile,
+  resolveProfileRuntime,
+  profileIsPrepared,
+  markProfilePrepared,
+  waitForChildExit,
+  closeBrowserGracefully,
+  resolveGenerationPreferences,
+  nextImageModelFallback,
+  normalizeReferenceImages,
+  requestsSingleImage,
+  requestsSingleVideo,
+  mediaItemsFromImageUrls,
+  mediaItemsFromImageCandidates,
+  mediaItemsFromVideoUrls,
+  parseGenerationResponse,
+  waitForPromptEditorStable,
+  downloadGeneratedVideo,
+  resolveVideoPreferences,
+  getActiveFlowProjectUrl,
+  assertDedicatedProfilePath,
+  extensionForMime,
+  IMAGE_MODELS,
+  MODEL_LABELS,
+  VIDEO_MODELS,
+  VIDEO_MODEL_LABELS,
+  VIDEO_RESOLUTIONS,
+  ASPECT_RATIOS,
+  ASPECT_RATIO_LABELS,
+  classifyGenerationHttpError,
+  createAdaptiveConcurrencyController,
+  runSubmissionRound,
+  runGenerationPlan,
+  shouldRetryGenerationError,
+  pageStateExpression,
+  attachFlowPage,
+  waitForPageReady,
+  maybeCloseBrowser,
+  TIMING,
+  dynamicSleep,
+  calculateJitteredDelay,
+  classifyTileErrorType,
+  RE_SOBRECARGA,
+  ensureAgentOff,
+  triggerTrustedReactClick,
+  decodificarBatchExecute,
+  extrairMidiasRpc,
+  createCredentialsTracker,
+  waitForFlowToken,
+  clickSubmit,
+  apiRenameProject,
+  applyTileMetadataPatch,
+};

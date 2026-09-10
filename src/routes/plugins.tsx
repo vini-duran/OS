@@ -4,23 +4,27 @@ import {
   AlertTriangle,
   AudioLines,
   Bot,
+  Boxes,
   CheckCircle2,
+  CircleUserRound,
   Code2,
+  Copy,
   Download,
   ExternalLink,
-  FileCode2,
   FileText,
   FolderPlus,
   Image,
   KeyRound,
   LoaderCircle,
+  Pencil,
   Plug,
   RefreshCw,
   Search,
+  Sparkles,
   SlidersHorizontal,
   ShieldCheck,
+  SquareArrowOutUpRight,
   Trash2,
-  Unplug,
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -46,15 +50,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
+import { ECOSYSTEM_DOWNLOADS } from "@/lib/ecosystem-downloads";
 import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
 
 export const Route = createFileRoute("/plugins")({
   head: () => ({
     meta: [
-      { title: "Plugins — ContentFlow OS" },
+      { title: "Plugins — ContentFlow" },
       {
         name: "description",
-        content: "Gerenciamento dos plugins locais do ContentFlow OS.",
+        content: "Gerenciamento dos plugins locais do ContentFlow.",
       },
     ],
   }),
@@ -63,29 +68,51 @@ export const Route = createFileRoute("/plugins")({
 
 type DiscoveredPlugin = {
   id: string;
-  source: "bundled" | "installed" | "local";
+  source: "installed" | "local";
   directory: string;
   manifest: PluginManifest;
   enabled: boolean;
   executable: boolean;
   sandboxed: boolean;
   networkIsolation: boolean;
+  profileCount?: number;
 };
 
 type PluginIssue = { directory: string; message: string };
 type PluginResponse = {
   plugins: DiscoveredPlugin[];
   issues: PluginIssue[];
-  examplesDirectory?: string;
 };
-type ProviderConnection = {
-  connected: boolean;
-  models: Array<{ id: string; name: string }>;
-  updatedAt?: string;
-  persistence: "keychain";
-  credentialStore: string;
+type PluginUpdate = {
+  id: string;
+  currentVersion: string;
+  version?: string;
+  updateAvailable: boolean;
 };
-type PluginSource = { root: string; files: Array<{ path: string; content: string }> };
+type PluginMethodDependency = {
+  channelId: string;
+  channelName: string;
+  processType: UniversalProcess;
+  blockId: string;
+  blockName: string;
+  capabilityId: string;
+};
+
+type PluginProfileUsage = PluginMethodDependency & {
+  methodName: string;
+  role: "primary" | "fallback";
+  fallbackPosition?: number;
+};
+
+type ManagedPluginProfile = {
+  id: string;
+  pluginId: string;
+  name: string;
+  alias: string;
+  createdAt: string;
+  updatedAt: string;
+  usages: PluginProfileUsage[];
+};
 
 const BLOCK_LABEL: Record<BlockType, string> = {
   BUSCAR: "Buscar",
@@ -127,6 +154,8 @@ function deliveryTypes(plugin: DiscoveredPlugin) {
 function PluginsPage() {
   const [data, setData] = useState<PluginResponse>({ plugins: [], issues: [] });
   const [loading, setLoading] = useState(true);
+  const [updates, setUpdates] = useState<Record<string, PluginUpdate>>({});
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [search, setSearch] = useState("");
   const [deliveryFilter, setDeliveryFilter] = useState<"all" | PluginDeliveryType>("all");
   const [blockFilter, setBlockFilter] = useState<"all" | BlockType>("all");
@@ -147,9 +176,42 @@ function PluginsPage() {
     }
   }, []);
 
+  const checkUpdates = useCallback(async (notify = false) => {
+    setCheckingUpdates(true);
+    try {
+      const response = await fetch(`/api/plugins/updates${notify ? "?refresh=true" : ""}`);
+      const result = (await response.json()) as { updates?: PluginUpdate[]; error?: string };
+      if (!response.ok)
+        throw new Error(result.error ?? "Não foi possível consultar as atualizações.");
+      const next = Object.fromEntries((result.updates ?? []).map((update) => [update.id, update]));
+      setUpdates(next);
+      if (notify) {
+        const count = Object.values(next).filter((update) => update.updateAvailable).length;
+        toast.success(
+          count
+            ? `${count} ${count === 1 ? "plugin tem" : "plugins têm"} atualização`
+            : "Todos os plugins estão atualizados",
+        );
+      }
+    } catch (error) {
+      if (notify)
+        toast.error("Não foi possível verificar atualizações", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, []);
+
+  const refreshPluginsAndUpdates = useCallback(async () => {
+    await refresh();
+    await checkUpdates();
+  }, [checkUpdates, refresh]);
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    void checkUpdates();
+  }, [checkUpdates, refresh]);
 
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredPlugins = data.plugins.filter((plugin) => {
@@ -185,21 +247,87 @@ function PluginsPage() {
   return (
     <AppShell>
       <TopBar
-        breadcrumbs={[{ label: "ContentFlow OS" }, { label: "Plugins" }]}
+        breadcrumbs={[{ label: "ContentFlow" }, { label: "Plugins" }]}
         title="Plugins"
         subtitle="Gerencie as ferramentas que executam blocos de IA e Código"
         showNewProject={false}
         actions={
           <div className="flex items-center gap-2">
-            <InstallPluginDialog onInstalled={refresh} examplesDirectory={data.examplesDirectory} />
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void refresh()}>
-              <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} /> Atualizar
+            <InstallPluginDialog onInstalled={refresh} />
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              disabled={checkingUpdates}
+              onClick={() => {
+                void refresh();
+                void checkUpdates(true);
+              }}
+            >
+              <RefreshCw
+                className={loading || checkingUpdates ? "size-4 animate-spin" : "size-4"}
+              />
+              Verificar atualizações
             </Button>
           </div>
         }
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+        <section className="mb-4 rounded-xl border border-brand/25 bg-card/55 p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="max-w-md">
+              <h2 className="text-sm font-semibold">Componentes externos</h2>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale
+                todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[44rem]">
+              <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
+                <a href={ECOSYSTEM_DOWNLOADS.plugins} target="_blank" rel="noreferrer">
+                  <Boxes className="size-4 shrink-0 text-brand-soft" />
+                  <span className="min-w-0 text-left">
+                    <span className="block text-xs font-semibold">Baixar plugins</span>
+                    <span className="block text-[10px] font-normal text-muted-foreground">
+                      Mesmo fluxo para qualquer autor
+                    </span>
+                  </span>
+                  <Download className="ml-auto size-3.5 shrink-0" />
+                </a>
+              </Button>
+              <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
+                <a href={ECOSYSTEM_DOWNLOADS.browserBridge} target="_blank" rel="noreferrer">
+                  <SquareArrowOutUpRight className="size-4 shrink-0 text-brand-soft" />
+                  <span className="min-w-0 text-left">
+                    <span className="block text-xs font-semibold">Baixar Browser Bridge</span>
+                    <span className="block text-[10px] font-normal text-muted-foreground">
+                      Somente para automação web
+                    </span>
+                  </span>
+                  <Download className="ml-auto size-3.5 shrink-0" />
+                </a>
+              </Button>
+              <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
+                <a
+                  href={ECOSYSTEM_DOWNLOADS.pluginDevelopmentSkill}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Sparkles className="size-4 shrink-0 text-brand-soft" />
+                  <span className="min-w-0 text-left">
+                    <span className="block text-xs font-semibold">Baixar skill de plugins</span>
+                    <span className="block text-[10px] font-normal text-muted-foreground">
+                      Para criar com um agente de IA
+                    </span>
+                  </span>
+                  <Download className="ml-auto size-3.5 shrink-0" />
+                </a>
+              </Button>
+            </div>
+          </div>
+        </section>
+
         <section className="rounded-xl border border-border bg-card/40 p-3 sm:p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{data.plugins.length} plugins</Badge>
@@ -277,12 +405,13 @@ function PluginsPage() {
             </span>
           </div>
         ) : filteredPlugins.length ? (
-          <section className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {filteredPlugins.map((plugin) => (
               <PluginCard
                 key={`${plugin.source}-${plugin.id}`}
                 plugin={plugin}
-                onChanged={refresh}
+                update={updates[plugin.id]}
+                onChanged={refreshPluginsAndUpdates}
               />
             ))}
           </section>
@@ -328,13 +457,7 @@ function PluginsPage() {
   );
 }
 
-function InstallPluginDialog({
-  onInstalled,
-  examplesDirectory,
-}: {
-  onInstalled: () => Promise<void>;
-  examplesDirectory?: string;
-}) {
+function InstallPluginDialog({ onInstalled }: { onInstalled: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [folderPath, setFolderPath] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -353,12 +476,23 @@ function InstallPluginDialog({
           body: JSON.stringify({ path: folderPath }),
         },
       );
-      const result = (await response.json()) as { id?: string; error?: string };
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível instalar o plugin.");
+      const result = (await response.json()) as {
+        installed?: string[];
+        skipped?: string[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível instalar os plugins.");
       toast.success(
-        mode === "install" ? "Plugin instalado" : "Pasta de desenvolvimento conectada",
+        mode === "install"
+          ? result.installed?.length === 1
+            ? "Plugin instalado"
+            : `${result.installed?.length ?? 0} plugins instalados`
+          : "Pasta de desenvolvimento conectada",
         {
-          description: "Confira as permissões e clique em Ativar e permitir.",
+          description:
+            mode === "install" && result.skipped?.length
+              ? `${result.skipped.length} já estavam instalados. Confira as permissões dos novos plugins.`
+              : "Confira as permissões e clique em Ativar e permitir.",
         },
       );
       setFolderPath("");
@@ -384,8 +518,8 @@ function InstallPluginDialog({
         <DialogHeader>
           <DialogTitle>Instalar plugin criado por você ou pela comunidade</DialogTitle>
           <DialogDescription>
-            Cole o caminho da pasta que contém contentflow.plugin.json. Nenhuma publicação ou
-            aprovação é necessária.
+            Cole o caminho da pasta de um plugin ou da raiz do pacote extraído. O pacote instala
+            vários plugins de uma vez, sem sobrescrever os já instalados.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
@@ -405,28 +539,18 @@ function InstallPluginDialog({
           </Button>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="plugin-folder-path">Pasta do plugin</Label>
+          <Label htmlFor="plugin-folder-path">Pasta do plugin ou pacote</Label>
           <Input
             id="plugin-folder-path"
             value={folderPath}
-            placeholder="C:\\Meus Plugins\\meu-plugin"
+            placeholder="C:\\Downloads\\ContentFlow-Plugins"
             onChange={(event) => setFolderPath(event.target.value)}
           />
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             {mode === "install"
-              ? "O ContentFlow OS guarda uma cópia. Você poderá apagar a pasta original sem remover o plugin."
-              : "Ideal para criar com IA: alterações na pasta aparecem ao atualizar, e desconectar não apaga seus arquivos."}
+              ? "O ContentFlow aceita o caminho com ou sem aspas, valida todo o conjunto e guarda uma cópia de cada plugin."
+              : "O caminho pode ter aspas. Alterações na pasta aparecem ao atualizar, e desconectar não apaga seus arquivos."}
           </p>
-          {examplesDirectory && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setFolderPath(`${examplesDirectory}\\community-reference`)}
-            >
-              Usar o plugin de exemplo
-            </Button>
-          )}
         </div>
         <Button disabled={installing || !folderPath.trim()} onClick={() => void install()}>
           {installing && <LoaderCircle className="mr-1.5 size-4 animate-spin" />}
@@ -439,21 +563,59 @@ function InstallPluginDialog({
 
 function PluginCard({
   plugin,
+  update,
   onChanged,
 }: {
   plugin: DiscoveredPlugin;
+  update?: PluginUpdate;
   onChanged: () => Promise<void>;
 }) {
   const { manifest } = plugin;
   const types = deliveryTypes(plugin);
+  const [open, setOpen] = useState(false);
+  const [iconFailed, setIconFailed] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const initials = manifest.name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toLocaleUpperCase())
+    .join("");
+
+  useEffect(() => {
+    setIconFailed(false);
+  }, [manifest.branding?.iconPath, manifest.version, plugin.id]);
 
   async function removePlugin() {
     const action = plugin.source === "local" ? "desconectar" : "desinstalar";
-    if (!window.confirm(`Deseja ${action} ${manifest.name}?`)) return;
     setRemoving(true);
     try {
-      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}`, {
+      const dependencyResponse = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/dependencies`,
+      );
+      const dependencyResult = (await dependencyResponse.json()) as {
+        dependencies?: PluginMethodDependency[];
+        error?: string;
+      };
+      if (!dependencyResponse.ok) {
+        throw new Error(dependencyResult.error ?? "Não foi possível verificar as dependências.");
+      }
+      const dependencies = dependencyResult.dependencies ?? [];
+      const dependencySummary = dependencies.length
+        ? `\n\nEste plugin é usado por ${dependencies.length} bloco(s):\n${dependencies
+            .slice(0, 8)
+            .map(
+              (dependency) =>
+                `• ${dependency.channelName} › ${PROCESS_META[dependency.processType].label} › ${dependency.blockName}`,
+            )
+            .join(
+              "\n",
+            )}${dependencies.length > 8 ? `\n• e mais ${dependencies.length - 8}` : ""}\n\nOs Métodos ficarão bloqueados até você escolher outro plugin. Outputs históricos serão preservados.`
+        : "\n\nNenhum Método depende deste plugin. Outputs históricos serão preservados.";
+      if (!window.confirm(`Deseja ${action} ${manifest.name}?${dependencySummary}`)) return;
+
+      const confirmation = dependencies.length ? "?confirmDependencies=true" : "";
+      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}${confirmation}`, {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -461,6 +623,7 @@ function PluginCard({
         throw new Error(result.error ?? `Não foi possível ${action} o plugin.`);
       }
       toast.success(plugin.source === "local" ? "Pasta desconectada" : "Plugin desinstalado");
+      setOpen(false);
       await onChanged();
     } catch (error) {
       toast.error("Não foi possível remover o plugin", {
@@ -471,125 +634,187 @@ function PluginCard({
     }
   }
   return (
-    <article className="rounded-xl border border-border bg-card/55 p-4 shadow-sm transition-colors hover:border-brand/35">
-      <header className="flex items-start gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-md bg-secondary text-foreground">
-          <Plug className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold">{manifest.name}</h2>
-            <Badge variant="secondary" className="text-[10px]">
-              v{manifest.version}
-            </Badge>
-            {!plugin.enabled && plugin.source !== "bundled" && (
-              <Badge variant="outline" className="text-[10px]">
-                Desativado
-              </Badge>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Abrir detalhes de ${manifest.name}`}
+          className="group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+        >
+          <span className="absolute right-3 top-3 flex items-center gap-2">
+            {update?.updateAvailable && (
+              <span
+                className="size-2 rounded-full bg-sky-500 ring-4 ring-sky-500/10"
+                title={`Atualização disponível: v${update.version}`}
+              >
+                <span className="sr-only">Atualização disponível</span>
+              </span>
             )}
-          </div>
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+            {!plugin.enabled && (
+              <span
+                className="size-2 rounded-full bg-warning ring-4 ring-warning/10"
+                title="Plugin ainda não ativado"
+              >
+                <span className="sr-only">Plugin ainda não ativado</span>
+              </span>
+            )}
+          </span>
+          <span className="grid size-14 place-items-center rounded-2xl border border-border/70 bg-gradient-to-br from-brand/15 to-secondary text-xl font-semibold tracking-tight text-brand-soft transition-transform group-hover:scale-105">
+            {manifest.branding?.iconPath && !iconFailed ? (
+              <img
+                src={`/api/plugins/${encodeURIComponent(plugin.id)}/icon?v=${encodeURIComponent(manifest.version)}`}
+                alt=""
+                className="size-9 object-contain"
+                onError={() => setIconFailed(true)}
+              />
+            ) : (
+              initials || <Plug className="size-6" />
+            )}
+          </span>
+          <h2 className="mt-3 line-clamp-2 text-sm font-semibold leading-snug">{manifest.name}</h2>
+          <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] max-w-[15rem] text-[11px] leading-snug text-muted-foreground">
             {manifest.description}
           </p>
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            {manifest.author} · <code>{plugin.directory}</code>
-          </p>
-        </div>
-      </header>
-
-      <div className="mt-4 flex flex-wrap gap-1.5">
-        {types.map((type) => {
-          const meta = DELIVERY_META[type];
-          const Icon = meta.icon;
-          return (
-            <span
-              key={type}
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${meta.className}`}
-            >
-              <Icon className="size-3" /> {meta.label}
+          {manifest.profileSetup && (
+            <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-brand-soft">
+              <CircleUserRound className="size-3" /> {plugin.profileCount ?? 0}{" "}
+              {plugin.profileCount === 1 ? "perfil" : "perfis"}
             </span>
-          );
-        })}
-      </div>
+          )}
+        </button>
+      </DialogTrigger>
 
-      <details className="group mt-4 border-t border-border/60 pt-3">
-        <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-medium text-muted-foreground hover:text-foreground">
-          <span>
-            {manifest.capabilities.length} capacidade{manifest.capabilities.length === 1 ? "" : "s"}{" "}
-            · {new Set(manifest.capabilities.flatMap((capability) => capability.blockTypes)).size}{" "}
-            blocos
-          </span>
-          <span className="text-brand-soft group-open:hidden">Configurar</span>
-          <span className="hidden text-brand-soft group-open:inline">Fechar detalhes</span>
-        </summary>
-
-        <div className="mt-4 divide-y divide-border border-y border-border">
-          {manifest.capabilities.map((capability) => (
-            <div key={capability.id} className="py-3">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {capability.operator === "IA" ? (
-                  <Bot className="size-3.5 text-brand-soft" />
-                ) : (
-                  <Code2 className="size-3.5 text-brand-soft" />
-                )}
-                <span className="text-xs font-medium">{capability.id}</span>
-                <Badge variant="outline" className="ml-auto text-[9px]">
-                  {capability.operator}
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <div className="flex items-start gap-3 pr-8 text-left">
+            <span className="grid size-12 shrink-0 place-items-center rounded-xl border border-border bg-gradient-to-br from-brand/15 to-secondary text-base font-semibold text-brand-soft">
+              {manifest.branding?.iconPath && !iconFailed ? (
+                <img
+                  src={`/api/plugins/${encodeURIComponent(plugin.id)}/icon?v=${encodeURIComponent(manifest.version)}`}
+                  alt=""
+                  className="size-8 object-contain"
+                  onError={() => setIconFailed(true)}
+                />
+              ) : (
+                initials || <Plug className="size-5" />
+              )}
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <DialogTitle>{manifest.name}</DialogTitle>
+                <Badge variant="secondary" className="text-[10px]">
+                  v{manifest.version}
                 </Badge>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {capability.blockTypes.map((block) => (
-                  <Badge key={block} variant="secondary" className="text-[9px]">
-                    {BLOCK_LABEL[block]}
+                {!plugin.enabled && (
+                  <Badge variant="outline" className="text-[10px] text-warning">
+                    Desativado
                   </Badge>
-                ))}
-                {(capability.processTypes ?? []).map((process) => (
-                  <Badge key={process} variant="outline" className="text-[9px]">
-                    {PROCESS_META[process as UniversalProcess].label}
-                  </Badge>
-                ))}
+                )}
               </div>
+              <DialogDescription className="mt-1">{manifest.description}</DialogDescription>
             </div>
-          ))}
+          </div>
+        </DialogHeader>
+
+        <div className="grid gap-3 rounded-xl border border-border bg-muted/20 p-3 text-xs sm:grid-cols-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Fornecedor</p>
+            <p className="mt-1 font-medium">{manifest.author}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Origem</p>
+            <p className="mt-1 font-medium">
+              {plugin.source === "installed" ? "Instalado localmente" : "Pasta de desenvolvimento"}
+            </p>
+          </div>
+          <div className="min-w-0 sm:col-span-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Identificador
+            </p>
+            <code className="mt-1 block truncate text-[11px]">{plugin.id}</code>
+          </div>
         </div>
 
-        {plugin.id === "official-openai-gpt" && (
-          <ProviderConnectionPanel
-            pluginId="official-openai-gpt"
-            provider="OpenAI"
-            keyLabel="Chave da API da OpenAI"
-            keyPlaceholder="sk-..."
-            apiKeysUrl="https://platform.openai.com/api-keys"
-          />
+        <section>
+          <h3 className="text-xs font-semibold">Entregas e capacidades</h3>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {types.map((type) => {
+              const meta = DELIVERY_META[type];
+              const Icon = meta.icon;
+              return (
+                <span
+                  key={type}
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${meta.className}`}
+                >
+                  <Icon className="size-3" /> {meta.label}
+                </span>
+              );
+            })}
+          </div>
+          <div className="mt-3 divide-y divide-border rounded-xl border border-border px-3">
+            {manifest.capabilities.map((capability) => (
+              <div key={capability.id} className="py-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {capability.operator === "IA" ? (
+                    <Bot className="size-3.5 text-brand-soft" />
+                  ) : (
+                    <Code2 className="size-3.5 text-brand-soft" />
+                  )}
+                  <span className="text-xs font-medium">{capability.id}</span>
+                  <Badge variant="outline" className="ml-auto text-[9px]">
+                    {capability.operator}
+                  </Badge>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {capability.blockTypes.map((block) => (
+                    <Badge key={block} variant="secondary" className="text-[9px]">
+                      {BLOCK_LABEL[block]}
+                    </Badge>
+                  ))}
+                  {(capability.processTypes ?? []).map((process) => (
+                    <Badge key={process} variant="outline" className="text-[9px]">
+                      {PROCESS_META[process as UniversalProcess].label}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-muted/15 p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <ShieldCheck className="size-3.5 text-brand-soft" /> Permissões declaradas
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {manifest.permissions.length ? (
+              manifest.permissions.map((permission) => (
+                <Badge key={permission} variant="outline" className="text-[9px]">
+                  {PERMISSION_LABEL[permission] ?? permission}
+                </Badge>
+              ))
+            ) : (
+              <span className="text-[11px] text-muted-foreground">Sem permissões adicionais.</span>
+            )}
+          </div>
+        </section>
+
+        <CommunityAccessPanel plugin={plugin} onChanged={onChanged} />
+
+        {manifest.profileSetup && <PluginProfilesPanel plugin={plugin} />}
+
+        {plugin.source === "installed" && (
+          <UpdateInstalledPluginPanel plugin={plugin} update={update} onChanged={onChanged} />
         )}
-        {plugin.id === "official-anthropic-claude" && (
-          <ProviderConnectionPanel
-            pluginId="official-anthropic-claude"
-            provider="Anthropic"
-            keyLabel="Chave da API da Anthropic"
-            keyPlaceholder="sk-ant-..."
-            apiKeysUrl="https://platform.claude.com/settings/keys"
-          />
-        )}
 
-        {plugin.source !== "bundled" && (
-          <CommunityAccessPanel plugin={plugin} onChanged={onChanged} />
-        )}
-
-        {plugin.source !== "bundled" &&
-          plugin.manifest.permissions.some((permission) =>
-            permission.startsWith("filesystem:"),
-          ) && <CommunityWorkspaceField pluginId={plugin.id} />}
-
-        {plugin.source !== "bundled" &&
-          (manifest.secretKeys ?? []).map((secretKey) => (
-            <CommunitySecretField key={secretKey} pluginId={plugin.id} secretKey={secretKey} />
-          ))}
-
-        <footer className="mt-4 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-          <span className="mr-auto inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
-            <ShieldCheck className="size-3.5" /> {manifest.permissions.length} permissões declaradas
-          </span>
+        <footer className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          {manifest.homepage && (
+            <Button size="sm" variant="ghost" className="gap-1.5" asChild>
+              <a href={manifest.homepage} target="_blank" rel="noreferrer">
+                <ExternalLink className="size-3.5" /> Site do plugin
+              </a>
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -598,26 +823,537 @@ function PluginCard({
           >
             <Download className="size-3.5" /> Exportar manifesto
           </Button>
-          {plugin.source !== "bundled" && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="gap-1.5 text-destructive"
-              disabled={removing}
-              onClick={() => void removePlugin()}
-            >
-              {removing ? (
-                <LoaderCircle className="size-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="size-3.5" />
-              )}
-              {plugin.source === "local" ? "Desconectar pasta" : "Desinstalar"}
-            </Button>
-          )}
-          {plugin.source === "bundled" && <PluginSourceDialog plugin={plugin} />}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto gap-1.5 text-destructive"
+            disabled={removing}
+            onClick={() => void removePlugin()}
+          >
+            {removing ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="size-3.5" />
+            )}
+            {plugin.source === "local" ? "Desconectar pasta" : "Desinstalar"}
+          </Button>
         </footer>
-      </details>
-    </article>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
+  type ProfileStatus = "unknown" | "checking" | "ready" | "missing" | "preparing";
+  const [profiles, setProfiles] = useState<ManagedPluginProfile[]>([]);
+  const [statuses, setStatuses] = useState<Record<string, ProfileStatus>>({});
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [editingId, setEditingId] = useState<string>();
+  const [editingName, setEditingName] = useState("");
+  const [browserBridgeDirectory, setBrowserBridgeDirectory] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`);
+      const result = (await response.json()) as {
+        profiles?: ManagedPluginProfile[];
+        browserBridgeDirectory?: string;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os perfis.");
+      setProfiles(result.profiles ?? []);
+      setBrowserBridgeDirectory(result.browserBridgeDirectory ?? "");
+    } catch (error) {
+      toast.error("Não foi possível carregar os perfis", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [plugin.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const profileIds = profiles.map((profile) => profile.id).join("|");
+  useEffect(() => {
+    if (!profileIds || !plugin.enabled || !plugin.executable) return;
+    const controller = new AbortController();
+    setStatuses(Object.fromEntries(profiles.map((profile) => [profile.id, "checking"])));
+    void Promise.all(
+      profiles.map(async (profile) => {
+        try {
+          const response = await fetch(
+            `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}/status`,
+            { method: "POST", signal: controller.signal },
+          );
+          const result = (await response.json()) as { ready?: boolean };
+          return [profile.id, response.ok && result.ready ? "ready" : "missing"] as const;
+        } catch {
+          return [profile.id, "missing"] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!controller.signal.aborted) setStatuses(Object.fromEntries(entries));
+    });
+    return () => controller.abort();
+    // Profiles are rechecked only when the inventory itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plugin.enabled, plugin.executable, plugin.id, profileIds]);
+
+  async function createProfile() {
+    setCreating(true);
+    try {
+      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const result = (await response.json()) as ManagedPluginProfile & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível criar o perfil.");
+      setName("");
+      await load();
+      toast.success("Perfil adicionado", {
+        description: "Agora prepare a conta para confirmar a sessão neste perfil.",
+      });
+    } catch (error) {
+      toast.error("Não foi possível adicionar o perfil", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function copyBrowserBridgeDirectory() {
+    if (!browserBridgeDirectory) return;
+    await navigator.clipboard.writeText(browserBridgeDirectory);
+    toast.success("Caminho da extensão copiado");
+  }
+
+  async function renameProfile(profile: ManagedPluginProfile) {
+    try {
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: editingName }),
+        },
+      );
+      const result = (await response.json()) as ManagedPluginProfile & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível renomear o perfil.");
+      setEditingId(undefined);
+      await load();
+      toast.success("Perfil renomeado");
+    } catch (error) {
+      toast.error("Não foi possível renomear o perfil", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
+  async function prepareProfile(profile: ManagedPluginProfile) {
+    setStatuses((current) => ({ ...current, [profile.id]: "preparing" }));
+    toast.info("Prepare a conta na janela do navegador", {
+      description: plugin.manifest.profileSetup?.description,
+    });
+    try {
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}/prepare`,
+        { method: "POST" },
+      );
+      const result = (await response.json()) as {
+        ready?: boolean;
+        error?: string;
+        message?: string;
+      };
+      if (!response.ok || !result.ready) {
+        throw new Error(result.error ?? "O login não foi confirmado pelo plugin.");
+      }
+      setStatuses((current) => ({ ...current, [profile.id]: "ready" }));
+      toast.success("Perfil pronto", { description: result.message });
+    } catch (error) {
+      setStatuses((current) => ({ ...current, [profile.id]: "missing" }));
+      toast.error("Não foi possível preparar o perfil", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
+  async function removeProfile(profile: ManagedPluginProfile) {
+    if (profile.usages.length) return;
+    if (
+      !window.confirm(
+        `Remover ${profile.name} do gerenciamento? A pasta de sessão local não será apagada.`,
+      )
+    )
+      return;
+    try {
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        const result = (await response.json()) as { error?: string };
+        throw new Error(result.error ?? "Não foi possível remover o perfil.");
+      }
+      await load();
+      toast.success("Perfil removido do gerenciamento");
+    } catch (error) {
+      toast.error("Não foi possível remover o perfil", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
+  return (
+    <details className="group rounded-xl border border-brand/25 bg-brand/5 p-3">
+      <summary className="flex cursor-pointer list-none items-center gap-3">
+        <span className="grid size-9 place-items-center rounded-lg bg-brand/10 text-brand-soft">
+          <CircleUserRound className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-semibold">Perfis e contas</span>
+          <span className="block text-[10px] text-muted-foreground">
+            Cadastre, prepare e veja onde cada perfil é utilizado.
+          </span>
+        </span>
+        <Badge variant="secondary" className="text-[9px]">
+          {loading ? "…" : profiles.length}
+        </Badge>
+      </summary>
+
+      <div className="mt-4 space-y-3 border-t border-border/70 pt-4">
+        {browserBridgeDirectory && (
+          <div className="rounded-lg border border-border bg-background/60 p-3">
+            <p className="text-[11px] font-semibold">Extensão persistente do navegador</p>
+            <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+              Ao preparar uma conta, carregue esta pasta uma única vez em chrome://extensions. Ela
+              fica fora da pasta do código e não muda quando o aplicativo é atualizado ou renomeado.
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 text-[10px]">
+                {browserBridgeDirectory}
+              </code>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="size-8 shrink-0"
+                aria-label="Copiar caminho da extensão"
+                onClick={() => void copyBrowserBridgeDirectory()}
+              >
+                <Copy className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border bg-background/50 p-3 sm:flex-row">
+          <Input
+            value={name}
+            maxLength={64}
+            placeholder="Nome do novo perfil"
+            onChange={(event) => setName(event.target.value)}
+          />
+          <Button
+            type="button"
+            size="sm"
+            disabled={creating || !name.trim()}
+            onClick={() => void createProfile()}
+          >
+            {creating ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : (
+              <CircleUserRound className="size-3.5" />
+            )}
+            Adicionar perfil
+          </Button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" /> Carregando perfis…
+          </div>
+        ) : profiles.length ? (
+          <div className="space-y-2">
+            {profiles.map((profile) => {
+              const status = statuses[profile.id] ?? "unknown";
+              const channels = new Set(profile.usages.map((usage) => usage.channelId)).size;
+              const primaryCount = profile.usages.filter(
+                (usage) => usage.role === "primary",
+              ).length;
+              const fallbackCount = profile.usages.length - primaryCount;
+              return (
+                <article
+                  key={profile.id}
+                  className="rounded-lg border border-border bg-background/70 p-3"
+                >
+                  <div className="flex flex-wrap items-start gap-2">
+                    <span
+                      className={`mt-0.5 size-2.5 rounded-full ${
+                        status === "ready"
+                          ? "bg-emerald-500"
+                          : status === "missing"
+                            ? "bg-warning"
+                            : status === "checking" || status === "preparing"
+                              ? "animate-pulse bg-muted-foreground/50"
+                              : "bg-muted-foreground/50"
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      {editingId === profile.id ? (
+                        <div className="flex gap-2">
+                          <Input
+                            value={editingName}
+                            maxLength={80}
+                            className="h-8"
+                            onChange={(event) => setEditingName(event.target.value)}
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={!editingName.trim()}
+                            onClick={() => void renameProfile(profile)}
+                          >
+                            Salvar
+                          </Button>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-xs font-semibold">{profile.name}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            Identificador local: {profile.alias}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={status === "ready" ? "outline" : "default"}
+                      disabled={status === "checking" || status === "preparing" || !plugin.enabled}
+                      onClick={() => void prepareProfile(profile)}
+                    >
+                      {status === "checking" || status === "preparing" ? (
+                        <LoaderCircle className="size-3.5 animate-spin" />
+                      ) : status === "ready" ? (
+                        <CheckCircle2 className="size-3.5" />
+                      ) : (
+                        <CircleUserRound className="size-3.5" />
+                      )}
+                      {!plugin.enabled
+                        ? "Ative o plugin"
+                        : status === "ready"
+                          ? "Pronto"
+                          : status === "preparing"
+                            ? "Preparando"
+                            : "Preparar"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      aria-label={`Renomear ${profile.name}`}
+                      onClick={() => {
+                        setEditingId(profile.id);
+                        setEditingName(profile.name);
+                      }}
+                    >
+                      <Pencil className="size-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-8 text-destructive"
+                      aria-label={`Remover ${profile.name}`}
+                      title={
+                        profile.usages.length
+                          ? "Troque as referências antes de remover"
+                          : "Remover do gerenciamento"
+                      }
+                      disabled={Boolean(profile.usages.length)}
+                      onClick={() => void removeProfile(profile)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Badge variant="outline" className="text-[9px]">
+                      {channels} {channels === 1 ? "canal" : "canais"}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px]">
+                      Principal em {primaryCount}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px]">
+                      Fallback em {fallbackCount}
+                    </Badge>
+                  </div>
+
+                  {profile.usages.length ? (
+                    <details className="mt-2 rounded-md bg-muted/35 px-2.5 py-2">
+                      <summary className="cursor-pointer text-[10px] font-medium text-muted-foreground">
+                        Ver {profile.usages.length} {profile.usages.length === 1 ? "uso" : "usos"}
+                      </summary>
+                      <div className="mt-2 space-y-1.5">
+                        {profile.usages.map((usage) => (
+                          <p
+                            key={`${usage.channelId}-${usage.processType}-${usage.blockId}-${usage.role}`}
+                            className="text-[10px]"
+                          >
+                            <span className="font-medium">{usage.channelName}</span> ·{" "}
+                            {PROCESS_META[usage.processType].label} · {usage.blockName} ·{" "}
+                            <span className="text-muted-foreground">
+                              {usage.role === "primary"
+                                ? "principal"
+                                : `fallback ${usage.fallbackPosition ?? ""}`.trim()}
+                            </span>
+                          </p>
+                        ))}
+                      </div>
+                    </details>
+                  ) : (
+                    <p className="mt-2 text-[10px] text-muted-foreground">
+                      Este perfil ainda não é utilizado por nenhum Método.
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+            Nenhum perfil cadastrado para este plugin.
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function UpdateInstalledPluginPanel({
+  plugin,
+  update,
+  onChanged,
+}: {
+  plugin: DiscoveredPlugin;
+  update?: PluginUpdate;
+  onChanged: () => Promise<void>;
+}) {
+  const [folderPath, setFolderPath] = useState("");
+  const [updating, setUpdating] = useState(false);
+
+  async function updateFromCatalog() {
+    setUpdating(true);
+    try {
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/update-from-catalog`,
+        { method: "PUT" },
+      );
+      const result = (await response.json()) as { version?: string; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar o plugin.");
+      toast.success(`Plugin atualizado para v${result.version}`, {
+        description: "Revise as permissões e reative o plugin para usar a nova versão.",
+      });
+      await onChanged();
+    } catch (error) {
+      toast.error("Não foi possível atualizar o plugin", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function updatePlugin() {
+    setUpdating(true);
+    try {
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/update-from-folder`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: folderPath }),
+        },
+      );
+      const result = (await response.json()) as { version?: string; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar o plugin.");
+      toast.success(`Plugin atualizado para v${result.version}`, {
+        description: "Revise as permissões e reative o plugin para usar a nova versão.",
+      });
+      setFolderPath("");
+      await onChanged();
+    } catch (error) {
+      toast.error("Não foi possível atualizar o plugin", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-border bg-muted/15 p-3">
+      <div className="flex items-center gap-2 text-xs font-semibold">
+        <RefreshCw className="size-3.5 text-brand-soft" /> Atualizações
+      </div>
+      {update?.updateAvailable && (
+        <div className="mt-3 flex flex-col gap-2 rounded-lg border border-sky-500/30 bg-sky-500/5 p-3 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-sky-600">Versão {update.version} disponível</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              O pacote será baixado, conferido e validado antes da substituição.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="shrink-0 gap-1.5"
+            disabled={updating}
+            onClick={() => void updateFromCatalog()}
+          >
+            {updating ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : (
+              <Download className="size-3.5" />
+            )}
+            Atualizar plugin
+          </Button>
+        </div>
+      )}
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        {update?.updateAvailable
+          ? "Como alternativa, você ainda pode atualizar manualmente usando uma pasta."
+          : "Se você recebeu uma versão por fora do catálogo, pode atualizá-la manualmente pela pasta."}
+      </p>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={folderPath}
+          placeholder="C:\\Meus Plugins\\nova-versão"
+          onChange={(event) => setFolderPath(event.target.value)}
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0"
+          disabled={updating || !folderPath.trim()}
+          onClick={() => void updatePlugin()}
+        >
+          {updating ? (
+            <LoaderCircle className="size-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="size-3.5" />
+          )}
+          Validar e atualizar
+        </Button>
+      </div>
+    </section>
   );
 }
 
@@ -655,7 +1391,7 @@ function CommunityAccessPanel({
     <div className="mt-4 rounded-lg border border-border bg-muted/30 p-3">
       <p className="text-xs font-semibold">Acesso deste plugin</p>
       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-        Este plugin foi instalado localmente. O ContentFlow OS executa seu código em um processo
+        Este plugin foi instalado localmente. O ContentFlow executa seu código em um processo
         separado e entrega somente os recursos declarados abaixo.
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -698,8 +1434,8 @@ function CommunityAccessPanel({
         ))}
       {!plugin.networkIsolation && (
         <p className="mt-2 text-[10px] leading-relaxed text-warning">
-          Reinicie o ContentFlow OS com Node 26 antes de ativar código não confiável. O runtime
-          atual não consegue impor o bloqueio técnico de rede da sandbox.
+          Reinicie o ContentFlow com Node 26 antes de ativar código não confiável. O runtime atual
+          não consegue impor o bloqueio técnico de rede da sandbox.
         </p>
       )}
       {plugin.manifest.permissions.some((permission) =>
@@ -724,7 +1460,13 @@ function CommunityAccessPanel({
   );
 }
 
-function CommunitySecretField({ pluginId, secretKey }: { pluginId: string; secretKey: string }) {
+export function CommunitySecretField({
+  pluginId,
+  secretKey,
+}: {
+  pluginId: string;
+  secretKey: string;
+}) {
   const [connected, setConnected] = useState(false);
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
@@ -803,7 +1545,7 @@ function CommunitySecretField({ pluginId, secretKey }: { pluginId: string; secre
   );
 }
 
-function CommunityWorkspaceField({ pluginId }: { pluginId: string }) {
+export function CommunityWorkspaceField({ pluginId }: { pluginId: string }) {
   const [folderPath, setFolderPath] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -847,7 +1589,7 @@ function CommunityWorkspaceField({ pluginId }: { pluginId: string }) {
       </Label>
       <p className="text-[10px] leading-relaxed text-muted-foreground">
         Use uma pasta sua para arquivos persistentes e checkpoints. Deixe vazio para usar a pasta
-        interna e isolada do ContentFlow OS.
+        interna e isolada do ContentFlow.
       </p>
       <div className="flex gap-2">
         <Input
@@ -862,237 +1604,6 @@ function CommunityWorkspaceField({ pluginId }: { pluginId: string }) {
         </Button>
       </div>
     </div>
-  );
-}
-
-function ProviderConnectionPanel({
-  pluginId,
-  provider,
-  keyLabel,
-  keyPlaceholder,
-  apiKeysUrl,
-}: {
-  pluginId: string;
-  provider: string;
-  keyLabel: string;
-  keyPlaceholder: string;
-  apiKeysUrl: string;
-}) {
-  const [connection, setConnection] = useState<ProviderConnection>();
-  const [apiKey, setApiKey] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const loadConnection = useCallback(async () => {
-    const response = await fetch(`/api/plugins/${pluginId}/connection`);
-    if (!response.ok) throw new Error(`Não foi possível consultar a conexão ${provider}.`);
-    setConnection((await response.json()) as ProviderConnection);
-  }, [pluginId, provider]);
-
-  useEffect(() => {
-    void loadConnection();
-  }, [loadConnection]);
-
-  async function updateConnection(action: "connect" | "refresh" | "disconnect") {
-    setLoading(true);
-    try {
-      const response = await fetch(
-        action === "refresh"
-          ? `/api/plugins/${pluginId}/models/refresh`
-          : `/api/plugins/${pluginId}/connection`,
-        {
-          method: action === "disconnect" ? "DELETE" : "POST",
-          headers: action === "connect" ? { "Content-Type": "application/json" } : undefined,
-          body: action === "connect" ? JSON.stringify({ apiKey }) : undefined,
-        },
-      );
-      const result = (await response.json()) as ProviderConnection & { error?: string };
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar a conexão.");
-      setConnection(result);
-      setApiKey("");
-      toast.success(
-        action === "disconnect"
-          ? `${provider} desconectada`
-          : `${result.models.length} modelos ${provider} disponíveis`,
-      );
-    } catch (error) {
-      toast.error(`Não foi possível conectar à ${provider}`, {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="mt-4 rounded-lg border border-brand/25 bg-brand/5 p-3">
-      <div className="flex items-start gap-2.5">
-        <KeyRound className="mt-0.5 size-4 shrink-0 text-brand-soft" />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs font-semibold">Conexão {provider}</p>
-            {connection?.connected && (
-              <Badge className="gap-1 text-[9px]" variant="secondary">
-                <CheckCircle2 className="size-3" /> Conectada
-              </Badge>
-            )}
-          </div>
-          {connection?.connected ? (
-            <>
-              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                {connection.models.length} modelos disponíveis para esta chave. A lista é consultada
-                diretamente na {provider} e usada nos blocos de Método. A credencial está protegida
-                pelo {connection.credentialStore}.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={loading}
-                  onClick={() => void updateConnection("refresh")}
-                >
-                  <RefreshCw
-                    className={loading ? "mr-1.5 size-3.5 animate-spin" : "mr-1.5 size-3.5"}
-                  />
-                  Atualizar modelos
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={loading}
-                  onClick={() => void updateConnection("disconnect")}
-                >
-                  <Unplug className="mr-1.5 size-3.5" /> Desconectar
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                Informe a chave para validar a conexão e carregar os modelos disponíveis em tempo
-                real. Depois de validada, ela será protegida pelo cofre de credenciais do sistema e
-                reutilizada nas próximas sessões.
-              </p>
-              <div className="mt-3 grid gap-1.5 sm:grid-cols-[1fr_auto]">
-                <div>
-                  <Label htmlFor={`${pluginId}-session-key`} className="sr-only">
-                    {keyLabel}
-                  </Label>
-                  <Input
-                    id={`${pluginId}-session-key`}
-                    type="password"
-                    autoComplete="off"
-                    value={apiKey}
-                    placeholder={keyPlaceholder}
-                    onChange={(event) => setApiKey(event.target.value)}
-                  />
-                </div>
-                <Button
-                  size="sm"
-                  disabled={loading || !apiKey.trim()}
-                  onClick={() => void updateConnection("connect")}
-                >
-                  {loading && <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />}
-                  Conectar e buscar modelos
-                </Button>
-              </div>
-              <a
-                href={apiKeysUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-brand-soft hover:underline"
-              >
-                Criar ou consultar chave da API <ExternalLink className="size-3" />
-              </a>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PluginSourceDialog({ plugin }: { plugin: DiscoveredPlugin }) {
-  const [open, setOpen] = useState(false);
-  const [source, setSource] = useState<PluginSource>();
-  const [selectedPath, setSelectedPath] = useState<string>();
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open || source || plugin.source !== "bundled") return;
-    setLoading(true);
-    void fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/source`)
-      .then(async (response) => {
-        const result = (await response.json()) as PluginSource & { error?: string };
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível ler o plugin.");
-        setSource(result);
-        setSelectedPath(result.files[0]?.path);
-      })
-      .catch((error) => {
-        toast.error("Não foi possível abrir o código", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      })
-      .finally(() => setLoading(false));
-  }, [open, plugin.id, plugin.source, source]);
-
-  const selected = source?.files.find((file) => file.path === selectedPath);
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="outline" className="gap-1.5">
-          <FileCode2 className="size-3.5" /> Ver estrutura e código
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-5xl">
-        <DialogHeader>
-          <DialogTitle>Estrutura de {plugin.manifest.name}</DialogTitle>
-          <DialogDescription>
-            O manifesto declara compatibilidade e parâmetros; o handler contém a execução real.
-          </DialogDescription>
-        </DialogHeader>
-        {loading ? (
-          <div className="grid min-h-72 place-items-center text-sm text-muted-foreground">
-            <LoaderCircle className="size-5 animate-spin" />
-          </div>
-        ) : source ? (
-          <div className="grid min-h-[28rem] overflow-hidden rounded-lg border border-border md:grid-cols-[14rem_1fr]">
-            <aside className="border-b border-border bg-card/50 p-3 md:border-b-0 md:border-r">
-              <p className="mb-2 truncate font-mono text-[10px] text-muted-foreground">
-                {source.root}/
-              </p>
-              <div className="space-y-1">
-                {source.files.map((file) => (
-                  <button
-                    type="button"
-                    key={file.path}
-                    onClick={() => setSelectedPath(file.path)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs transition-colors ${
-                      file.path === selectedPath
-                        ? "bg-brand/10 text-brand-soft"
-                        : "text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    <FileCode2 className="size-3.5" /> {file.path}
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <div className="min-w-0 bg-[#080d18]">
-              <div className="border-b border-white/10 px-4 py-2 font-mono text-xs text-slate-400">
-                {selected?.path}
-              </div>
-              <pre className="max-h-[34rem] overflow-auto p-4 text-[11px] leading-relaxed text-slate-300">
-                <code>{selected?.content}</code>
-              </pre>
-            </div>
-          </div>
-        ) : (
-          <p className="py-12 text-center text-sm text-muted-foreground">
-            Código indisponível para este plugin.
-          </p>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }
 

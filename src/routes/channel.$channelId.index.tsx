@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   MoreHorizontal,
@@ -8,21 +8,31 @@ import {
   Calendar,
   AlertTriangle,
   LayoutGrid,
-  Table as TableIcon,
+  List,
   FolderKanban,
-  RefreshCw,
   Trash2,
   UsersRound,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
 import { ChannelAvatar } from "@/components/channel-avatar";
 import { ProcessStatus } from "@/components/process-status";
+import { ExecutionOrchestratorPanel } from "@/components/execution-orchestrator-panel";
 import { NewProjectDialog } from "@/components/new-project-dialog";
+import { NewChannelDialog } from "@/components/new-channel-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,7 +50,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PROCESS_META, type Channel, type Project } from "@/lib/domain";
-import { removeProject, syncChannelFromYouTube, useChannel, useProjects } from "@/lib/store";
+import { projectThumbnail } from "@/lib/project-thumbnail";
+import {
+  removeProject,
+  syncChannelFromYouTube,
+  useChannel,
+  useChannelExecutions,
+  useProjects,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/channel/$channelId/")({ component: ChannelWorkspace });
@@ -49,9 +66,59 @@ function ChannelWorkspace() {
   const { channelId } = Route.useParams();
   const channel = useChannel(channelId);
   const projects = useProjects(channelId);
-  const [view, setView] = useState<"cards" | "table">("cards");
+  const executions = useChannelExecutions(channelId);
+  const [view, setView] = useState<"cards" | "list">("cards");
   const [search, setSearch] = useState("");
+  const [editingChannel, setEditingChannel] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [projectPendingRemoval, setProjectPendingRemoval] = useState<Project | null>(null);
+  const [isRemovingProject, setIsRemovingProject] = useState(false);
+  const hasLocalViewChange = useRef(false);
+  const viewPersistenceQueue = useRef(Promise.resolve());
+
+  useEffect(() => {
+    let active = true;
+    hasLocalViewChange.current = false;
+    setView("cards");
+    void fetch(`/api/channels/${encodeURIComponent(channelId)}/preferences`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load channel preferences");
+        return (await response.json()) as { projectView?: "cards" | "list" };
+      })
+      .then((stored) => {
+        if (
+          active &&
+          !hasLocalViewChange.current &&
+          (stored.projectView === "cards" || stored.projectView === "list")
+        ) {
+          setView(stored.projectView);
+        }
+      })
+      .catch((error) => console.error(error));
+    return () => {
+      active = false;
+    };
+  }, [channelId]);
+
+  function selectView(nextView: "cards" | "list") {
+    if (nextView === view) return;
+    hasLocalViewChange.current = true;
+    setView(nextView);
+    viewPersistenceQueue.current = viewPersistenceQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        const response = await fetch(`/api/channels/${encodeURIComponent(channelId)}/preferences`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectView: nextView }),
+        });
+        if (!response.ok) throw new Error("Could not save channel preferences");
+      })
+      .catch((error) => {
+        console.error(error);
+        toast.error("Não foi possível salvar a visualização deste canal.");
+      });
+  }
 
   const filtered = useMemo(() => {
     if (!search) return projects;
@@ -65,7 +132,7 @@ function ChannelWorkspace() {
     setIsSyncing(true);
     try {
       await syncChannelFromYouTube(channelId);
-      toast.success("Canal atualizado com os dados públicos do YouTube.");
+      toast.success("Informações do canal atualizadas pelo YouTube.");
     } catch (error) {
       toast.error("Não foi possível atualizar o canal", {
         description: error instanceof Error ? error.message : undefined,
@@ -75,12 +142,28 @@ function ChannelWorkspace() {
     }
   }
 
+  async function confirmProjectRemoval() {
+    if (!projectPendingRemoval || isRemovingProject) return;
+    setIsRemovingProject(true);
+    try {
+      await removeProject(projectPendingRemoval.id);
+      setProjectPendingRemoval(null);
+      toast.success("Projeto excluído.");
+    } catch (error) {
+      toast.error("Não foi possível excluir o projeto", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsRemovingProject(false);
+    }
+  }
+
   return (
     <AppShell>
       <TopBar
         showNewProject={false}
         breadcrumbs={[
-          { label: "ContentFlow OS", to: "/dashboard" },
+          { label: "ContentFlow", to: "/dashboard" },
           { label: "Canais", to: "/dashboard" },
           { label: channel.name },
         ]}
@@ -89,6 +172,17 @@ function ChannelWorkspace() {
         actions={
           <>
             <NewProjectDialog channelId={channel.id} />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 gap-1.5"
+              onClick={() => void syncYouTube()}
+              disabled={isSyncing}
+            >
+              <RefreshCw className={cn("size-3.5", isSyncing && "animate-spin")} />
+              <span className="hidden sm:inline">Atualizar informações</span>
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="size-9 text-muted-foreground">
@@ -98,7 +192,9 @@ function ChannelWorkspace() {
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Ações do canal</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem>Editar canal</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setEditingChannel(true)}>
+                  Editar canal
+                </DropdownMenuItem>
                 <DropdownMenuItem>Duplicar configurações</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive">Arquivar canal</DropdownMenuItem>
@@ -106,6 +202,13 @@ function ChannelWorkspace() {
             </DropdownMenu>
           </>
         }
+      />
+
+      <NewChannelDialog
+        trigger={null}
+        channel={channel}
+        open={editingChannel}
+        onOpenChange={setEditingChannel}
       />
 
       <main className="flex-1 space-y-5 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -142,17 +245,6 @@ function ChannelWorkspace() {
                 </div>
               </div>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="shrink-0 gap-1.5 bg-black/55 text-white hover:bg-black/70"
-              onClick={syncYouTube}
-              disabled={isSyncing}
-            >
-              <RefreshCw className={cn("size-3.5", isSyncing && "animate-spin")} />
-              <span className="hidden sm:inline">Atualizar YouTube</span>
-            </Button>
           </div>
         </section>
 
@@ -173,56 +265,142 @@ function ChannelWorkspace() {
                 className="h-9 border-border/60 bg-background/60 pl-8 text-xs"
               />
             </div>
-            <div className="inline-flex overflow-hidden rounded-md border border-border/60 bg-background/40 p-0.5">
+            <div
+              role="group"
+              aria-label="Visualização dos projetos"
+              className="inline-flex h-9 w-[7.5rem] items-center gap-0.5 rounded-lg border border-border/70 bg-background/60 p-0.5 shadow-sm"
+            >
               <button
-                onClick={() => setView("cards")}
+                type="button"
+                onClick={() => selectView("cards")}
+                aria-label="Cards"
+                aria-pressed={view === "cards"}
+                title={view === "cards" ? undefined : "Cards"}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs transition",
+                  "inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-[width,background-color,color] duration-200",
                   view === "cards"
-                    ? "bg-brand/20 text-brand-soft"
-                    : "text-muted-foreground hover:text-foreground",
+                    ? "min-w-0 flex-1 bg-brand/20 px-2 text-brand-soft shadow-sm"
+                    : "w-8 shrink-0 text-foreground/70 hover:bg-secondary hover:text-foreground",
                 )}
               >
-                <LayoutGrid className="size-3.5" /> Cards
+                <LayoutGrid className="size-4 shrink-0" />
+                {view === "cards" && <span>Cards</span>}
               </button>
               <button
-                onClick={() => setView("table")}
+                type="button"
+                onClick={() => selectView("list")}
+                aria-label="List"
+                aria-pressed={view === "list"}
+                title={view === "list" ? undefined : "List"}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs transition",
-                  view === "table"
-                    ? "bg-brand/20 text-brand-soft"
-                    : "text-muted-foreground hover:text-foreground",
+                  "inline-flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-[width,background-color,color] duration-200",
+                  view === "list"
+                    ? "min-w-0 flex-1 bg-brand/20 px-2 text-brand-soft shadow-sm"
+                    : "w-8 shrink-0 text-foreground/70 hover:bg-secondary hover:text-foreground",
                 )}
               >
-                <TableIcon className="size-3.5" /> Tabela
+                <List className="size-4 shrink-0" />
+                {view === "list" && <span>List</span>}
               </button>
             </div>
           </div>
         </div>
 
-        {filtered.length === 0 ? (
-          <EmptyProjects channelId={channel.id} channelName={channel.name} />
-        ) : view === "cards" ? (
-          <ProjectGrid projects={filtered} channel={channel} />
+        {view === "cards" ? (
+          filtered.length === 0 ? (
+            <EmptyProjects channelId={channel.id} channelName={channel.name} />
+          ) : (
+            <ProjectGrid
+              projects={filtered}
+              channel={channel}
+              executions={executions}
+              onRequestRemoval={setProjectPendingRemoval}
+            />
+          )
         ) : (
-          <ProjectTable projects={filtered} channel={channel} />
+          <div className="space-y-4">
+            <ExecutionOrchestratorPanel channelId={channel.id} channelName={channel.name} />
+            {filtered.length === 0 ? (
+              <EmptyProjects channelId={channel.id} channelName={channel.name} />
+            ) : (
+              <ProjectTable
+                projects={filtered}
+                channel={channel}
+                onRequestRemoval={setProjectPendingRemoval}
+              />
+            )}
+          </div>
         )}
       </main>
+      <Dialog
+        open={projectPendingRemoval !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && !isRemovingProject) setProjectPendingRemoval(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            requestAnimationFrame(() => {
+              document.querySelector<HTMLElement>("[data-new-project-trigger]")?.focus();
+            });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Excluir projeto?</DialogTitle>
+            <DialogDescription>
+              {projectPendingRemoval
+                ? `O projeto “${projectPendingRemoval.title}” será excluído permanentemente.`
+                : "Este projeto será excluído permanentemente."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={isRemovingProject}
+              onClick={() => setProjectPendingRemoval(null)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isRemovingProject}
+              onClick={() => void confirmProjectRemoval()}
+            >
+              {isRemovingProject ? "Excluindo…" : "Excluir projeto"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }
 
-function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Channel }) {
+function ProjectGrid({
+  projects,
+  channel,
+  executions,
+  onRequestRemoval,
+}: {
+  projects: Project[];
+  channel: Channel;
+  executions: ReturnType<typeof useChannelExecutions>;
+  onRequestRemoval: (project: Project) => void;
+}) {
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       {projects.map((p) => {
         const stage = PROCESS_META[p.currentStage];
+        const thumbnail = projectThumbnail(executions, p.id);
         return (
           <div
             key={p.id}
             className="group relative overflow-hidden rounded-lg bg-card transition-colors hover:bg-surface-2"
           >
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
@@ -237,7 +415,7 @@ function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Chan
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
                   onSelect={() => {
-                    if (confirm(`Excluir "${p.title}"?`)) removeProject(p.id);
+                    onRequestRemoval(p);
                   }}
                 >
                   <Trash2 className="mr-2 size-3.5" />
@@ -250,6 +428,13 @@ function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Chan
                 className="relative aspect-video overflow-hidden"
                 style={{ backgroundColor: `oklch(0.28 0.025 ${p.thumbHue})` }}
               >
+                {thumbnail ? (
+                  <img
+                    src={thumbnail.url}
+                    alt={`Thumbnail do projeto ${p.title}`}
+                    className="absolute inset-0 size-full object-cover"
+                  />
+                ) : null}
                 <div className="absolute left-2 top-2">
                   <ChannelAvatar channel={channel} size="sm" />
                 </div>
@@ -311,7 +496,15 @@ function ProjectGrid({ projects, channel }: { projects: Project[]; channel: Chan
   );
 }
 
-function ProjectTable({ projects, channel }: { projects: Project[]; channel: Channel }) {
+function ProjectTable({
+  projects,
+  channel,
+  onRequestRemoval,
+}: {
+  projects: Project[];
+  channel: Channel;
+  onRequestRemoval: (project: Project) => void;
+}) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border/70 bg-card">
       <Table>
@@ -379,7 +572,7 @@ function ProjectTable({ projects, channel }: { projects: Project[]; channel: Cha
                       size="icon"
                       className="size-8 text-muted-foreground hover:text-destructive"
                       onClick={() => {
-                        if (confirm(`Excluir "${p.title}"?`)) removeProject(p.id);
+                        onRequestRemoval(p);
                       }}
                     >
                       <Trash2 className="size-3.5" />

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { RuntimeValue, StoredFile } from "../src/lib/domain";
 import type { PluginExecutionRequest } from "../src/lib/plugin-contract";
+import { prepareItemJobResume } from "./plugin-item-resume";
 
 export type PluginJobStatus =
   "starting" | "pending" | "cancel_requested" | "completed" | "failed" | "cancelled" | "abandoned";
@@ -27,6 +28,27 @@ export type PersistentPluginJob = {
   cancelRequested: boolean;
   error?: string;
   retryCount: number;
+  recoveryHistory?: Array<{
+    at: string;
+    previousPluginVersion: string;
+    previousError?: string;
+    currentIndex: number;
+    reconciliationNote: string;
+  }>;
+  profileFallback?: {
+    configurationKey: string;
+    candidates: string[];
+    activeIndex: number;
+    history: Array<{ profile: string; code: string; message: string }>;
+  };
+  itemOrchestration?: {
+    inputPort: string;
+    outputPort: string;
+    combinedOutputPort?: string;
+    items: RuntimeValue[];
+    itemIds: string[];
+    currentIndex: number;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -107,6 +129,39 @@ export class PluginJobStore {
         .prepare("SELECT payload FROM plugin_jobs WHERE execution_id = ? ORDER BY created_at")
         .all(executionId) as Array<{ payload: string }>
     ).map((row) => parseJob(row.payload));
+  }
+
+  resumeFailedItems(
+    id: string,
+    expectedUpdatedAt: string,
+    options: Parameters<typeof prepareItemJobResume>[1],
+    onSaved?: (saved: PersistentPluginJob) => void,
+  ) {
+    return this.database
+      .transaction(() => {
+        const job = this.get(id);
+        if (!job || job.updatedAt !== expectedUpdatedAt)
+          throw new Error("Estado do job mudou; confira novamente antes de retomar.");
+        const next = prepareItemJobResume(job, options);
+        const result = this.database
+          .prepare(
+            `UPDATE plugin_jobs SET status = ?, next_poll_at = ?,
+        lease_token = NULL, lease_until = NULL, payload = ?, updated_at = ?
+        WHERE id = ? AND status = 'failed' AND updated_at = ? AND lease_token IS NULL`,
+          )
+          .run(
+            next.status,
+            next.nextPollAt,
+            JSON.stringify(next),
+            next.updatedAt,
+            id,
+            expectedUpdatedAt,
+          );
+        if (result.changes !== 1) throw new Error("Job ocupado ou alterado; retomada recusada.");
+        onSaved?.(next);
+        return next;
+      })
+      .immediate();
   }
 
   claim(id: string, now = new Date(), leaseMs = 60 * 60 * 1_000): ClaimedPluginJob | undefined {
@@ -199,6 +254,20 @@ export class PluginJobStore {
       .run(now.toISOString(), now.toISOString()).changes;
   }
 
+  defer(claim: ClaimedPluginJob, nextPollAt: Date) {
+    const timestamp = new Date().toISOString();
+    const next = { ...claim.job, nextPollAt: nextPollAt.toISOString(), updatedAt: timestamp };
+    const result = this.database
+      .prepare(
+        `UPDATE plugin_jobs
+         SET next_poll_at = ?, lease_token = NULL, lease_until = NULL, payload = ?, updated_at = ?
+         WHERE id = ? AND lease_token = ?`,
+      )
+      .run(next.nextPollAt, JSON.stringify(next), timestamp, next.id, claim.leaseToken);
+    if (!result.changes) throw new Error("O lease do job expirou antes do reagendamento.");
+    return next;
+  }
+
   deleteTerminalBefore(cutoff: Date) {
     return this.database
       .prepare(
@@ -252,6 +321,8 @@ export function createPersistentPluginJob(input: {
   pluginVersion: string;
   request: PluginExecutionRequest;
   timeoutMs: number;
+  profileFallback?: PersistentPluginJob["profileFallback"];
+  itemOrchestration?: PersistentPluginJob["itemOrchestration"];
   now?: Date;
 }): PersistentPluginJob {
   const now = input.now ?? new Date();
@@ -273,6 +344,8 @@ export function createPersistentPluginJob(input: {
     partialArtifacts: [],
     cancelRequested: false,
     retryCount: 0,
+    profileFallback: structuredClone(input.profileFallback),
+    itemOrchestration: structuredClone(input.itemOrchestration),
     createdAt: timestamp,
     updatedAt: timestamp,
   };

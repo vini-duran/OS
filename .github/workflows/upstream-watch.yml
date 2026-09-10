@@ -19,7 +19,7 @@ jobs:
 
       - name: Buscar upstream oficial
         run: |
-          git remote add upstream https://github.com/andremjr/contentflow-os.git
+          git remote add upstream https://github.com/andremjr/contentflow.git
           git fetch upstream main --tags --prune
           echo "UPSTREAM_SHA=$(git rev-parse upstream/main)" >> "$GITHUB_ENV"
           echo "UPSTREAM_SUBJECT=$(git log -1 --format=%s upstream/main)" >> "$GITHUB_ENV"
@@ -33,7 +33,7 @@ jobs:
           AHEAD_BEHIND: ${{ env.AHEAD_BEHIND }}
         with:
           script: |
-            const title = "[upstream] atualização pendente do ContentFlow OS";
+            const title = "[upstream] atualização pendente do ContentFlow";
             const body = [
               "O monitor detectou o estado atual do upstream oficial.",
               "",

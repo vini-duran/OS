@@ -39,13 +39,21 @@ export function AppSidebar() {
     <aside className="sticky top-0 z-30 flex h-screen w-16 shrink-0 flex-col border-r border-sidebar-border bg-sidebar sm:w-64">
       <Link
         to="/dashboard"
-        className="flex h-16 items-center justify-center gap-2 border-b border-sidebar-border px-2 hover:bg-sidebar-accent/40 sm:justify-start sm:px-4"
+        aria-label="ContentFlow — Visão geral"
+        className="flex h-16 items-center justify-center gap-2.5 border-b border-sidebar-border px-2 hover:bg-sidebar-accent/40 sm:justify-start sm:px-3.5"
       >
-        <div className="grid size-8 place-items-center rounded-md bg-brand">
-          <span className="text-xs font-bold text-white">CF</span>
-        </div>
-        <span className="hidden truncate text-sm font-semibold sm:block" data-display-type>
-          ContentFlow OS
+        <img
+          src="/brand/contentflow-mark.png"
+          alt=""
+          className="size-10 shrink-0 object-contain"
+          width={40}
+          height={40}
+        />
+        <span
+          className="hidden truncate text-base font-semibold tracking-tight sm:block"
+          data-display-type
+        >
+          ContentFlow
         </span>
       </Link>
       <nav className="flex-1 space-y-1 overflow-y-auto px-1 py-2 sm:px-2">
@@ -159,13 +167,13 @@ export function AppSidebar() {
           href="https://contentflow-vip.netlify.app/"
           target="_blank"
           rel="noreferrer"
-          title="Quer participar do desenvolvimento do ContentFlow OS?"
-          aria-label="Quer participar do desenvolvimento do ContentFlow OS? Abrir página em uma nova aba"
+          title="Quer participar do desenvolvimento do ContentFlow?"
+          aria-label="Quer participar do desenvolvimento do ContentFlow? Abrir página em uma nova aba"
           className="group flex items-center justify-center gap-2 rounded-md px-2 py-2.5 text-muted-foreground transition hover:bg-sidebar-accent hover:text-foreground sm:justify-start sm:px-3"
         >
           <HeartHandshake className="size-4 shrink-0" />
           <span className="hidden min-w-0 flex-1 text-xs font-medium leading-snug sm:block">
-            Quer participar do desenvolvimento do ContentFlow OS?
+            Quer participar do desenvolvimento do ContentFlow?
           </span>
           <ExternalLink className="hidden size-3.5 shrink-0 opacity-60 transition group-hover:opacity-100 sm:block" />
         </a>

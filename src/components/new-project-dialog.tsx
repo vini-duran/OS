@@ -28,31 +28,45 @@ export function NewProjectDialog({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [deadline, setDeadline] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
   const deadlineId = useId();
 
-  const canSubmit = title.trim().length > 0;
+  const canSubmit = title.trim().length > 0 && !saving;
 
   function reset() {
     setTitle("");
     setDeadline("");
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
-    const project = createProject({ title, channelId, deadline });
-    toast.success("Projeto criado", { description: project.title });
-    onCreate?.(project);
-    reset();
-    setOpen(false);
+    if (!canSubmit || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const project = await createProject({ title, channelId, deadline });
+      toast.success("Projeto criado", { description: project.title });
+      onCreate?.(project);
+      reset();
+      setOpen(false);
+    } catch (error) {
+      toast.error("Projeto não criado", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   }
 
   return (
     <Dialog
       open={open}
       onOpenChange={(v) => {
+        if (savingRef.current) return;
         setOpen(v);
         if (!v) reset();
       }}
@@ -63,6 +77,7 @@ export function NewProjectDialog({
             size="sm"
             className="h-9 gap-1.5 px-2.5 text-white sm:px-3"
             aria-label="Novo projeto"
+            data-new-project-trigger
           >
             <Plus className="size-4" />
             <span className="hidden sm:inline">Novo projeto</span>
@@ -95,6 +110,7 @@ export function NewProjectDialog({
               ref={titleInputRef}
               id={titleId}
               name="project-title"
+              autoFocus
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Ex.: A física impossível de Interstellar"

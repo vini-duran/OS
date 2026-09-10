@@ -17,22 +17,159 @@ export type AppLanguage = "pt-BR" | "en" | "es";
 export type AppPreferences = {
   theme: AppTheme;
   language: AppLanguage;
+  notificationSound: boolean;
+  systemNotifications: boolean;
+  methodsLibraryView: "methods" | "channels";
 };
 
 type PreferencesContextValue = AppPreferences & {
   ready: boolean;
   setTheme: (theme: AppTheme) => void;
   setLanguage: (language: AppLanguage) => void;
+  setNotificationSound: (enabled: boolean) => void;
+  setSystemNotifications: (enabled: boolean) => void;
+  setMethodsLibraryView: (view: AppPreferences["methodsLibraryView"]) => void;
   t: (source: string) => string;
 };
 
-const DEFAULT_PREFERENCES: AppPreferences = { theme: "dark", language: "pt-BR" };
+const DEFAULT_PREFERENCES: AppPreferences = {
+  theme: "dark",
+  language: "pt-BR",
+  notificationSound: false,
+  systemNotifications: false,
+  methodsLibraryView: "channels",
+};
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 
 type Translation = [english: string, spanish: string];
 
 const PHRASES: Record<string, Translation> = {
+  "Pesquisa estratégica": ["Strategic research", "Investigación estratégica"],
+  Pesquisa: ["Research", "Investigación"],
+  "Não foi possível ler as pesquisas.": [
+    "Could not load research runs.",
+    "No se pudieron cargar las investigaciones.",
+  ],
+  "Não foi possível ler os briefs.": [
+    "Could not load briefs.",
+    "No se pudieron cargar los briefs.",
+  ],
+  "Não foi possível atualizar a pesquisa.": [
+    "Could not refresh research.",
+    "No se pudo actualizar la investigación.",
+  ],
+  "A operação não foi concluída.": [
+    "The operation was not completed.",
+    "La operación no se completó.",
+  ],
+  "A operação falhou.": ["The operation failed.", "La operación falló."],
+  "Plano criado a partir do Radar do Método Tema.": [
+    "Plan created from the Theme Method radar.",
+    "Plan creado a partir del radar del Método Tema.",
+  ],
+  "Snapshot factual concluído. Nenhum tema foi criado.": [
+    "Factual snapshot completed. No theme was created.",
+    "Snapshot factual completado. No se creó ningún tema.",
+  ],
+  "Brief factual local criado: 0 tokens.": [
+    "Local factual brief created: 0 tokens.",
+    "Brief factual local creado: 0 tokens.",
+  ],
+  "Brief aprovado para a Biblioteca Estratégica.": [
+    "Brief approved for the Strategic Library.",
+    "Brief aprobado para la Biblioteca Estratégica.",
+  ],
+  "Factual, no nível do canal. Não cria Tema, Título, Thumbnail ou Roteiro automaticamente.": [
+    "Factual channel-level research. Does not automatically create a Theme, Title, Thumbnail or Script.",
+    "Investigación factual del canal. No crea Tema, Título, Thumbnail ni Guion automáticamente.",
+  ],
+  "Pesquisa ainda não conectada": ["Research not connected yet", "Investigación aún no conectada"],
+  "O plano reaproveita exatamente o Radar BUSCAR que já existe no Método Tema. Ele não altera suas consultas.":
+    [
+      "The plan reuses the existing SEARCH radar from the Theme Method without changing its queries.",
+      "El plan reutiliza el radar BUSCAR del Método Tema sin cambiar sus consultas.",
+    ],
+  "Conectar Radar do Tema": ["Connect Theme radar", "Conectar radar del Tema"],
+  "Radar do canal": ["Channel radar", "Radar del canal"],
+  "Rodada manual; nenhuma agenda oculta.": [
+    "Manual run; no hidden schedule.",
+    "Ejecución manual; sin agenda oculta.",
+  ],
+  "Local · 0 tokens": ["Local · 0 tokens", "Local · 0 tokens"],
+  "Só passa ao Tema após aprovação.": [
+    "Available to Theme only after approval.",
+    "Disponible para Tema solo tras aprobación.",
+  ],
+  Mínimo: ["Minimum", "Mínimo"],
+  registros: ["records", "registros"],
+  "Antes de permitir criar um brief.": [
+    "Required before creating a brief.",
+    "Necesario antes de crear un brief.",
+  ],
+  "1. Coleta factual": ["1. Factual collection", "1. Recopilación factual"],
+  "Usa as consultas já configuradas no Radar. Não chama OpenAI nem inicia produção.": [
+    "Uses the configured radar queries. Does not call OpenAI or start production.",
+    "Usa las consultas del radar. No llama a OpenAI ni inicia producción.",
+  ],
+  "Executar pesquisa": ["Run research", "Ejecutar investigación"],
+  "2. Brief estratégico": ["2. Strategic brief", "2. Brief estratégico"],
+  "Separa observado, inferência/hipótese, anti-cópia e limitações. Não usa IA.": [
+    "Separates observations, inference/hypotheses, anti-copying rules and limitations. No AI is used.",
+    "Separa observaciones, inferencias/hipótesis, reglas anticopia y limitaciones. No usa IA.",
+  ],
+  "Gerar brief": ["Create brief", "Crear brief"],
+  "Draft factual": ["Factual draft", "Borrador factual"],
+  "Aprovar para Tema": ["Approve for Theme", "Aprobar para Tema"],
+  "Após uma coleta concluída, gere aqui o primeiro brief.": [
+    "Create the first brief here after completing a collection.",
+    "Crea aquí el primer brief tras completar una recopilación.",
+  ],
+  "Snapshots recentes": ["Recent snapshots", "Snapshots recientes"],
+  "Nenhuma coleta executada.": ["No collection performed.", "No se realizó ninguna recopilación."],
+  "Configure a conexão do plugin de pesquisa.": [
+    "Configure the research plugin connection.",
+    "Configura la conexión del plugin de investigación.",
+  ],
+  "Conexão indisponível.": ["Connection unavailable.", "Conexión no disponible."],
+  "Perfis e contas": ["Profiles and accounts", "Perfiles y cuentas"],
+  "Cadastre, prepare e veja onde cada perfil é utilizado.": [
+    "Register, prepare, and see where each profile is used.",
+    "Registra, prepara y consulta dónde se utiliza cada perfil.",
+  ],
+  "Nome do novo perfil": ["New profile name", "Nombre del nuevo perfil"],
+  "Adicionar perfil": ["Add profile", "Añadir perfil"],
+  "Carregando perfis…": ["Loading profiles…", "Cargando perfiles…"],
+  "Identificador local:": ["Local identifier:", "Identificador local:"],
+  "Ative o plugin": ["Enable the plugin", "Activa el plugin"],
+  "Este perfil ainda não é utilizado por nenhum Método.": [
+    "This profile is not used by any Method yet.",
+    "Este perfil todavía no se utiliza en ningún Método.",
+  ],
+  "Nenhum perfil cadastrado para este plugin.": [
+    "No profiles registered for this plugin.",
+    "No hay perfiles registrados para este plugin.",
+  ],
+  "Perfil da conta": ["Account profile", "Perfil de la cuenta"],
+  "Selecione um perfil já cadastrado. A preparação e o gerenciamento ficam em Plugins.": [
+    "Select an existing profile. Preparation and management are handled in Plugins.",
+    "Selecciona un perfil existente. La preparación y la gestión se realizan en Plugins.",
+  ],
+  "Gerenciar perfis": ["Manage profiles", "Gestionar perfiles"],
+  "Selecione o perfil principal": ["Select the primary profile", "Selecciona el perfil principal"],
+  "Perfis alternativos": ["Fallback profiles", "Perfiles alternativos"],
+  "Em caso de falha, serão tentados na ordem abaixo.": [
+    "If it fails, they will be tried in the order below.",
+    "Si falla, se probarán en el orden indicado abajo.",
+  ],
+  "Nenhum perfil cadastrado para este plugin. Abra Plugins para adicionar o primeiro.": [
+    "No profiles registered for this plugin. Open Plugins to add the first one.",
+    "No hay perfiles registrados para este plugin. Abre Plugins para añadir el primero.",
+  ],
+  "A contagem de validações pendentes aparece sempre no ícone do aplicativo.": [
+    "The number of pending validations always appears on the app icon.",
+    "El número de validaciones pendientes siempre aparece en el icono de la aplicación.",
+  ],
   "A ação ainda não pode ser concluída": [
     "This action cannot be completed yet",
     "Esta acción aún no puede completarse",
@@ -52,6 +189,10 @@ const PHRASES: Record<string, Translation> = {
   "A tarefa sai daqui somente depois que o operador conclui a ação.": [
     "The task leaves this list only after the operator completes the action.",
     "La tarea sale de esta lista solo cuando el operador completa la acción.",
+  ],
+  "Aparência, idioma e notificações": [
+    "Appearance, language, and notifications",
+    "Apariencia, idioma y notificaciones",
   ],
   "Abrir canal": ["Open channel", "Abrir canal"],
   "Abrir página em uma nova aba": ["Open page in a new tab", "Abrir página en una pestaña nueva"],
@@ -94,10 +235,10 @@ const PHRASES: Record<string, Translation> = {
       "Enter the key to validate the connection and load available models in real time. It remains in memory only while the app is open.",
       "Introduce la clave para validar la conexión y cargar los modelos disponibles en tiempo real. Solo permanece en memoria mientras la aplicación está abierta.",
     ],
-  "Plugins oficiais ficam em plugins/bundled. Plugins adicionados por cada usuário ficam em data/plugins/installed. Coloque a pasta completa do plugin em um desses locais e use “Atualizar” para o ContentFlow ler o manifesto.":
+  "Plugins ficam separados do núcleo. Todos usam “Instalar uma cópia” ou “Usar pasta ao vivo” para o ContentFlow validar o manifesto, independentemente do autor.":
     [
-      "Official plugins live in plugins/bundled. User-added plugins live in data/plugins/installed. Place the complete plugin folder in either location and select “Refresh” so ContentFlow can read its manifest.",
-      "Los plugins oficiales están en plugins/bundled. Los plugins añadidos por el usuario están en data/plugins/installed. Coloca la carpeta completa del plugin en una de esas ubicaciones y selecciona “Actualizar” para que ContentFlow lea el manifiesto.",
+      "Plugins are kept outside the core. All of them use “Install a copy” or “Use live folder” so ContentFlow can validate the manifest, regardless of the author.",
+      "Los plugins están separados del núcleo. Todos usan “Instalar una copia” o “Usar carpeta activa” para que ContentFlow valide el manifiesto, independientemente del autor.",
     ],
   Progresso: ["Progress", "Progreso"],
   Não: ["No", "No"],
@@ -216,6 +357,10 @@ const PHRASES: Record<string, Translation> = {
   "Estas preferências são globais e ficam salvas neste dispositivo.": [
     "These preferences are global and saved on this device.",
     "Estas preferencias son globales y se guardan en este dispositivo.",
+  ],
+  "Exibir alertas na central de notificações do Windows.": [
+    "Show alerts in the Windows notification center.",
+    "Mostrar alertas en el centro de notificaciones de Windows.",
   ],
   "Esta ação não exige campos adicionais.": [
     "This action does not require additional fields.",
@@ -496,6 +641,14 @@ const PHRASES: Record<string, Translation> = {
   Aprovar: ["Approve", "Aprobar"],
   Reprovar: ["Reject", "Rechazar"],
   "Ação humana necessária": ["Human action required", "Se requiere una acción humana"],
+  "Ações humanas e erros de execução aparecerão aqui quando precisarem de atenção.": [
+    "Human actions and execution errors will appear here when they need attention.",
+    "Las acciones humanas y los errores de ejecución aparecerán aquí cuando requieran atención.",
+  ],
+  "Ações humanas e falhas permanecem aqui até serem resolvidas.": [
+    "Human actions and failures remain here until they are resolved.",
+    "Las acciones humanas y los fallos permanecen aquí hasta que se resuelvan.",
+  ],
   "Concluir ação humana": ["Complete human action", "Completar acción humana"],
   "Sua biblioteca está vazia": ["Your library is empty", "Tu biblioteca está vacía"],
   "Use “Adicionar item” para preencher os campos definidos na coleção.": [
@@ -516,16 +669,6 @@ const PHRASES: Record<string, Translation> = {
     "No installed plugin is compatible with this block, process, and output contract.",
     "Ningún plugin instalado es compatible con este bloque, proceso y contrato de salida.",
   ],
-  "Plugins oficiais ficam em": ["Official plugins are stored in", "Los plugins oficiales están en"],
-  "Plugins adicionados por cada usuário ficam em": [
-    "Plugins added by each user are stored in",
-    "Los plugins añadidos por cada usuario están en",
-  ],
-  "Coloque a pasta completa do plugin em um desses locais e use “Atualizar” para o ContentFlow ler o manifesto.":
-    [
-      "Place the complete plugin folder in either location and select “Refresh” so ContentFlow can read the manifest.",
-      "Coloca la carpeta completa del plugin en una de esas ubicaciones y selecciona “Actualizar” para que ContentFlow lea el manifiesto.",
-    ],
   "permissões declaradas": ["declared permissions", "permisos declarados"],
   "Executa qualquer bloco baseado em linguagem com um modelo de texto compatível com a Responses API da OpenAI.":
     [
@@ -542,6 +685,19 @@ const PHRASES: Record<string, Translation> = {
   Humano: ["Human", "Humano"],
   IA: ["AI", "IA"],
   Idioma: ["Language", "Idioma"],
+  Notificações: ["Notifications", "Notificaciones"],
+  "Notificações do Windows": ["Windows notifications", "Notificaciones de Windows"],
+  Preferências: ["Preferences", "Preferencias"],
+  "Reproduzir um som quando uma nova pendência ou erro precisar de atenção.": [
+    "Play a sound when a new task or error needs attention.",
+    "Reproducir un sonido cuando una nueva tarea o error requiera atención.",
+  ],
+  "Som de alerta": ["Alert sound", "Sonido de alerta"],
+  "Sempre ativo": ["Always on", "Siempre activo"],
+  "Pendências e erros na barra de tarefas": [
+    "Tasks and errors on the taskbar",
+    "Tareas y errores en la barra de tareas",
+  ],
   "Importar método": ["Import method", "Importar método"],
   Importar: ["Import", "Importar"],
   "Incluídos no aplicativo": ["Included with the app", "Incluidos en la aplicación"],
@@ -578,6 +734,7 @@ const PHRASES: Record<string, Translation> = {
     "No human actions waiting",
     "No hay acciones humanas pendientes",
   ],
+  "Nenhuma pendência ou erro": ["No tasks or errors", "No hay tareas ni errores"],
   "Nenhuma imagem selecionada": ["No image selected", "Ninguna imagen seleccionada"],
   "Nenhuma coleção vinculada": ["No collection linked", "No hay una colección vinculada"],
   "Nenhuma entrada específica. Os resultados anteriores continuam disponíveis como contexto durante a produção.":
@@ -586,7 +743,6 @@ const PHRASES: Record<string, Translation> = {
       "No hay una entrada específica. Los resultados anteriores siguen disponibles como contexto durante la producción.",
     ],
   Nicho: ["Niche", "Nicho"],
-  "Nome da ação": ["Action name", "Nombre de la acción"],
   "Nome da coleção": ["Collection name", "Nombre de la colección"],
   "Nome da saída": ["Output name", "Nombre de la salida"],
   Nome: ["Name", "Nombre"],
@@ -612,6 +768,10 @@ const PHRASES: Record<string, Translation> = {
   "Página não encontrada": ["Page not found", "Página no encontrada"],
   "Pausar produção": ["Pause production", "Pausar producción"],
   "Pendências humanas": ["Human tasks", "Tareas humanas"],
+  "Pendências e erros": ["Tasks and errors", "Tareas y errores"],
+  "Erro no bloco": ["Block error", "Error en el bloque"],
+  "Erros de execução": ["Execution errors", "Errores de ejecución"],
+  "Validação pendente": ["Pending validation", "Validación pendiente"],
   "Plugin executor": ["Runner plugin", "Plugin ejecutor"],
   "Plugin necessário para continuar": [
     "Plugin required to continue",
@@ -650,9 +810,9 @@ const PHRASES: Record<string, Translation> = {
   Projetos: ["Projects", "Proyectos"],
   Publicação: ["Publishing", "Publicación"],
   Quinzenal: ["Every two weeks", "Quincenal"],
-  "Quer participar do desenvolvimento do ContentFlow OS?": [
-    "Want to help develop ContentFlow OS?",
-    "¿Quieres participar en el desarrollo de ContentFlow OS?",
+  "Quer participar do desenvolvimento do ContentFlow?": [
+    "Want to help develop ContentFlow?",
+    "¿Quieres participar en el desarrollo de ContentFlow?",
   ],
   "Regra de validação": ["Validation rule", "Regla de validación"],
   "Remover bloco": ["Remove block", "Eliminar bloque"],
@@ -707,6 +867,430 @@ const PHRASES: Record<string, Translation> = {
   "Página inicial": ["Home", "Inicio"],
   Espanhol: ["Spanish", "Español"],
   "Claro e escuro": ["Light and dark", "Claro y oscuro"],
+  "Use, compartilhe e gerencie Métodos salvos nos seus canais": [
+    "Use, share, and manage Methods saved in your channels",
+    "Usa, comparte y gestiona los Métodos guardados en tus canales",
+  ],
+  "Buscar por nome, Canal, processo ou ação...": [
+    "Search by name, Channel, process, or action...",
+    "Buscar por nombre, Canal, proceso o acción...",
+  ],
+  "Recursos para criar Métodos": ["Resources for creating Methods", "Recursos para crear Métodos"],
+  "Use o agente guiado ou baixe a skill atualizada para trabalhar com seu agente de IA.": [
+    "Use the guided agent or download the updated skill to work with your AI agent.",
+    "Usa el agente guiado o descarga la skill actualizada para trabajar con tu agente de IA.",
+  ],
+  "Abrir agente de Métodos": ["Open Methods agent", "Abrir agente de Métodos"],
+  "Criação guiada no ChatGPT": ["Guided creation in ChatGPT", "Creación guiada en ChatGPT"],
+  "Baixar skill de Métodos": ["Download Methods skill", "Descargar skill de Métodos"],
+  "Contrato e referências atualizados": [
+    "Updated contract and references",
+    "Contrato y referencias actualizados",
+  ],
+  "Canais com Métodos": ["Channels with Methods", "Canales con Métodos"],
+  "Alterar capa": ["Change cover", "Cambiar portada"],
+  Reutilizar: ["Reuse", "Reutilizar"],
+  "Instalar plugin": ["Install plugin", "Instalar plugin"],
+  "Verificar atualizações": ["Check for updates", "Buscar actualizaciones"],
+  "Componentes externos": ["External components", "Componentes externos"],
+  "O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.":
+    [
+      "ContentFlow is installed without plugins. Download the package, extract it once, and install all plugins from the root folder—or select a single plugin folder.",
+      "ContentFlow se instala sin plugins. Descarga el paquete, extráelo una vez e instala todos desde la carpeta raíz, o selecciona la carpeta de un solo plugin.",
+    ],
+  "Baixar plugins": ["Download plugins", "Descargar plugins"],
+  "Mesmo fluxo para qualquer autor": [
+    "Same flow for every author",
+    "El mismo flujo para cualquier autor",
+  ],
+  "Baixar Browser Bridge": ["Download Browser Bridge", "Descargar Browser Bridge"],
+  "Somente para automação web": ["For web automation only", "Solo para automatización web"],
+  "Baixar skill de plugins": ["Download plugin skill", "Descargar skill de plugins"],
+  "Para criar com um agente de IA": [
+    "For building with an AI agent",
+    "Para crear con un agente de IA",
+  ],
+  "Todas as capacidades": ["All capabilities", "Todas las capacidades"],
+  "Todos os blocos": ["All blocks", "Todos los bloques"],
+  Capacidade: ["Capability", "Capacidad"],
+  Processo: ["Process", "Proceso"],
+  "Pesquisar plugins por nome...": ["Search plugins by name...", "Buscar plugins por nombre..."],
+  "Nenhum plugin corresponde aos filtros": [
+    "No plugin matches the filters",
+    "Ningún plugin coincide con los filtros",
+  ],
+  "Ajuste a pesquisa ou limpe os filtros para voltar a visualizar o catálogo.": [
+    "Adjust the search or clear the filters to view the catalog again.",
+    "Ajusta la búsqueda o borra los filtros para volver a ver el catálogo.",
+  ],
+  "Atualizar informações": ["Refresh information", "Actualizar información"],
+  "Executar novamente": ["Run again", "Ejecutar de nuevo"],
+  Cancelado: ["Cancelled", "Cancelado"],
+  "Use “Executar novamente” para iniciar uma nova execução deste processo.": [
+    "Use “Run again” to start a new execution of this process.",
+    "Usa “Ejecutar de nuevo” para iniciar una nueva ejecución de este proceso.",
+  ],
+  "O processo ainda não possui um método.": [
+    "This process does not have a method yet.",
+    "Este proceso aún no tiene un método.",
+  ],
+  "Histórico de escolhas": ["Choice history", "Historial de elecciones"],
+  "Histórico de criações": ["Creation history", "Historial de creaciones"],
+  "Extensão persistente do navegador": [
+    "Persistent browser extension",
+    "Extensión persistente del navegador",
+  ],
+  "Ao preparar uma conta, carregue esta pasta uma única vez em chrome://extensions. Ela fica fora da pasta do código e não muda quando o aplicativo é atualizado ou renomeado.":
+    [
+      "When preparing an account, load this folder once in chrome://extensions. It stays outside the code folder and does not change when the app is updated or renamed.",
+      "Al preparar una cuenta, carga esta carpeta una sola vez en chrome://extensions. Permanece fuera de la carpeta del código y no cambia cuando la aplicación se actualiza o se renombra.",
+    ],
+  "Copiar caminho da extensão": ["Copy extension path", "Copiar ruta de la extensión"],
+  "Caminho da extensão copiado": ["Extension path copied", "Ruta de la extensión copiada"],
+  Preparar: ["Prepare", "Preparar"],
+  Preparando: ["Preparing", "Preparando"],
+  Pronto: ["Ready", "Listo"],
+  "Prepare a conta na janela do navegador": [
+    "Prepare the account in the browser window",
+    "Prepara la cuenta en la ventana del navegador",
+  ],
+  "Agora prepare a conta para confirmar a sessão neste perfil.": [
+    "Now prepare the account to confirm the session in this profile.",
+    "Ahora prepara la cuenta para confirmar la sesión en este perfil.",
+  ],
+  "Perfil adicionado": ["Profile added", "Perfil añadido"],
+  "Perfil pronto": ["Profile ready", "Perfil listo"],
+  "Perfil renomeado": ["Profile renamed", "Perfil renombrado"],
+  "Perfil removido do gerenciamento": [
+    "Profile removed from management",
+    "Perfil eliminado de la gestión",
+  ],
+  "Troque as referências antes de remover": [
+    "Change the references before removing",
+    "Cambia las referencias antes de eliminar",
+  ],
+  "Importar pacote de Métodos": ["Import Methods package", "Importar paquete de Métodos"],
+  "Adicionar Método a um Canal": ["Add Method to a Channel", "Añadir Método a un Canal"],
+  "Nome do novo Canal": ["New Channel name", "Nombre del nuevo Canal"],
+  "Métodos que serão importados": ["Methods to be imported", "Métodos que se importarán"],
+  "Nenhuma dependência externa foi encontrada.": [
+    "No external dependency was found.",
+    "No se encontró ninguna dependencia externa.",
+  ],
+  "Preparação necessária": ["Preparation required", "Preparación necesaria"],
+  "Será importado junto.": [
+    "It will be imported with the package.",
+    "Se importará con el paquete.",
+  ],
+  "Já existe no Canal de destino.": [
+    "It already exists in the target Channel.",
+    "Ya existe en el Canal de destino.",
+  ],
+  "Crie ou importe esse Método antes de executar.": [
+    "Create or import this Method before running.",
+    "Crea o importa este Método antes de ejecutar.",
+  ],
+  "Uma conta ou conexão local deverá ser associada.": [
+    "A local account or connection must be associated.",
+    "Debe asociarse una cuenta o conexión local.",
+  ],
+  "Verifique se está instalado e ativo.": [
+    "Check that it is installed and enabled.",
+    "Comprueba que esté instalado y activo.",
+  ],
+  "Crie essa coleção e vincule-a ao bloco antes de executar.": [
+    "Create this collection and link it to the block before running.",
+    "Crea esta colección y vincúlala al bloque antes de ejecutar.",
+  ],
+  "O arquivo não informa os campos; consulte o autor do Método.": [
+    "The file does not specify the fields; ask the Method author.",
+    "El archivo no especifica los campos; consulta al autor del Método.",
+  ],
+  "Nenhum Método encontrado": ["No Method found", "No se encontró ningún Método"],
+  "Crie Métodos dentro de um Canal ou importe um arquivo compartilhado.": [
+    "Create Methods in a Channel or import a shared file.",
+    "Crea Métodos en un Canal o importa un archivo compartido.",
+  ],
+  "processos configurados": ["processes configured", "procesos configurados"],
+  entrega: ["output", "salida"],
+  entregas: ["outputs", "salidas"],
+  "Coleção:": ["Collection:", "Colección:"],
+  "Entrega:": ["Output:", "Salida:"],
+  "Usa:": ["Uses:", "Usa:"],
+  "Revise o método de": ["Review the", "Revisa el método de"],
+  "para liberar a execução.": ["method to enable execution.", "para habilitar la ejecución."],
+  perfil: ["profile", "perfil"],
+  perfis: ["profiles", "perfiles"],
+  Fornecedor: ["Provider", "Proveedor"],
+  "Instalado localmente": ["Installed locally", "Instalado localmente"],
+  "Pasta de desenvolvimento": ["Development folder", "Carpeta de desarrollo"],
+  "Entregas e capacidades": ["Outputs and capabilities", "Salidas y capacidades"],
+  Texto: ["Text", "Texto"],
+  Processamento: ["Processing", "Procesamiento"],
+  "Permissões declaradas": ["Declared permissions", "Permisos declarados"],
+  "Sem permissões adicionais.": ["No additional permissions.", "Sin permisos adicionales."],
+  "Sem permissões adicionais": ["No additional permissions", "Sin permisos adicionales"],
+  "Site do plugin": ["Plugin website", "Sitio del plugin"],
+  "Desconectar pasta": ["Disconnect folder", "Desconectar carpeta"],
+  Desinstalar: ["Uninstall", "Desinstalar"],
+  "Acesso deste plugin": ["This plugin's access", "Acceso de este plugin"],
+  "Este plugin foi instalado localmente. O ContentFlow executa seu código em um processo separado e entrega somente os recursos declarados abaixo.":
+    [
+      "This plugin was installed locally. ContentFlow runs its code in a separate process and provides only the resources declared below.",
+      "Este plugin se instaló localmente. ContentFlow ejecuta su código en un proceso separado y proporciona solo los recursos declarados abajo.",
+    ],
+  "Hosts declarados": ["Declared hosts", "Hosts declarados"],
+  "O núcleo aplica esta lista ao importar artifacts remotos. O Permission Model do Node 26 ainda não restringe por host a rede usada diretamente pelo código do plugin.":
+    [
+      "The core applies this list when importing remote artifacts. The Node 26 Permission Model does not yet restrict by host the network used directly by plugin code.",
+      "El núcleo aplica esta lista al importar artefactos remotos. El modelo de permisos de Node 26 todavía no restringe por host la red utilizada directamente por el código del plugin.",
+    ],
+  "Acesso irrestrito à rede: este plugin comunitário pediu network sem declarar hosts. Ative apenas se você confia na origem e no código.":
+    [
+      "Unrestricted network access: this community plugin requested network access without declaring hosts. Enable it only if you trust its source and code.",
+      "Acceso de red sin restricciones: este plugin comunitario solicitó acceso a la red sin declarar hosts. Actívalo solo si confías en su origen y código.",
+    ],
+  "Reinicie o ContentFlow com Node 26 antes de ativar código não confiável. O runtime atual não consegue impor o bloqueio técnico de rede da sandbox.":
+    [
+      "Restart ContentFlow with Node 26 before enabling untrusted code. The current runtime cannot enforce the sandbox's technical network restriction.",
+      "Reinicia ContentFlow con Node 26 antes de activar código no confiable. El runtime actual no puede imponer la restricción técnica de red del sandbox.",
+    ],
+  "Acesso avançado: programas externos e bibliotecas nativas podem agir com as permissões normais da sua conta no computador. Ative apenas se você confia na origem e no código.":
+    [
+      "Advanced access: external programs and native libraries can act with your account's normal permissions on this computer. Enable it only if you trust its source and code.",
+      "Acceso avanzado: los programas externos y las bibliotecas nativas pueden actuar con los permisos normales de tu cuenta en este equipo. Actívalo solo si confías en su origen y código.",
+    ],
+  "Desativar plugin": ["Disable plugin", "Desactivar plugin"],
+  "Ativar e permitir": ["Enable and allow", "Activar y permitir"],
+  "Pacote de Métodos exportado": ["Methods package exported", "Paquete de Métodos exportado"],
+  Destino: ["Destination", "Destino"],
+  "Já existe um Método neste processo. Marque para substituí-lo.": [
+    "A Method already exists for this process. Select it to replace it.",
+    "Ya existe un Método para este proceso. Selecciónalo para reemplazarlo.",
+  ],
+  "Criar e importar": ["Create and import", "Crear e importar"],
+  "Importar selecionados": ["Import selected", "Importar seleccionados"],
+  "Processo anterior:": ["Previous process:", "Proceso anterior:"],
+  "Coleção estratégica:": ["Strategic collection:", "Colección estratégica:"],
+  " (obrigatório)": [" (required)", " (obligatorio)"],
+  " (opcional)": [" (optional)", " (opcional)"],
+  "Foi encontrada uma coleção com esse nome; confirme o vínculo e o schema.": [
+    "A collection with this name was found; confirm the link and schema.",
+    "Se encontró una colección con este nombre; confirma el vínculo y el esquema.",
+  ],
+  "Nenhuma dependência externa foi declarada.": [
+    "No external dependency was declared.",
+    "No se declaró ninguna dependencia externa.",
+  ],
+  "Acessar a internet": ["Access the internet", "Acceder a Internet"],
+  "Ler arquivos liberados": ["Read allowed files", "Leer archivos permitidos"],
+  "Criar arquivos do projeto": ["Create project files", "Crear archivos del proyecto"],
+  "Executar programas como FFmpeg": [
+    "Run programs such as FFmpeg",
+    "Ejecutar programas como FFmpeg",
+  ],
+  "Usar processamento paralelo": ["Use parallel processing", "Usar procesamiento paralelo"],
+  "Usar bibliotecas nativas": ["Use native libraries", "Usar bibliotecas nativas"],
+  "Revise o destino, os conflitos e a preparação necessária.": [
+    "Review the destination, conflicts, and required preparation.",
+    "Revisa el destino, los conflictos y la preparación necesaria.",
+  ],
+  "Selecione o destino": ["Select the destination", "Selecciona el destino"],
+  "Criar um Canal novo": ["Create a new Channel", "Crear un Canal nuevo"],
+  "Método incluído": ["Method included", "Método incluido"],
+  "Métodos incluídos": ["Methods included", "Métodos incluidos"],
+  "com suas capas.": ["with their covers.", "con sus portadas."],
+  "(obrigatório)": ["(required)", "(obligatorio)"],
+  "(opcional)": ["(optional)", "(opcional)"],
+  opcional: ["optional", "opcional"],
+  number: ["number", "número"],
+  textarea: ["long text", "texto largo"],
+  text: ["text", "texto"],
+  select: ["selection", "selección"],
+  "O Canal organiza Métodos, Projetos e referências sem depender de serviços externos.": [
+    "A Channel organizes Methods, Projects, and references without relying on external services.",
+    "Un Canal organiza Métodos, Proyectos y referencias sin depender de servicios externos.",
+  ],
+  "Nome do canal": ["Channel name", "Nombre del canal"],
+  "Identificador ou @ (opcional)": ["Identifier or @ (optional)", "Identificador o @ (opcional)"],
+  "Serve como referência local do canal.": [
+    "Used as the Channel's local reference.",
+    "Se utiliza como referencia local del Canal.",
+  ],
+  "Criar canal": ["Create channel", "Crear canal"],
+  "Configure o que o bloco recebe, faz e entrega, além de quem executa a ação.": [
+    "Configure what the block receives, does, and outputs, as well as who performs the action.",
+    "Configura lo que el bloque recibe, hace y entrega, además de quién realiza la acción.",
+  ],
+  "O QUE FAZ": ["WHAT IT DOES", "QUÉ HACE"],
+  "Ação e instrução": ["Action and instructions", "Acción e instrucciones"],
+  "Dê um nome claro ao bloco e registre o prompt ou a orientação usada para realizar esta ação.": [
+    "Give the block a clear name and record the prompt or guidance used to perform this action.",
+    "Dale al bloque un nombre claro y registra el prompt o la orientación para realizar esta acción.",
+  ],
+  "Nome da ação": ["Action name", "Nombre de la acción"],
+  "Prompt do bloco": ["Block prompt", "Prompt del bloque"],
+  "Esta é a instrução principal enviada ao executor. Use variáveis para inserir as informações recebidas pelo bloco.":
+    [
+      "This is the main instruction sent to the executor. Use variables to insert information received by the block.",
+      "Esta es la instrucción principal enviada al ejecutor. Usa variables para insertar la información recibida por el bloque.",
+    ],
+  "Inserir variável": ["Insert variable", "Insertar variable"],
+  "Cada entrada possui uma variável vinculada no prompt. Apagar a variável remove a entrada; remover ou renomear a entrada também atualiza a variável.":
+    [
+      "Each input has a variable linked in the prompt. Deleting the variable removes the input; removing or renaming the input also updates the variable.",
+      "Cada entrada tiene una variable vinculada en el prompt. Borrar la variable elimina la entrada; eliminar o renombrar la entrada también actualiza la variable.",
+    ],
+  "QUEM EXECUTA": ["WHO RUNS IT", "QUIÉN LO EJECUTA"],
+  "Escolha se esta ação será realizada por uma pessoa, por IA ou por uma operação de código.": [
+    "Choose whether this action will be performed by a person, AI, or a code operation.",
+    "Elige si esta acción la realizará una persona, una IA o una operación de código.",
+  ],
+  "O QUE PRECISA": ["WHAT IT NEEDS", "QUÉ NECESITA"],
+  "Coleção e contexto": ["Collection and context", "Colección y contexto"],
+  "Indique onde estão as opções que já existem e, se necessário, quais informações ajudam na escolha.":
+    [
+      "Indicate where the existing options are and, if needed, what information helps with the choice.",
+      "Indica dónde están las opciones existentes y, si es necesario, qué información ayuda en la elección.",
+    ],
+  "Obrigatório:": ["Required:", "Obligatorio:"],
+  "Escolher sempre seleciona entre itens preexistentes desta coleção. Para decidir entre resultados produzidos durante o método, use um bloco Validar.":
+    [
+      "Choose always selects from existing items in this collection. To decide between results produced during the method, use a Validate block.",
+      "Elegir siempre selecciona entre elementos existentes de esta colección. Para decidir entre resultados producidos durante el método, usa un bloque Validar.",
+    ],
+  "Entradas de contexto": ["Context inputs", "Entradas de contexto"],
+  "Opcional. Cada entrada é vinculada à sua variável no prompt para manter a configuração explícita e sem duplicidade.":
+    [
+      "Optional. Each input is linked to its variable in the prompt to keep the configuration explicit and avoid duplication.",
+      "Opcional. Cada entrada se vincula a su variable en el prompt para mantener la configuración explícita y sin duplicados.",
+    ],
+  "Adicionar entrada": ["Add input", "Añadir entrada"],
+  "Considerar escolhas anteriores": [
+    "Consider previous choices",
+    "Considerar elecciones anteriores",
+  ],
+  "Consulte o que este mesmo bloco escolheu nos projetos anteriores do canal.": [
+    "Consult what this same block chose in previous Channel projects.",
+    "Consulta lo que este mismo bloque eligió en proyectos anteriores del Canal.",
+  ],
+  Últimos: ["Latest", "Últimos"],
+  "Nenhuma entrada adicional. Adicione somente quando esta ação precisar de um resultado anterior como contexto.":
+    [
+      "No additional input. Add one only when this action needs a previous result as context.",
+      "No hay entradas adicionales. Añade una solo cuando esta acción necesite un resultado anterior como contexto.",
+    ],
+  "O QUE ENTREGA": ["WHAT IT OUTPUTS", "QUÉ ENTREGA"],
+  "Item escolhido": ["Selected item", "Elemento elegido"],
+  "O item selecionado e os campos definidos na coleção ficam disponíveis para os próximos blocos.":
+    [
+      "The selected item and the fields defined in the collection become available to subsequent blocks.",
+      "El elemento seleccionado y los campos definidos en la colección quedan disponibles para los bloques siguientes.",
+    ],
+  "A estrutura desta entrega acompanha a coleção estratégica vinculada acima.": [
+    "The structure of this output follows the strategic collection linked above.",
+    "La estructura de esta salida sigue la colección estratégica vinculada arriba.",
+  ],
+  "Plugin e capacidade": ["Plugin and capability", "Plugin y capacidad"],
+  "Escolha a ferramenta que realizará esta ação com o contrato definido acima.": [
+    "Choose the tool that will perform this action using the contract defined above.",
+    "Elige la herramienta que realizará esta acción con el contrato definido arriba.",
+  ],
+  "A instrução do bloco define o que deve ser feito. Os templates editáveis do plugin definem como essa instrução e o contexto são montados e enviados ao provedor.":
+    [
+      "The block instructions define what must be done. The plugin's editable templates define how those instructions and context are assembled and sent to the provider.",
+      "Las instrucciones del bloque definen qué debe hacerse. Las plantillas editables del plugin definen cómo se ensamblan y envían al proveedor esas instrucciones y el contexto.",
+    ],
+  "Testar somente este bloco": ["Test this block only", "Probar solo este bloque"],
+  "Usa a configuração atual, abre o navegador visivelmente quando necessário e descarta o resultado ao fechar o editor. Não cria Projeto, Execução, Entrega nem Histórico do Canal.":
+    [
+      "Uses the current configuration, visibly opens the browser when needed, and discards the result when the editor closes. It does not create a Project, Execution, Output, or Channel History.",
+      "Usa la configuración actual, abre visiblemente el navegador cuando es necesario y descarta el resultado al cerrar el editor. No crea Proyecto, Ejecución, Salida ni Historial del Canal.",
+    ],
+  "Executar teste": ["Run test", "Ejecutar prueba"],
+  "Título fictício do Projeto": ["Sample Project title", "Título ficticio del Proyecto"],
+  "Histórico de escolhas para teste": [
+    "Choice history for testing",
+    "Historial de elecciones para la prueba",
+  ],
+  "O resultado é temporário no ContentFlow, mas a chamada ao provedor é real e pode usar cota, criar conversa ou produzir mídia na conta configurada.":
+    [
+      "The result is temporary in ContentFlow, but the provider call is real and may use quota, create a conversation, or produce media in the configured account.",
+      "El resultado es temporal en ContentFlow, pero la llamada al proveedor es real y puede usar cuota, crear una conversación o producir contenido en la cuenta configurada.",
+    ],
+  "O que faz": ["What it does", "Qué hace"],
+  "Quem executa": ["Who runs it", "Quién lo ejecuta"],
+  "O que precisa": ["What it needs", "Qué necesita"],
+  "O que entrega": ["What it outputs", "Qué entrega"],
+  "Informações de entrada": ["Input information", "Información de entrada"],
+  "Informações para a busca": ["Search information", "Información para la búsqueda"],
+  "Defina o que precisa estar disponível antes desta ação começar. Cada entrada cria e mantém sua variável correspondente no prompt.":
+    [
+      "Define what must be available before this action begins. Each input creates and maintains its corresponding variable in the prompt.",
+      "Define qué debe estar disponible antes de que comience esta acción. Cada entrada crea y mantiene su variable correspondiente en el prompt.",
+    ],
+  "Considerar criações anteriores": [
+    "Consider previous creations",
+    "Considerar creaciones anteriores",
+  ],
+  "Use como contexto os resultados finais deste processo nos projetos anteriores do canal.": [
+    "Use the final results of this process from previous Channel projects as context.",
+    "Usa como contexto los resultados finales de este proceso en proyectos anteriores del Canal.",
+  ],
+  Automático: ["Automatic", "Automático"],
+  Formato: ["Format", "Formato"],
+  "Resultado desta ação": ["Result of this action", "Resultado de esta acción"],
+  "Resultados encontrados": ["Results found", "Resultados encontrados"],
+  "Defina o que ficará pronto quando esta ação terminar e poderá ser usado pelos próximos blocos.":
+    [
+      "Define what will be ready when this action ends and can be used by subsequent blocks.",
+      "Define qué estará listo cuando termine esta acción y podrá ser usado por los bloques siguientes.",
+    ],
+  "Adicionar entrega": ["Add output", "Añadir salida"],
+  "Orientação para a pessoa": ["Guidance for the person", "Orientación para la persona"],
+  "Resultado que será validado": ["Result to validate", "Resultado que se validará"],
+  "Escolha uma entrega anterior, defina a decisão esperada e o que acontece quando ela é reprovada.":
+    [
+      "Choose a previous output, define the expected decision, and what happens if it is rejected.",
+      "Elige una salida anterior, define la decisión esperada y qué sucede si se rechaza.",
+    ],
+  "Decisão da validação": ["Validation decision", "Decisión de la validación"],
+  "A aprovação, reprovação ou seleção feita aqui fica disponível como resultado deste bloco.": [
+    "The approval, rejection, or selection made here becomes available as this block's result.",
+    "La aprobación, el rechazo o la selección realizada aquí queda disponible como resultado de este bloque.",
+  ],
+  "O formato da decisão acompanha o modo de validação escolhido acima.": [
+    "The decision format follows the validation mode selected above.",
+    "El formato de la decisión sigue el modo de validación elegido arriba.",
+  ],
+  "Este bloco é humano: o formulário acima já representa sua prévia e não há executor automático para chamar.":
+    [
+      "This is a human block: the form above already represents its preview, and there is no automatic executor to call.",
+      "Este es un bloque humano: el formulario de arriba ya representa su vista previa y no hay un ejecutor automático al que llamar.",
+    ],
+  "Histórico de escolhas para teste*": [
+    "Choice history for testing*",
+    "Historial de elecciones para la prueba*",
+  ],
+  "Histórico de criações para teste*": [
+    "Creation history for testing*",
+    "Historial de creaciones para la prueba*",
+  ],
+  "Nova entrada para teste*": ["New input for testing*", "Nueva entrada para la prueba*"],
+  "Instrução da operação": ["Operation instructions", "Instrucciones de la operación"],
+  "Entrega anterior": ["Previous output", "Salida anterior"],
+  "Processo, bloco e entrega": ["Process, block, and output", "Proceso, bloque y salida"],
+  "Configurações avançadas do executor": [
+    "Advanced executor settings",
+    "Configuración avanzada del ejecutor",
+  ],
+  canal: ["channel", "canal"],
+  canais: ["channels", "canales"],
+  "Principal em": ["Primary in", "Principal en"],
+  "Fallback em": ["Fallback in", "Alternativo en"],
+  Ver: ["View", "Ver"],
+  uso: ["usage", "uso"],
+  usos: ["usages", "usos"],
 };
 
 const textStates = new WeakMap<Text, { source: string; lastApplied: string }>();
@@ -725,6 +1309,12 @@ function translateDynamic(source: string, language: AppLanguage): string {
   if (language === "pt-BR") return source;
   const exact = phrase(source, language);
   if (exact !== source) return exact;
+  if (source.includes(" · ")) {
+    const fragments = source.split(" · ").map((fragment) => fragment.trim());
+    if (fragments.every((fragment) => Object.hasOwn(PHRASES, fragment))) {
+      return fragments.map((fragment) => phrase(fragment, language)).join(" · ");
+    }
+  }
 
   const sentenceFragment = source.match(/^([.!?]\s+)(.+)$/);
   if (sentenceFragment) {
@@ -754,6 +1344,35 @@ function translateDynamic(source: string, language: AppLanguage): string {
     if (language === "en") return `${match[1]} ${match[1] === "1" ? "output" : "outputs"}`;
     return `${match[1]} ${match[1] === "1" ? "salida" : "salidas"}`;
   }
+  match = source.match(/^(\d+) (entrega|entregas)$/);
+  if (match) {
+    if (language === "en") return `${match[1]} ${match[1] === "1" ? "output" : "outputs"}`;
+    return `${match[1]} ${match[1] === "1" ? "salida" : "salidas"}`;
+  }
+  match = source.match(/^(\d+) de (\d+) processos configurados$/);
+  if (match)
+    return language === "en"
+      ? `${match[1]} of ${match[2]} processes configured`
+      : `${match[1]} de ${match[2]} procesos configurados`;
+  match = source.match(/^(\d+) plugins$/);
+  if (match) return `${match[1]} plugins`;
+  match = source.match(/^Coleção: (.+)$/);
+  if (match) return language === "en" ? `Collection: ${match[1]}` : `Colección: ${match[1]}`;
+  match = source.match(/^Entrega: (.+)$/);
+  if (match) return language === "en" ? `Output: ${match[1]}` : `Salida: ${match[1]}`;
+  match = source.match(/^Usa: (.+)$/);
+  if (match) {
+    const translatedUsage = match[1]
+      .split(" · ")
+      .map((item) => phrase(item, language))
+      .join(" · ");
+    return language === "en" ? `Uses: ${translatedUsage}` : `Usa: ${translatedUsage}`;
+  }
+  match = source.match(/^Revise o método de (.+) para liberar a execução\.$/);
+  if (match)
+    return language === "en"
+      ? `Review the ${translatedProcess(match[1])} method to enable execution.`
+      : `Revisa el método de ${translatedProcess(match[1])} para habilitar la ejecución.`;
   match = source.match(/^Bloco (\d+) de (\d+)$/);
   if (match)
     return language === "en"
@@ -810,6 +1429,61 @@ function translateDynamic(source: string, language: AppLanguage): string {
     return language === "en"
       ? `${match[1]} pending human tasks`
       : `${match[1]} tareas humanas pendientes`;
+  match = source.match(/^(\d+) erros de execução e (\d+) tarefas humanas pendentes$/);
+  if (match)
+    return language === "en"
+      ? `${match[1]} execution errors and ${match[2]} pending human tasks`
+      : `${match[1]} errores de ejecución y ${match[2]} tareas humanas pendientes`;
+  match = source.match(/^(\d+) (pendente|pendentes)$/);
+  if (match) {
+    if (language === "en")
+      return `${match[1]} ${match[1] === "1" ? "pending item" : "pending items"}`;
+    return `${match[1]} ${match[1] === "1" ? "pendiente" : "pendientes"}`;
+  }
+  match = source.match(/^(\d+) perfis?$/);
+  if (match)
+    return language === "en"
+      ? `${match[1]} ${match[1] === "1" ? "profile" : "profiles"}`
+      : `${match[1]} ${match[1] === "1" ? "perfil" : "perfiles"}`;
+  match = source.match(/^de (\d+)$/);
+  if (match) return language === "en" ? `of ${match[1]}` : `de ${match[1]}`;
+  match = source.match(/^(\d+) Métodos incluídos, com suas capas\.$/);
+  if (match)
+    return language === "en"
+      ? `${match[1]} Methods included, with their covers.`
+      : `${match[1]} Métodos incluidos, con sus portadas.`;
+  match = source.match(
+    /^Métodos de (.+)\. Revise o destino, os conflitos e a preparação necessária\.$/,
+  );
+  if (match)
+    return language === "en"
+      ? `Methods from ${match[1]}. Review the destination, conflicts, and required preparation.`
+      : `Métodos de ${match[1]}. Revisa el destino, los conflictos y la preparación necesaria.`;
+  match = source.match(/^Métodos de (.+)$/);
+  if (match) return language === "en" ? `Methods from ${match[1]}` : `Métodos de ${match[1]}`;
+  match = source.match(/^, entrega “(.+)”$/);
+  if (match) return language === "en" ? `, output “${match[1]}”` : `, salida “${match[1]}”`;
+  match = source.match(/^Configurações avançadas do executor \((\d+)\)$/);
+  if (match)
+    return language === "en"
+      ? `Advanced executor settings (${match[1]})`
+      : `Configuración avanzada del ejecutor (${match[1]})`;
+  match = source.match(/^(.+) para teste\*$/);
+  if (match) return language === "en" ? `${match[1]} for testing*` : `${match[1]} para la prueba*`;
+  match = source.match(/^(\d+) canais?$/);
+  if (match)
+    return language === "en"
+      ? `${match[1]} ${match[1] === "1" ? "channel" : "channels"}`
+      : `${match[1]} ${match[1] === "1" ? "canal" : "canales"}`;
+  match = source.match(/^Principal em (\d+)$/);
+  if (match) return language === "en" ? `Primary in ${match[1]}` : `Principal en ${match[1]}`;
+  match = source.match(/^Fallback em (\d+)$/);
+  if (match) return language === "en" ? `Fallback in ${match[1]}` : `Alternativo en ${match[1]}`;
+  match = source.match(/^Ver (\d+) usos?$/);
+  if (match)
+    return language === "en"
+      ? `View ${match[1]} ${match[1] === "1" ? "usage" : "usages"}`
+      : `Ver ${match[1]} ${match[1] === "1" ? "uso" : "usos"}`;
   return source;
 }
 
@@ -888,7 +1562,9 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
         return (await response.json()) as AppPreferences;
       })
       .then((stored) => {
-        if (active && !hasLocalChange.current) setPreferences(stored);
+        if (active && !hasLocalChange.current) {
+          setPreferences({ ...DEFAULT_PREFERENCES, ...stored });
+        }
       })
       .catch((error) => console.error(error))
       .finally(() => {
@@ -954,6 +1630,9 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       ready,
       setTheme: (theme) => updatePreferences({ theme }),
       setLanguage: (language) => updatePreferences({ language }),
+      setNotificationSound: (notificationSound) => updatePreferences({ notificationSound }),
+      setSystemNotifications: (systemNotifications) => updatePreferences({ systemNotifications }),
+      setMethodsLibraryView: (methodsLibraryView) => updatePreferences({ methodsLibraryView }),
       t: (source) => translate(source, preferences.language),
     }),
     [preferences, ready, updatePreferences],

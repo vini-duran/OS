@@ -1,55 +1,48 @@
-# Atualização do ContentFlow no macOS
+# ContentFlow no macOS — instalar e atualizar
 
-## Para quem opera
+## Operador: use o artefato aprovado, não uma compilação improvisada
 
-Não é preciso escolher uma branch. Comece pelo
-[procedimento universal na main](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZACAO_UNIVERSAL.md).
-Ele aponta a distribuição aprovada do nosso fork. A versão do autor é uma
-referência para manutenção, não uma ordem para substituir seu aplicativo.
+Leia o [atualizador universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
+Ele identifica a instalação existente, verifica o artefato por hash, exige rota
+compatível e aplica somente com aplicativo/dados fora de uso e backup/recibo.
+Se a versão ou o snapshot de origem não estiverem cobertos, mantenha o aplicativo
+atual e solicite a validação da rota. Não substitua simplesmente a pasta `.app`.
 
-Em 2026-09-09, a distribuição existente é `v0.5.2-ecossistema.1`, testada para
-instalação limpa macOS Apple Silicon. A candidata `0.5.5` está em revisão
-isolada. A main histórica `0.3.5` não deve ser instalada sobre uma versão maior.
-Consulte o [manifesto atual](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/app-distribution.json).
+Release candidata disponível: [v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
+macOS arm64, fonte `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`.
+A main contém reconciliações posteriores; código em main não muda esse ZIP.
+Veja [escopo da consolidação](MAIN_055_RECONCILIATION.md).
 
-## O que o técnico deve conferir
+## Quatro camadas, preservadas
 
-1. **Onde está o trabalho:** Workplace, projeto legado, bundle realmente aberto,
-   diretório de dados em uso e jobs/automação em andamento. Não mude esses caminhos.
-2. **Qual atualização:** origem, commit, versão, arquitetura, pacote completo e
-   SHA-256. Hash do executável Electron sozinho não identifica código/runtime/plugins
-   que ficam dentro do restante do bundle.
-3. **Como preservar:** checkpoint das mudanças locais, cópia recuperável do App
-   e backup consistente dos dados. Banco SQLite ativo pode depender de WAL/SHM;
-   copiar apenas o arquivo principal não comprova backup completo.
-4. **Como testar:** instalação e interface da candidata com dados sintéticos e
-   diretórios exclusivos de userData, dados e saída. Teste de migração real é
-   separado: exige cópia consistente e controlada, sem ativar jobs, contas ou
-   provedores reais. Não exporte o cofre nem segredos para preparar fixtures.
-5. **Quando aplicar:** após os testes específicos da versão, com janela de
-   manutenção sem jobs ativos. Não mate processos nem reinicie geração para atualizar.
-6. **Como voltar:** registre o recibo/checkpoint exato. Se o banco tiver migrado,
-   restaurar só o App antigo pode não ser suficiente; teste a recuperação conjunta.
+- Workplace e projetos: caminhos existentes, sem reorganização automática.
+- Aplicativo: conservar o caminho real instalado, que pode chamar-se
+  `ContentFlow.app` ou `ContentFlow OS.app`.
+- Dados: identificar o diretório efetivo do processo/recibo. Não assumir que
+  `Application Support/ContentFlow` e `Application Support/ContentFlow OS`
+  sejam intercambiáveis. Banco, mídia, plugins e configurações ficam fora do bundle.
+- Configuração dos agentes: entrada e skills separadas do executável.
 
-Se qualquer item falhar, mantenha a instalação atual e diga o impacto e a
-recomendação: adaptar, incorporar só a melhoria compatível ou aguardar. Não
-transforme falha de migração em aprovação porque os testes de fonte passaram.
+O cofre usa o provedor nativo e trata o armazenamento legado conforme
+[CREDENTIAL_VAULT_MIGRATION.md](CREDENTIAL_VAULT_MIGRATION.md). Não exportar
+segredos, apagar backups legados ou preencher novamente todas as chaves por rotina.
+Assinatura ad hoc não é notarização nem garantia de confiança automática no macOS.
 
-## Bundle, runtime e cofre são coisas distintas
+## Mantenedor: compilar em checkout isolado
 
-Substituir apenas alguns arquivos de uma compilação não equivale a instalar o
-pacote completo. Antes de usar um atualizador parcial antigo, confira Node,
-dependências nativas, layout e nomes de executáveis exigidos pela nova versão.
+Requisitos: Node 26 e npm 10+. Na revisão fixada do fork:
 
-Assinatura, notarização e identidade do executável devem ser verificadas no
-artefato. Não se presume identidade estável entre recompilações nem ausência de
-novo pedido de acesso ao Chaveiro. Se o macOS pedir consentimento ou bloquear a
-abertura, informe a ação exata ao operador; não desative proteções.
+```sh
+npm ci
+npm run check
+npm run desktop:mac:arm64
+```
 
-## Compilação de desenvolvimento
+Saída de build: `release/v0/mac-arm64/ContentFlow.app`, não o aplicativo instalado.
+Teste com diretórios exclusivos de dados e userData sintéticos antes de distribuir;
+nunca abra uma compilação candidata contra dados reais por conveniência.
+O runtime Node privado e o helper de proteção de caminhos fazem parte do pacote.
+Plugins privados/de referência não são incluídos nem ativados pelo build do Core.
 
-Use Node 26 e os scripts declarados no `package.json` da revisão fixada. O nome
-do script e do bundle muda entre versões; confira-os antes de executar. Faça
-build em checkout isolado, sem instalar em Applications. Registre commit,
-dependências, log, build-info e hash do pacote completo. O build não constitui
-homologação de interface, instalação ou migração.
+Publicação de um novo binário e migração real são etapas distintas da consolidação
+de fonte. Não iniciar produção ou restaurar banco sobre entregas novas para testar.

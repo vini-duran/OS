@@ -89,6 +89,12 @@ const profileSetupSchema = z
       .min(1)
       .max(100)
       .regex(/^[A-Za-z][A-Za-z0-9_-]*$/),
+    fallbackConfigurationKey: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(/^[A-Za-z][A-Za-z0-9_-]*$/)
+      .optional(),
     label: z.string().min(1).max(100),
     description: z.string().max(500).optional(),
     prepareTimeoutMs: z.number().int().min(30_000).max(900_000).optional(),
@@ -98,6 +104,7 @@ const capabilitySchema = z
   .object({
     id: z.string().min(1).max(100).regex(identifier),
     operator: z.enum(["IA", "Código"]),
+    instructionUsage: z.enum(["required", "optional", "not_applicable"]).optional(),
     blockTypes: z
       .array(z.enum(["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"]))
       .min(1)
@@ -135,6 +142,15 @@ const capabilitySchema = z
         defaultTimeoutMs: z.number().int().min(100).max(86_400_000).optional(),
         supportsCancellation: z.boolean().optional(),
         maxConcurrency: z.number().int().min(1).max(100).optional(),
+        itemOrchestration: z
+          .object({
+            inputPort: z.string().min(1).max(100).regex(identifier),
+            outputPort: z.string().min(1).max(100).regex(identifier),
+            combinedOutputPort: z.string().min(1).max(100).regex(identifier).optional(),
+            mode: z.literal("sequential"),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     sideEffects: z
@@ -189,6 +205,16 @@ export const pluginManifestSchema = z
     license: z.string().min(1).max(160),
     homepage: httpsUrl.optional(),
     repository: httpsUrl.optional(),
+    branding: z
+      .object({
+        iconPath: z
+          .string()
+          .min(1)
+          .max(260)
+          .regex(/^(?!\/)(?![A-Za-z]:)(?!.*(?:^|\/)\.\.(?:\/|$)).+\.(?:png|webp)$/i),
+      })
+      .strict()
+      .optional(),
     runtime: z
       .object({
         kind: z.literal("node"),
@@ -227,6 +253,7 @@ export const pluginManifestSchema = z
       .refine(unique, "não pode conter duplicatas")
       .optional(),
     profileSetup: profileSetupSchema.optional(),
+    supportsConversationContinuation: z.boolean().optional(),
     settingsSchema: jsonSchema.optional(),
     capabilities: z.array(capabilitySchema).min(1),
   })
@@ -253,6 +280,55 @@ export const pluginManifestSchema = z
             message: `precisa declarar ${manifest.profileSetup.configurationKey} para profileSetup`,
           });
         }
+      }
+      if (manifest.profileSetup.fallbackConfigurationKey) {
+        for (const [index, capability] of manifest.capabilities.entries()) {
+          const properties = capability.blockConfigSchema?.properties;
+          if (
+            !(
+              manifest.profileSetup.fallbackConfigurationKey in
+              ((properties ?? {}) as Record<string, unknown>)
+            )
+          ) {
+            context.addIssue({
+              code: "custom",
+              path: ["capabilities", index, "blockConfigSchema", "properties"],
+              message: `precisa declarar ${manifest.profileSetup.fallbackConfigurationKey} para fallback de perfis`,
+            });
+          }
+        }
+      }
+    }
+    for (const [index, capability] of manifest.capabilities.entries()) {
+      const orchestration = capability.execution.itemOrchestration;
+      if (!orchestration) continue;
+      if (!capability.inputPorts.some((port) => port.key === orchestration.inputPort)) {
+        context.addIssue({
+          code: "custom",
+          path: ["capabilities", index, "execution", "itemOrchestration", "inputPort"],
+          message: "precisa referenciar uma porta de entrada existente",
+        });
+      }
+      if (!capability.outputPorts.some((port) => port.key === orchestration.outputPort)) {
+        context.addIssue({
+          code: "custom",
+          path: ["capabilities", index, "execution", "itemOrchestration", "outputPort"],
+          message: "precisa referenciar uma porta de saída existente",
+        });
+      }
+      if (
+        orchestration.combinedOutputPort &&
+        !capability.outputPorts.some(
+          (port) =>
+            port.key === orchestration.combinedOutputPort &&
+            port.producedTypes.some((type) => type === "text" || type === "textarea"),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["capabilities", index, "execution", "itemOrchestration", "combinedOutputPort"],
+          message: "precisa referenciar uma porta textual de saída existente",
+        });
       }
     }
   });
@@ -336,5 +412,23 @@ export function validatePluginDirectory(directory: string, checkSymlinks = true)
   if (!realEntrypoint.startsWith(`${absoluteDirectory}${path.sep}`))
     throw new Error("O entrypoint precisa permanecer dentro da pasta do plugin.");
   if (checkSymlinks) assertPluginTreeSafe(absoluteDirectory);
+  if (manifest.branding?.iconPath) {
+    const iconPath = path.resolve(absoluteDirectory, manifest.branding.iconPath);
+    if (!iconPath.startsWith(`${absoluteDirectory}${path.sep}`))
+      throw new Error("O ícone precisa permanecer dentro da pasta do plugin.");
+    if (!existsSync(iconPath) || !statSync(iconPath).isFile())
+      throw new Error(`Ícone não encontrado: ${manifest.branding.iconPath}`);
+    if (statSync(iconPath).size > 512 * 1024)
+      throw new Error("O ícone do plugin excede o limite de 512 KiB.");
+    const realIcon = realpathSync(iconPath);
+    if (!realIcon.startsWith(`${absoluteDirectory}${path.sep}`))
+      throw new Error("O ícone precisa permanecer dentro da pasta do plugin.");
+    const signature = readFileSync(realIcon).subarray(0, 12);
+    const isPng = signature.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const isWebp =
+      signature.subarray(0, 4).toString("ascii") === "RIFF" &&
+      signature.subarray(8, 12).toString("ascii") === "WEBP";
+    if (!isPng && !isWebp) throw new Error("O ícone precisa ser um PNG ou WebP válido.");
+  }
   return { manifest, manifestPath, absoluteDirectory, entrypoint: realEntrypoint };
 }

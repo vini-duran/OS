@@ -160,12 +160,23 @@ export type BlockValidationConfig = {
   mode: ValidationMode;
   onReject: "retry_target" | "pause";
   maxAttempts: number;
+  retryMode?: "full" | "conversation_feedback";
 };
 
 export type BlockPluginBinding = {
   pluginId: string;
+  pluginVersion?: string;
   capabilityId: string;
   configuration: Record<string, string | number | boolean>;
+  connectionId?: string;
+  connectionRequired?: boolean;
+  conversation?:
+    | { mode: "new" }
+    | {
+        mode: "reuse";
+        sourceProcessType: UniversalProcess;
+        sourceBlockId: string;
+      };
 };
 
 export type ActionBlock = {
@@ -184,6 +195,8 @@ export type ActionBlock = {
 };
 
 export type ProcessMethod = {
+  name: string;
+  imageUrl?: string;
   processType: UniversalProcess;
   blocks: ActionBlock[];
 };
@@ -192,6 +205,7 @@ export type ProcessMethod = {
 export type ChannelResearchConfig = {
   pluginId: string;
   capabilityId: string;
+  connectionId?: string;
   cadence: "manual";
   configuration: Record<string, string | number | boolean>;
   recordsKey: string;
@@ -238,6 +252,7 @@ export type Channel = {
   color: string;
   subscribers: string;
   avatarUrl?: string;
+  methodsImageUrl?: string;
   bannerUrl?: string;
   lastSyncedAt?: string;
   description?: string;
@@ -255,6 +270,8 @@ export type Channel = {
 };
 
 export type Project = {
+  runThrough?: ProcessId;
+  runFrom?: ProcessId;
   id: string;
   title: string;
   channelId: string;
@@ -288,7 +305,7 @@ export type DeliveryItemReference = {
 };
 
 export type DeliveryItem = {
-  /** Identidade universal gerada pelo nÃºcleo para este item da entrega. */
+  /** Identidade universal gerada pelo núcleo para este item da entrega. */
   id: string;
   order: number;
   value: RuntimeValue | StructuredRecord;
@@ -297,7 +314,7 @@ export type DeliveryItem = {
 };
 
 export type ProjectDelivery = {
-  /** Identidade universal da saÃ­da materializada de um bloco. */
+  /** Identidade universal da saída materializada de um bloco. */
   id: string;
   projectId: string;
   channelId: string;
@@ -366,6 +383,19 @@ export type BlockExecution = {
   progressMessage?: string;
   startedAt?: string;
   completedAt?: string;
+  /** Referência opaca devolvida pelo plugin para continuidade entre blocos. */
+  pluginConversation?: {
+    pluginId: string;
+    connectionId?: string;
+    profile?: string;
+    id: string;
+    fallbackContext?: string;
+  };
+  /** Controla a mensagem da próxima tentativa após uma reprovação editorial. */
+  retryMode?: "full" | "conversation_feedback";
+  retryConversationContext?: string;
+  /** Imagens da tentativa reprovada, anexadas somente se o plugin abrir outra conversa. */
+  retryConversationAttachments?: StoredFile[];
 };
 
 export type ProcessExecutionStatus =
@@ -386,13 +416,14 @@ export type ProcessOutput = {
 };
 
 export type ProcessExecution = {
+  revision?: number;
   id: string;
   projectId: string;
   channelId: string;
   processType: UniversalProcess;
   methodSnapshot: ProcessMethod;
   blocks: BlockExecution[];
-  /** Registro derivado e persistido de todas as entregas produzidas pela execuÃ§Ã£o. */
+  /** Registro derivado e persistido de todas as entregas produzidas pela execução. */
   deliveries?: ProjectDelivery[];
   status: ProcessExecutionStatus;
   outputStatus: "pending" | "awaiting_human" | "completed";
@@ -456,6 +487,9 @@ export const STATE_META: Record<
 
 export function createEmptyMethods(): Record<UniversalProcess, ProcessMethod> {
   return Object.fromEntries(
-    PROCESS_ORDER.map((processType) => [processType, { processType, blocks: [] }]),
+    PROCESS_ORDER.map((processType) => [
+      processType,
+      { name: `Método de ${PROCESS_META[processType].label}`, processType, blocks: [] },
+    ]),
   ) as unknown as Record<UniversalProcess, ProcessMethod>;
 }

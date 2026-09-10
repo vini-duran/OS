@@ -34,6 +34,7 @@ test("preserva ativação em atualização compatível de pasta ao vivo", async 
   const pluginDirectory = path.join(root, "plugin");
   const sourceDirectory = path.join(
     repositoryRoot,
+    "ecosystem",
     "plugins",
     "examples",
     "kit-generated-text-transform",

@@ -14,6 +14,9 @@ import { normalizeFieldPresentation } from "@/lib/presentation";
 export function getMethodConfigurationIssue(method?: ProcessMethod) {
   if (!method?.blocks.length) return "O processo ainda não possui um método.";
   for (const [blockIndex, block] of method.blocks.entries()) {
+    if (block.plugin?.connectionRequired && !block.plugin.connectionId) {
+      return `Associe uma conta ou conexão local ao bloco “${block.name ?? block.type}”.`;
+    }
     if (block.type === "ESCOLHER" && !block.collectionId) {
       return `Vincule uma coleção da Biblioteca Estratégica ao bloco “${block.name ?? "Escolher"}”.`;
     }
@@ -25,8 +28,12 @@ export function getMethodConfigurationIssue(method?: ProcessMethod) {
       return `As chaves das entregas do bloco “${block.name ?? block.type}” precisam ser únicas.`;
     }
     for (const input of block.inputs ?? []) {
-      if (input.source === "channel_history" && block.type !== "ESCOLHER") {
-        return `O Histórico do Canal só pode orientar um bloco “Escolher”. Remova-o do bloco “${block.name ?? block.type}”.`;
+      if (
+        input.source === "channel_history" &&
+        block.type !== "ESCOLHER" &&
+        block.type !== "CRIAR"
+      ) {
+        return `O Histórico do Canal só pode orientar um bloco “Escolher” ou “Criar”. Remova-o do bloco “${block.name ?? block.type}”.`;
       }
       if (
         input.source === "channel_history" &&
@@ -275,6 +282,7 @@ export function normalizeActionBlock(block: ActionBlock, processType: ProcessId)
             mode: block.validation?.mode ?? "approval",
             onReject: block.validation?.onReject ?? "retry_target",
             maxAttempts: Math.max(1, block.validation?.maxAttempts ?? 3),
+            retryMode: block.validation?.retryMode ?? "full",
             targetBlockId: block.validation?.targetBlockId,
             targetOutputKey: block.validation?.targetOutputKey,
           }
@@ -302,6 +310,7 @@ export function normalizeMethodBlocks(blocks: ActionBlock[], processType: Proces
         targetOutputKey: mode === "approval" ? undefined : targetOutput?.key,
         onReject: block.validation?.onReject ?? "retry_target",
         maxAttempts: Math.max(1, block.validation?.maxAttempts ?? 3),
+        retryMode: block.validation?.retryMode ?? "full",
       };
       const hasExpectedOutput = (block.outputs ?? []).some((output) =>
         mode === "approval"

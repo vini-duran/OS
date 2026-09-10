@@ -29,7 +29,7 @@ import {
 } from "./remote-artifact-downloader";
 import { findPluginManifest, validatePluginDirectory } from "./plugin-validation";
 
-export type PluginSource = "bundled" | "local" | "installed";
+export type PluginSource = "local" | "installed";
 
 export type RegisteredPlugin = {
   id: string;
@@ -51,14 +51,11 @@ const maxArtifactsPerResponse = 100;
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
 const defaultDataRoot =
   process.platform === "win32" && process.env.APPDATA
-    ? path.join(process.env.APPDATA, "ContentFlow OS", "data")
+    ? path.join(process.env.APPDATA, "ContentFlow", "data")
     : path.join(applicationRoot, "data");
 const dataRoot = path.resolve(process.env.CONTENTFLOW_DATA_DIR ?? defaultDataRoot);
-const bundledPluginsRoot = path.resolve(
-  process.env.CONTENTFLOW_BUNDLED_PLUGINS_DIR ?? path.join(applicationRoot, "plugins", "bundled"),
-);
 const localPluginsRoot = path.resolve(
-  process.env.CONTENTFLOW_LOCAL_PLUGINS_DIR ?? path.join(applicationRoot, "plugins"),
+  process.env.CONTENTFLOW_LOCAL_PLUGINS_DIR ?? path.join(dataRoot, "plugins", "local"),
 );
 const installedPluginsRoot = path.resolve(
   process.env.CONTENTFLOW_INSTALLED_PLUGINS_DIR ?? path.join(dataRoot, "plugins", "installed"),
@@ -67,8 +64,37 @@ const developmentLinksRoot = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ?? path.join(dataRoot, "plugins", "development"),
 );
 
+export function windowsExecutableDiscoveryReadPaths(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+) {
+  if (platform !== "win32") return [];
+  return [
+    environment.PROGRAMFILES &&
+      path.join(environment.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
+    environment["PROGRAMFILES(X86)"] &&
+      path.join(environment["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
+    environment.LOCALAPPDATA &&
+      path.join(environment.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(
+    (candidate, index, candidates): candidate is string =>
+      Boolean(candidate) && candidates.indexOf(candidate) === index,
+  );
+}
+
 const registry = new Map<string, RegisteredPlugin>();
 let discoveryIssues: PluginIssue[] = [];
+
+export function pluginRegistrationConflictIsReportable(
+  registeredSource: PluginSource,
+  incomingSource: PluginSource,
+) {
+  // Pastas locais e vínculos de desenvolvimento têm precedência deliberada
+  // sobre a cópia instalada para permitir testar uma correção no aplicativo.
+  return !(registeredSource === "local" && incomingSource === "installed");
+}
 
 function scanPluginDirectory(
   pluginDirectory: string,
@@ -80,9 +106,11 @@ function scanPluginDirectory(
   const manifestPath = findPluginManifest(pluginDirectory);
   if (!manifestPath) return;
   try {
-    const validated = validatePluginDirectory(pluginDirectory, source !== "bundled");
+    const validated = validatePluginDirectory(pluginDirectory, true);
     const { manifest, absoluteDirectory: realDirectory, entrypoint: realEntrypoint } = validated;
-    if (registry.has(manifest.id)) {
+    const registered = registry.get(manifest.id);
+    if (registered) {
+      if (!pluginRegistrationConflictIsReportable(registered.source, source)) return;
       throw new Error(`O id ${manifest.id} já foi registrado por outro plugin.`);
     }
     registry.set(manifest.id, {
@@ -102,11 +130,10 @@ function scanPluginDirectory(
   }
 }
 
-function scanRoot(root: string, source: PluginSource, includeNestedBundled = false) {
+function scanRoot(root: string, source: PluginSource) {
   if (!existsSync(root)) return;
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    if (entry.name === "bundled" && !includeNestedBundled) continue;
     const pluginDirectory = path.resolve(root, entry.name);
     scanPluginDirectory(pluginDirectory, source);
   }
@@ -135,8 +162,7 @@ function scanDevelopmentLinks() {
 export function initializePluginRunner() {
   registry.clear();
   discoveryIssues = [];
-  scanRoot(bundledPluginsRoot, "bundled", true);
-  if (localPluginsRoot !== path.dirname(bundledPluginsRoot)) scanRoot(localPluginsRoot, "local");
+  scanRoot(localPluginsRoot, "local");
   scanDevelopmentLinks();
   scanRoot(installedPluginsRoot, "installed");
   return getPluginRegistrySnapshot();
@@ -153,20 +179,27 @@ export function getRegisteredPlugin(pluginId: string) {
 export async function executeRegisteredPlugin(
   plugin: RegisteredPlugin,
   request: PluginExecutionRequest,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   secrets: Record<string, string> = {},
-  options: { workspaceDirectory?: string; existingArtifacts?: StoredFile[] } = {},
+  options: {
+    workspaceDirectory?: string;
+    existingArtifacts?: StoredFile[];
+    artifactDirectory?: string;
+    artifactUrlPrefix?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<PluginExecutionResponse> {
   if (!plugin.executable) {
     throw new Error("Este plugin não está disponível para execução.");
   }
 
-  const sandboxed = plugin.source !== "bundled";
+  const sandboxed = true;
   const workerRoot = path.resolve(
     process.env.CONTENTFLOW_PLUGIN_WORKER_DIR ?? path.join(applicationRoot, "server"),
   );
-  const workerPath = path.join(workerRoot, sandboxed ? "plugin-worker.mjs" : "plugin-worker.ts");
+  const workerPath = path.join(workerRoot, "plugin-worker.mjs");
   const uploadsDirectory = path.resolve(dataRoot, "uploads");
+  const artifactDirectory = path.resolve(options.artifactDirectory ?? uploadsDirectory);
   const workspaceDirectory = path.resolve(
     options.workspaceDirectory ??
       path.join(
@@ -177,8 +210,10 @@ export async function executeRegisteredPlugin(
       ),
   );
   mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(artifactDirectory, { recursive: true });
   mkdirSync(workspaceDirectory, { recursive: true });
   const realWorkspaceDirectory = realpathSync(workspaceDirectory);
+  const realUploadsDirectory = realpathSync(uploadsDirectory);
   // macOS exposes temporary paths through /var while resolving them physically
   // under /private/var. Keep both the permission and the worker envelope on the
   // same canonical root so Node's permission model does not reject valid writes.
@@ -193,26 +228,46 @@ export async function executeRegisteredPlugin(
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
   );
-  const args = sandboxed ? ["--permission"] : [];
-  if (sandboxed) {
-    for (const readable of [plugin.absoluteDirectory, workerPath]) {
-      args.push(`--allow-fs-read=${readable}`);
-    }
-    if (permissions.has("filesystem:read")) {
-      args.push(`--allow-fs-read=${uploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
-    }
-    if (permissions.has("filesystem:write")) {
-      args.push(`--allow-fs-write=${realWorkspaceDirectory}`);
-    }
-    if (permissions.has("process")) args.push("--allow-child-process");
-    if (permissions.has("worker")) args.push("--allow-worker");
-    if (permissions.has("native")) args.push("--allow-addons");
-    if (nodeMajor >= 26 && permissions.has("network")) args.push("--allow-net");
-    args.push(workerPath);
-  } else {
-    if (process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE) args.push(workerPath);
-    else args.push("--import", "tsx", workerPath);
+  const args = ["--permission"];
+  for (const readable of [plugin.absoluteDirectory, workerPath]) {
+    args.push(`--allow-fs-read=${readable}`);
   }
+  if (permissions.has("filesystem:read")) {
+    args.push(
+      `--allow-fs-read=${realUploadsDirectory}`,
+      `--allow-fs-read=${realWorkspaceDirectory}`,
+    );
+    if (workspaceDirectory !== realWorkspaceDirectory) {
+      args.push(`--allow-fs-read=${workspaceDirectory}`);
+    }
+    if (uploadsDirectory !== realUploadsDirectory) {
+      args.push(`--allow-fs-read=${uploadsDirectory}`);
+    }
+  }
+  if (permissions.has("filesystem:write")) {
+    args.push(`--allow-fs-write=${realWorkspaceDirectory}`);
+    if (workspaceDirectory !== realWorkspaceDirectory) {
+      args.push(`--allow-fs-write=${workspaceDirectory}`);
+    }
+  }
+  if (permissions.has("process")) {
+    args.push("--allow-child-process");
+    for (const executablePath of windowsExecutableDiscoveryReadPaths()) {
+      args.push(`--allow-fs-read=${executablePath}`);
+      try {
+        const real = realpathSync(executablePath);
+        if (real !== executablePath) {
+          args.push(`--allow-fs-read=${real}`);
+        }
+      } catch {
+        // file might not exist yet
+      }
+    }
+  }
+  if (permissions.has("worker")) args.push("--allow-worker");
+  if (permissions.has("native")) args.push("--allow-addons");
+  if (nodeMajor >= 26 && permissions.has("network")) args.push("--allow-net");
+  args.push(workerPath);
   const runtimeExecutable = process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE ?? process.execPath;
   const child = spawn(runtimeExecutable, args, {
     cwd: plugin.absoluteDirectory,
@@ -220,6 +275,9 @@ export async function executeRegisteredPlugin(
       NODE_ENV: process.env.NODE_ENV ?? "development",
       PATH: process.env.PATH,
       SYSTEMROOT: process.env.SYSTEMROOT,
+      PROGRAMFILES: process.env.PROGRAMFILES,
+      "PROGRAMFILES(X86)": process.env["PROGRAMFILES(X86)"],
+      LOCALAPPDATA: process.env.LOCALAPPDATA,
       TEMP: process.env.TEMP,
       TMP: process.env.TMP,
     },
@@ -231,19 +289,32 @@ export async function executeRegisteredPlugin(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abort = () => {
+      child.kill();
+      finish(() => reject(new Error("Execução de teste cancelada.")));
+    };
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       callback();
     };
-    const timer = setTimeout(
-      () => {
-        child.kill();
-        finish(() => reject(new Error("O plugin excedeu o tempo máximo de execução.")));
-      },
-      Math.max(1_000, Math.min(timeoutMs, maxPluginExecutionMs)),
-    );
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(
+        () => {
+          child.kill();
+          finish(() => reject(new Error("O plugin excedeu o tempo máximo de execução.")));
+        },
+        Math.max(1_000, Math.min(timeoutMs, maxPluginExecutionMs)),
+      );
+    }
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -261,9 +332,12 @@ export async function executeRegisteredPlugin(
           void importPluginArtifacts(
             pluginResponse,
             outputDirectory,
-            uploadsDirectory,
+            artifactDirectory,
             plugin.manifest,
-            { existingArtifacts: options.existingArtifacts },
+            {
+              existingArtifacts: options.existingArtifacts,
+              urlPrefix: options.artifactUrlPrefix,
+            },
           )
             .then(resolve, reject)
             .finally(() => rmSync(outputDirectory, { recursive: true, force: true }));
@@ -306,9 +380,9 @@ export async function importPluginArtifacts(
   dependencies: {
     downloadRemote?: typeof downloadRemoteArtifact;
     existingArtifacts?: StoredFile[];
+    urlPrefix?: string;
   } = {},
 ): Promise<PluginExecutionResponse> {
-  if (response.status === "error") return response;
   const artifacts = response.status === "success" ? response.artifacts : response.partialArtifacts;
   const responseValues = response.status === "success" ? response.values : response.partialValues;
   const imported = new Map(
@@ -365,6 +439,9 @@ export async function importPluginArtifacts(
           allowedHosts: manifest.networkHosts,
           maxBytes: remainingBytes,
         });
+        if (dependencies.urlPrefix) {
+          remote.file.url = `${dependencies.urlPrefix}/${path.basename(remote.storedPath)}`;
+        }
         imported.set(artifact.id, remote.file);
         createdPaths.push(remote.storedPath);
         importedBytes += remote.file.size;
@@ -392,6 +469,7 @@ export async function importPluginArtifacts(
         realCandidate,
         uploadsDirectory,
         metadata.size,
+        dependencies.urlPrefix,
       );
       imported.set(artifact.id, importedLocal.file);
       createdPaths.push(importedLocal.storedPath);
@@ -419,6 +497,7 @@ async function importLocalArtifact(
   sourcePath: string,
   uploadsDirectory: string,
   size: number,
+  urlPrefix?: string,
 ) {
   validateLocalArtifactMetadata(artifact.id, artifact.name, artifact.mimeType);
   const extension = safeArtifactExtension(artifact.name);
@@ -463,7 +542,7 @@ async function importLocalArtifact(
         name: artifact.name,
         mimeType: artifact.mimeType.toLowerCase(),
         size,
-        url: `/api/files/${storedName}`,
+        url: `${urlPrefix ?? "/api/files"}/${storedName}`,
         sha256: hash.digest("hex"),
       } satisfies StoredFile,
     };

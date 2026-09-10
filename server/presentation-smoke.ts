@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ImageGallery } from "../src/components/image-gallery";
 import { PRESENTATION_RENDERER_IDS } from "../src/lib/domain";
 import { parseMethodFile, serializeMethodFile } from "../src/lib/method-file";
 import {
@@ -39,8 +43,8 @@ const legacyMethod = {
 };
 
 const parsedLegacy = parseMethodFile(JSON.stringify(legacyMethod));
-assert.equal(parsedLegacy.method.blocks[0].inputs?.[0].presentation.renderer, "auto");
-assert.equal(parsedLegacy.method.blocks[0].outputs?.[0].presentation.renderer, "auto");
+assert.equal(parsedLegacy.method.blocks[0].inputs?.[0].presentation?.renderer, "auto");
+assert.equal(parsedLegacy.method.blocks[0].outputs?.[0].presentation?.renderer, "auto");
 
 const gallery = normalizeFieldPresentation("files", {
   renderer: "image-gallery",
@@ -71,6 +75,58 @@ assert.equal(
 
 const exported = serializeMethodFile("Método normalizado", parsedLegacy.method);
 const reparsed = parseMethodFile(exported);
-assert.equal(reparsed.method.blocks[0].outputs?.[0].presentation.renderer, "auto");
+assert.equal(reparsed.method.blocks[0].outputs?.[0].presentation?.renderer, "auto");
+
+const processRunnerSource = readFileSync(
+  new URL("../src/components/process-runner.tsx", import.meta.url),
+  "utf8",
+);
+const executionResultsSource = processRunnerSource.slice(
+  processRunnerSource.indexOf("function ExecutionResults"),
+  processRunnerSource.indexOf("function ResultValue"),
+);
+assert.doesNotMatch(executionResultsSource, /<details[^>]*\sopen=/s);
+assert.match(processRunnerSource, /w-full max-w-6xl border-t/);
+
+const rendererSource = readFileSync(
+  new URL("../src/components/runtime-value-renderers.tsx", import.meta.url),
+  "utf8",
+);
+const imageGallerySource = rendererSource.slice(
+  rendererSource.indexOf("function ImageGalleryRenderer"),
+  rendererSource.indexOf("function AudioRenderer"),
+);
+// O layout de 4 colunas em grid do autor original foi rejeitado em favor da galeria/zoom/teclado do fork.
+assert.doesNotMatch(imageGallerySource, /lg:grid-cols-4/);
+assert.match(imageGallerySource, /<ImageGallery\s+images=\{images\}\s+compact=\{compact\}\s*\/>/);
+
+// Contrato real do fork: galeria integrada, modal de zoom, trilho horizontal e navegação por teclado
+const testImages = [
+  { id: "img-1", name: "imagem-1.png", mimeType: "image/png", size: 100, url: "/img-1.png" },
+  { id: "img-2", name: "imagem-2.png", mimeType: "image/png", size: 200, url: "/img-2.png" },
+];
+const galleryMarkup = renderToStaticMarkup(
+  createElement(ImageGallery, {
+    images: testImages,
+    compact: false,
+  }),
+);
+assert.match(galleryMarkup, /Ampliar imagem 1/);
+assert.match(galleryMarkup, /overflow-x-auto/);
+
+const gallerySource = readFileSync(
+  new URL("../src/components/image-gallery.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(gallerySource, /export function ImageGallery/);
+assert.match(gallerySource, /ArrowLeft/);
+assert.match(gallerySource, /ArrowRight/);
+assert.match(gallerySource, /Esc para fechar/);
+
+const galleryTestSource = readFileSync(
+  new URL("../src/components/image-gallery.test.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(galleryTestSource, /all 30 images have previews in one horizontal rail/);
 
 console.log("Presentation contract smoke test passed.");

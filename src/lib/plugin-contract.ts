@@ -82,7 +82,18 @@ export type PluginExecutionPolicy = {
   defaultTimeoutMs?: number;
   supportsCancellation?: boolean;
   maxConcurrency?: number;
+  /** Optional core-owned sequential expansion of one list input into atomic plugin calls. */
+  itemOrchestration?: {
+    inputPort: string;
+    outputPort: string;
+    /** Optional text output that receives the ordered items joined with blank lines. */
+    combinedOutputPort?: string;
+    mode: "sequential";
+  };
 };
+
+/** Declares whether a capability consumes the Method block instruction. */
+export type PluginInstructionUsage = "required" | "optional" | "not_applicable";
 
 export type PluginSideEffect =
   "external_read" | "external_write" | "public_publish" | "local_artifact" | "subprocess";
@@ -109,6 +120,8 @@ export type PluginFieldContract = Pick<
 export type PluginCapability = {
   id: string;
   operator: PluginOperator;
+  /** Optional in API v1 for backwards compatibility; omitted means `optional`. */
+  instructionUsage?: PluginInstructionUsage;
   blockTypes: BlockType[];
   processTypes?: UniversalProcess[];
   inputPorts: PluginInputPort[];
@@ -125,12 +138,19 @@ export type PluginCapability = {
 
 export type PluginProfileSetup = {
   configurationKey: string;
+  /** Ordered aliases used only after retryable technical failures. */
+  fallbackConfigurationKey?: string;
   label: string;
   description?: string;
   prepareTimeoutMs?: number;
 };
 
 export type PluginDeliveryType = "text" | "image" | "audio" | "video" | "processing";
+
+export type PluginBranding = {
+  /** Relative PNG/WebP path inside the plugin package. The core validates and serves the asset. */
+  iconPath: string;
+};
 
 export type PluginManifest = {
   $schema?: string;
@@ -143,6 +163,7 @@ export type PluginManifest = {
   license: string;
   homepage?: string;
   repository?: string;
+  branding?: PluginBranding;
   runtime: PluginRuntime;
   minCoreVersion?: string;
   entrypoint: string;
@@ -154,10 +175,14 @@ export type PluginManifest = {
   deliveryTypes?: PluginDeliveryType[];
   /** Optional interactive preparation for a dedicated browser profile referenced by block configuration. */
   profileSetup?: PluginProfileSetup;
+  /** O pacote pode retomar entre capabilities uma conversa opaca produzida por um bloco anterior. */
+  supportsConversationContinuation?: boolean;
   capabilities: PluginCapability[];
 };
 
 export type PluginExecutionContext = {
+  /** Optional execution surface hint. Older plugins safely ignore this field. */
+  runMode?: "production" | "method_test";
   locale: string;
   timeZone: string;
   channel: { id: string; name: string; language: string; niche: string };
@@ -166,7 +191,7 @@ export type PluginExecutionContext = {
   block: { type: BlockType; name: string; instructions: string };
   previousProcessOutputs: ProcessOutput[];
   previousBlockOutputs: Array<{ blockId: string; values: Record<string, RuntimeValue> }>;
-  /** Entregas anteriores com identidade universal, ordem e proveniÃªncia. */
+  /** Entregas anteriores com identidade universal, ordem e proveniência. */
   previousDeliveries?: ProjectDelivery[];
   selectedCollection?: {
     collectionId: string;
@@ -227,12 +252,44 @@ export type PluginExecutionRequest = {
   settings: Record<string, unknown>;
   /** `inputs` is keyed by the semantic `portKey` declared in `inputContract`. */
   inputs: Record<string, RuntimeValue>;
+  /** Inputs not already interpolated into `resolvedInstruction`, for prompt context composition. */
+  instructionContextInputs?: Record<string, RuntimeValue>;
   inputContract: PluginInputContract[];
   /** Metadados paralelos aos valores, sem quebrar plugins v1 que leem apenas `inputs`. */
   inputDeliveries?: PluginInputDelivery[];
   outputContract: PluginFieldContract[];
   validation?: BlockValidationConfig;
   retryFeedback?: Record<string, RuntimeValue>;
+  /** Core-resolved block instruction. Updated plugins should prefer this over the raw template. */
+  resolvedInstruction?: string;
+  /** Variables left intact because no declared runtime source could resolve them. */
+  unresolvedInstructionVariables?: string[];
+  conversation?:
+    | {
+        mode: "new";
+        /** Contexto textual seguro usado quando a conversa anterior não pode ser aberta. */
+        fallbackContext?: string;
+        /** Turno curto que substitui o prompt completo, por exemplo após reprovação editorial. */
+        continuationMessage?: string;
+        /** Imagens anteriores que o plugin anexa somente ao realmente abrir outra conversa. */
+        fallbackAttachments?: StoredFile[];
+      }
+    | {
+        mode: "reuse";
+        id: string;
+        /** Alias não secreto do perfil que criou a conversa. */
+        sourceProfile?: string;
+        fallbackContext?: string;
+        continuationMessage?: string;
+        fallbackAttachments?: StoredFile[];
+      };
+  /** Core-owned position and prior outputs when a declared list input is executed item by item. */
+  batch?: {
+    itemId: string;
+    index: number;
+    total: number;
+    completedItems?: Extract<RuntimeValue, unknown[]>;
+  };
   context: PluginExecutionContext;
 };
 
@@ -245,6 +302,7 @@ export type PluginExecutionResponse =
       storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
+      conversation?: { id: string };
     }
   | {
       status: "pending";
@@ -267,6 +325,10 @@ export type PluginExecutionResponse =
       message: string;
       retryable: boolean;
       retryAfterMs?: number;
+      /** Completed outputs remain durable when a later item fails. */
+      partialValues?: Record<string, RuntimeValue>;
+      partialArtifacts?: PluginArtifact[];
+      storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
     };

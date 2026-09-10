@@ -8,6 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+playwright-report/
+playwright-report-electron/
+test-results/
 data/
 dist
 dist-ssr
@@ -16,8 +19,28 @@ dist-ssr
 .tanstack/**
 .nitro
 *.local
-mini-curso-contentflow-os/
+mini-curso-contentflow/
 app-screenshots-local/
+local-tools/
+.agents/
+.tmp-*/
+__pycache__/
+*.py[cod]
+
+# Capturas locais de diagnóstico do Google Flow (podem conter dados de sessão)
+ecosystem/plugins/reference/google-flow-browser-images/captured-flow-session.json
+ecosystem/plugins/reference/google-flow-browser-images/iniciar-captura.bat
+ecosystem/plugins/reference/google-flow-browser-images/scripts/analyze-captured-session.mjs
+ecosystem/plugins/reference/google-flow-browser-images/scripts/capture-flow-session.mjs
+ecosystem/plugins/reference/google-flow-browser-images/scripts/extract-generations.mjs
+ecosystem/plugins/reference/google-flow-browser-images/scripts/find-prompt-rpcs.mjs
+ecosystem/plugins/reference/google-flow-browser-images/scripts/generation-rpcs.json
+ecosystem/plugins/reference/google-flow-browser-images/scripts/print-ui-actions.mjs
+ecosystem/plugins/reference/google-flow-browser-images/scripts/rpc-analysis.json
+
+# Local plugin packaging and browser-extension signing artifacts
+plugins/distributable/
+ecosystem/plugins/reference/*/windows-enterprise-install/artifacts/
 
 # Desktop build intermediates (the distributable V0 lives in compiled/)
 desktop-dist/

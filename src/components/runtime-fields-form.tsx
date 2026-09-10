@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   FileAudio,
   FileImage,
@@ -15,6 +15,7 @@ import { LineListTextarea } from "@/components/line-list-textarea";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/ui/number-input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -93,16 +94,23 @@ export function RuntimeFieldsForm({
   fields,
   values,
   dynamicOptions = {},
+  uploadFile = uploadLocalFile,
   onChange,
 }: {
   fields: BlockFieldDefinition[];
   values: Record<string, RuntimeValue>;
   dynamicOptions?: Record<string, string[]>;
+  uploadFile?: (file: File) => Promise<StoredFile>;
   onChange: (values: Record<string, RuntimeValue>) => void;
 }) {
   const [uploadingKey, setUploadingKey] = useState<string>();
+  const latestValues = useRef(values);
+  latestValues.current = values;
 
-  const update = (key: string, value: RuntimeValue) => onChange({ ...values, [key]: value });
+  const update = (key: string, value: RuntimeValue) => {
+    latestValues.current = { ...latestValues.current, [key]: value };
+    onChange(latestValues.current);
+  };
 
   async function upload(field: BlockFieldDefinition, files: FileList | null) {
     if (!files?.length) return;
@@ -115,7 +123,7 @@ export function RuntimeFieldsForm({
     }
     setUploadingKey(field.key);
     try {
-      const uploaded = await Promise.all(Array.from(files).map(uploadLocalFile));
+      const uploaded = await Promise.all(Array.from(files).map(uploadFile));
       update(field.key, field.type === "files" ? uploaded : uploaded[0]);
     } catch (error) {
       toast.error("Não foi possível salvar o arquivo", {
@@ -179,14 +187,12 @@ export function RuntimeFieldsForm({
                 onChange={(event) => update(field.key, toIsoDatetime(event.target.value))}
               />
             ) : field.type === "number" ? (
-              <Input
+              <NumberInput
                 id={field.id}
-                type="number"
-                value={typeof value === "number" ? value : ""}
+                value={typeof value === "number" ? value : null}
+                nullable
                 placeholder={field.placeholder}
-                onChange={(event) =>
-                  update(field.key, event.target.value === "" ? null : Number(event.target.value))
-                }
+                onValueChange={(nextValue) => update(field.key, nextValue)}
               />
             ) : field.type === "boolean" ? (
               <label className="flex items-center gap-2 rounded-lg border border-border/70 p-3 text-sm">
@@ -431,12 +437,10 @@ function RecordValueInput({
           onChange={(event) => onChange(event.target.value)}
         />
       ) : field.type === "number" ? (
-        <Input
-          type="number"
-          value={typeof value === "number" ? value : ""}
-          onChange={(event) =>
-            onChange(event.target.value === "" ? null : Number(event.target.value))
-          }
+        <NumberInput
+          value={typeof value === "number" ? value : null}
+          nullable
+          onValueChange={onChange}
         />
       ) : field.type === "boolean" ? (
         <label className="flex items-center gap-2 rounded-lg border border-border/70 p-3 text-sm">

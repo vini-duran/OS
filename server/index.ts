@@ -1,11 +1,17 @@
 import express, { type ErrorRequestHandler } from "express";
+import { z } from "zod";
+import { executionCommands } from "./execution-commands";
+import { createMethodPackage, readMethodPackage } from "./method-package";
+import { deriveProcessOutput } from "../src/lib/process-output";
 import Database from "better-sqlite3";
 import {
   cpSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -15,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
   ActionBlock,
+  BlockInputBinding,
   BlockExecution,
   Channel,
   ChannelResearchBrief,
@@ -22,14 +29,27 @@ import type {
   ChannelLibraryItem,
   HumanFieldType,
   ProcessExecution,
+  ProcessMethod,
   Project,
   RuntimeValue,
   StoredFile,
   StrategicCollection,
   UniversalProcess,
 } from "../src/lib/domain";
-import { PROCESS_ORDER } from "../src/lib/domain";
-import { createProcessOutputFields, isEmptyRuntimeValue } from "../src/lib/human-workflow";
+import { PROCESS_META, PROCESS_ORDER } from "../src/lib/domain";
+import {
+  createProcessOutputFields,
+  getMethodConfigurationIssue,
+  isEmptyRuntimeValue,
+  normalizeMethodBlocks,
+} from "../src/lib/human-workflow";
+import {
+  ACTIVE_ORCHESTRATOR_STATUSES,
+  buildOrchestratorSteps,
+  type ExecutionOrchestrator,
+  type ExecutionOrchestratorMode,
+  type ExecutionOrchestratorStatus,
+} from "../src/lib/execution-orchestrator";
 import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
@@ -38,9 +58,12 @@ import type {
   PluginExecutionRequest,
   PluginExecutionResponse,
   PluginFieldContract,
+  PluginProfileSetup,
 } from "../src/lib/plugin-contract";
+import { resolveInstructionTemplate } from "../src/lib/instruction-template";
 import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
+import { attemptAfterRetryInvalidation } from "../src/lib/retry-attempt";
 import {
   activeProjectDeliveries,
   invalidateBlockDeliveries,
@@ -52,9 +75,16 @@ import {
   executeRegisteredPlugin,
   getRegisteredPlugin,
   initializePluginRunner,
+  type RegisteredPlugin,
 } from "./plugin-runner";
 import { normalizeNetworkHostPattern } from "./remote-artifact-downloader";
-import { composePluginPortValue } from "./plugin-input-values";
+import { composePluginPortValue, selectPluginInputPort } from "./plugin-input-values";
+import { instructionWithRetryFeedback } from "../src/lib/retry-feedback";
+import {
+  pluginConversationFallbackAttachments,
+  pluginConversationFallbackContext,
+} from "../src/lib/conversation-context";
+import { collectionItemValuesForPlugin } from "../src/lib/plugin-collection";
 import {
   createPersistentPluginJob,
   isPluginJobTimedOut,
@@ -63,30 +93,58 @@ import {
   PluginJobStore,
 } from "./plugin-job-store";
 import {
-  connectOpenAI,
-  disconnectOpenAI,
-  getOpenAIApiKey,
-  getOpenAIConnection,
-  refreshOpenAIModels,
-} from "./openai-connection";
+  deletePluginConnectionSecret,
+  deletePluginSecret,
+  getPluginConnectionSecret,
+  getPluginSecret,
+  setPluginConnectionSecret,
+  setPluginSecret,
+} from "./credential-vault";
+import { canAdvanceProfileFallback, orderedProfileCandidates } from "./plugin-account-fallback";
 import {
-  connectAnthropic,
-  disconnectAnthropic,
-  getAnthropicApiKey,
-  getAnthropicConnection,
-  refreshAnthropicModels,
-} from "./anthropic-connection";
-import { deletePluginSecret, getPluginSecret, setPluginSecret } from "./credential-vault";
+  appendOrchestratedOutput,
+  combineOrchestratedTextOutput,
+  declaredItemOrchestration,
+  invocationRequestForJob,
+  requestForNextOrchestratedItem,
+} from "./plugin-item-orchestration";
+import {
+  findPluginConnectionDependencies,
+  findPluginMethodDependencies,
+} from "./plugin-dependencies";
+import { validatePluginDirectory } from "./plugin-validation";
+import { PluginConnectionStore, type PluginConnection } from "./plugin-connections";
+import {
+  findPluginProfileUsages,
+  normalizePluginProfileAlias,
+  normalizePluginProfileName,
+  pluginProfileAliasFromName,
+  PluginProfileStore,
+  syncPluginProfilesFromMethods,
+} from "./plugin-profiles";
+import { resolvePluginConnectionSecrets } from "./plugin-connection-runtime";
+import { normalizePluginConversationId, resolvePluginConversation } from "./plugin-conversation";
+import { discoverPluginDirectories, normalizeUserProvidedPath } from "./plugin-package";
+import {
+  downloadCatalogPlugin,
+  extractPluginArchive,
+  fetchPluginCatalog,
+  type PluginCatalog,
+} from "./plugin-catalog";
+import { migrateSiblingDataDirectory } from "./data-directory-migration";
+import { browserBridgeProfileState, stageBrowserBridge } from "./browser-profile-readiness";
 import { fetchYouTubeChannel } from "./youtube";
+import { pluginConcurrencySlot, pluginConcurrencySlotForRequest } from "./plugin-concurrency";
 
 const port = Number(process.env.CONTENTFLOW_API_PORT ?? 8787);
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
 const defaultDataDirectory =
   process.platform === "win32" && process.env.APPDATA
-    ? path.join(process.env.APPDATA, "ContentFlow OS", "data")
+    ? path.join(process.env.APPDATA, "ContentFlow", "data")
     : path.join(applicationRoot, "data");
 const dataDirectory = path.resolve(process.env.CONTENTFLOW_DATA_DIR ?? defaultDataDirectory);
 const uploadsDirectory = path.join(dataDirectory, "uploads");
+const methodTestsDirectory = path.join(dataDirectory, "method-tests");
 const installedPluginsDirectory = path.resolve(
   process.env.CONTENTFLOW_INSTALLED_PLUGINS_DIR ?? path.join(dataDirectory, "plugins", "installed"),
 );
@@ -94,6 +152,10 @@ const developmentLinksDirectory = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ??
     path.join(dataDirectory, "plugins", "development"),
 );
+const pluginCatalogUrl =
+  process.env.CONTENTFLOW_PLUGIN_CATALOG_URL ??
+  "https://github.com/andremjr/contentflow/releases/latest/download/ContentFlow-Plugin-Catalog.json";
+await migrateSiblingDataDirectory(dataDirectory, process.env.APPDATA);
 const nodeMajorVersion = Number(
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
 );
@@ -128,16 +190,17 @@ const activeUploadMimeTypes = new Set([
   "text/xml",
 ]);
 mkdirSync(dataDirectory, { recursive: true });
+const browserBridgeDirectory = stageBrowserBridge(applicationRoot, dataDirectory);
 
-const databasePath = path.join(dataDirectory, "contentflow-os.sqlite");
+const databasePath = path.join(dataDirectory, "contentflow.sqlite");
 const legacyDataDirectory = path.join(applicationRoot, "data");
-const legacyDatabasePath = path.join(legacyDataDirectory, "contentflow-os.sqlite");
-const shouldMigrateLegacyData =
-  databasePath !== legacyDatabasePath &&
-  !existsSync(databasePath) &&
-  existsSync(legacyDatabasePath);
+const legacyDatabasePath = path.join(legacyDataDirectory, "contentflow.sqlite");
 
-if (shouldMigrateLegacyData) {
+if (
+  !existsSync(databasePath) &&
+  databasePath !== legacyDatabasePath &&
+  existsSync(legacyDatabasePath)
+) {
   const legacyDatabase = new Database(legacyDatabasePath, { readonly: true });
   try {
     await legacyDatabase.backup(databasePath);
@@ -155,12 +218,31 @@ if (shouldMigrateLegacyData) {
 }
 
 mkdirSync(uploadsDirectory, { recursive: true });
+mkdirSync(methodTestsDirectory, { recursive: true });
 mkdirSync(installedPluginsDirectory, { recursive: true });
 mkdirSync(developmentLinksDirectory, { recursive: true });
 
 const database = new Database(databasePath);
 database.pragma("busy_timeout = 5000");
 database.pragma("journal_mode = WAL");
+const existingDatabaseTables = new Set(
+  (
+    database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+      name: string;
+    }>
+  ).map((row) => row.name),
+);
+if (existingDatabaseTables.has("channels") && !existingDatabaseTables.has("plugin_profiles")) {
+  const migrationBackupsDirectory = path.join(dataDirectory, "migration-backups");
+  const profileMigrationBackup = path.join(
+    migrationBackupsDirectory,
+    "contentflow-before-profile-management.sqlite",
+  );
+  if (!existsSync(profileMigrationBackup)) {
+    mkdirSync(migrationBackupsDirectory, { recursive: true });
+    await database.backup(profileMigrationBackup);
+  }
+}
 database.exec(`
   CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,
@@ -187,6 +269,14 @@ database.exec(`
     UNIQUE(project_id, process_type)
   );
   CREATE INDEX IF NOT EXISTS executions_project_id ON process_executions(project_id);
+  CREATE TABLE IF NOT EXISTS execution_orchestrators (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS orchestrators_channel_id ON execution_orchestrators(channel_id);
   CREATE TABLE IF NOT EXISTS library_items (
     id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL,
@@ -223,6 +313,14 @@ database.exec(`
     id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
     language TEXT NOT NULL,
+    notification_sound INTEGER NOT NULL DEFAULT 0,
+    system_notifications INTEGER NOT NULL DEFAULT 0,
+    methods_library_view TEXT NOT NULL DEFAULT 'channels',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS channel_preferences (
+    channel_id TEXT PRIMARY KEY,
+    project_view TEXT NOT NULL DEFAULT 'cards',
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS plugin_consents (
@@ -238,7 +336,52 @@ database.exec(`
     directory TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS plugin_connections (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS plugin_connections_plugin_id
+    ON plugin_connections(plugin_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS plugin_connections_active_name
+    ON plugin_connections(plugin_id, name COLLATE NOCASE)
+    WHERE revoked_at IS NULL;
+  CREATE TABLE IF NOT EXISTS plugin_profiles (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS plugin_profiles_plugin_id
+    ON plugin_profiles(plugin_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS plugin_profiles_alias
+    ON plugin_profiles(plugin_id, alias COLLATE NOCASE);
 `);
+
+const appPreferenceColumns = database.prepare("PRAGMA table_info(app_preferences)").all() as Array<{
+  name: string;
+}>;
+if (!appPreferenceColumns.some((column) => column.name === "notification_sound")) {
+  database.exec(
+    "ALTER TABLE app_preferences ADD COLUMN notification_sound INTEGER NOT NULL DEFAULT 0",
+  );
+}
+if (!appPreferenceColumns.some((column) => column.name === "system_notifications")) {
+  database.exec(
+    "ALTER TABLE app_preferences ADD COLUMN system_notifications INTEGER NOT NULL DEFAULT 0",
+  );
+}
+if (!appPreferenceColumns.some((column) => column.name === "methods_library_view")) {
+  database.exec(
+    "ALTER TABLE app_preferences ADD COLUMN methods_library_view TEXT NOT NULL DEFAULT 'channels'",
+  );
+}
 
 const pluginConsentColumns = database.prepare("PRAGMA table_info(plugin_consents)").all() as Array<{
   name: string;
@@ -247,20 +390,73 @@ if (!pluginConsentColumns.some((column) => column.name === "network_hosts")) {
   database.exec("ALTER TABLE plugin_consents ADD COLUMN network_hosts TEXT NOT NULL DEFAULT '[]'");
 }
 const pluginJobs = new PluginJobStore(database);
+const pluginConnections = new PluginConnectionStore(database);
+const pluginProfiles = new PluginProfileStore(database);
 pluginJobs.recoverInterrupted();
+// A database-wide sequence orders snapshots from commands and background workers.
+database.exec(
+  "CREATE TABLE IF NOT EXISTS state_clock (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL); INSERT OR IGNORE INTO state_clock VALUES (1, 0)",
+);
+for (const table of [
+  "channels",
+  "projects",
+  "process_executions",
+  "execution_orchestrators",
+  "library_items",
+  "library_collections",
+  "channel_order",
+]) {
+  for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+    database.exec(`CREATE TRIGGER IF NOT EXISTS clock_${table}_${operation} AFTER ${operation} ON ${table}
+      BEGIN UPDATE state_clock SET revision = revision + 1 WHERE id = 1; END`);
+  }
+}
+database.exec(
+  "CREATE TABLE IF NOT EXISTS execution_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
+);
 
 type AppPreferences = {
   theme: "light" | "dark";
   language: "pt-BR" | "en" | "es";
+  notificationSound: boolean;
+  systemNotifications: boolean;
+  methodsLibraryView: "methods" | "channels";
 };
 
-const defaultPreferences: AppPreferences = { theme: "dark", language: "pt-BR" };
+const defaultPreferences: AppPreferences = {
+  theme: "dark",
+  language: "pt-BR",
+  notificationSound: false,
+  systemNotifications: false,
+  methodsLibraryView: "channels",
+};
 
 function readPreferences(): AppPreferences {
   const row = database
-    .prepare("SELECT theme, language FROM app_preferences WHERE id = 'global'")
-    .get() as AppPreferences | undefined;
-  return row ?? defaultPreferences;
+    .prepare(
+      `SELECT theme, language, notification_sound AS notificationSound,
+              system_notifications AS systemNotifications,
+              methods_library_view AS methodsLibraryView
+       FROM app_preferences WHERE id = 'global'`,
+    )
+    .get() as
+    | {
+        theme: AppPreferences["theme"];
+        language: AppPreferences["language"];
+        notificationSound: number;
+        systemNotifications: number;
+        methodsLibraryView: AppPreferences["methodsLibraryView"];
+      }
+    | undefined;
+  return row
+    ? {
+        theme: row.theme,
+        language: row.language,
+        notificationSound: Boolean(row.notificationSound),
+        systemNotifications: Boolean(row.systemNotifications),
+        methodsLibraryView: row.methodsLibraryView === "methods" ? "methods" : "channels",
+      }
+    : defaultPreferences;
 }
 
 type StoredPayload = {
@@ -318,7 +514,6 @@ function pluginConsentIsCurrent(plugin: {
   source: string;
   manifest: { version: string; permissions: string[]; networkHosts?: string[] };
 }) {
-  if (plugin.source === "bundled") return true;
   if (!communitySandboxAvailable) return false;
   const consent = readPluginConsent(plugin.id);
   return (
@@ -350,6 +545,28 @@ function executionFor(projectId: string, processType: string) {
   return row ? (JSON.parse(row.payload) as ProcessExecution) : undefined;
 }
 
+function normalizePluginListValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : String(item).trim()))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/\r?\n/)
+      .map((line) => {
+        const cleaned = line
+          .trim()
+          .replace(/^[-*•\s]+/, "")
+          .replace(/^\d+[.)]\s*/, "")
+          .trim();
+        return cleaned || line.trim();
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
 function valuesForPluginResponse(
   block: ActionBlock,
   responseValues: Record<string, RuntimeValue>,
@@ -358,11 +575,16 @@ function valuesForPluginResponse(
   const values: Record<string, RuntimeValue> = {};
   for (const field of block.outputs ?? []) {
     const contract = outputContract.find((item) => item.key === field.key);
-    const value =
+    let value =
       responseValues[field.key] ??
       (contract ? responseValues[contract.portKey] : undefined) ??
       responseValues.result;
-    if (value !== undefined) values[field.key] = value;
+    if (value !== undefined) {
+      if (field.type === "list" && (typeof value === "string" || Array.isArray(value))) {
+        value = normalizePluginListValue(value);
+      }
+      values[field.key] = value;
+    }
   }
   return values;
 }
@@ -427,8 +649,19 @@ function finishPluginBlock(
         blockExecution.status = "awaiting_human";
         blockExecution.error = `O limite de ${maxAttempts} tentativas foi atingido.`;
       } else {
+        const retryMode = block.validation.retryMode ?? "full";
+        const retryConversationContext = pluginConversationFallbackContext(
+          targetBlock,
+          targetExecution.values,
+        );
+        const retryConversationAttachments = pluginConversationFallbackAttachments(
+          targetExecution.values,
+        );
         for (let index = targetIndex; index < execution.blocks.length; index += 1) {
           const item = execution.blocks[index];
+          const preserveConversation =
+            index === targetIndex && retryMode === "conversation_feedback";
+          item.attempt = attemptAfterRetryInvalidation(item);
           item.values = {};
           item.error = undefined;
           item.logs = undefined;
@@ -437,10 +670,16 @@ function finishPluginBlock(
           item.progress = undefined;
           item.progressMessage = undefined;
           item.retryFeedback = undefined;
+          item.retryMode = undefined;
+          item.retryConversationContext = undefined;
+          item.retryConversationAttachments = undefined;
+          if (!preserveConversation) item.pluginConversation = undefined;
           item.status = "pending";
         }
-        targetExecution.attempt = (targetExecution.attempt ?? 1) + 1;
         targetExecution.retryFeedback = structuredClone(values);
+        targetExecution.retryMode = retryMode;
+        targetExecution.retryConversationContext = retryConversationContext;
+        targetExecution.retryConversationAttachments = retryConversationAttachments;
         targetExecution.startedAt = now;
         targetExecution.status =
           targetBlock.operator === "Humano" ? "awaiting_human" : "blocked_executor";
@@ -464,31 +703,9 @@ function finishPluginBlock(
     execution.status =
       nextExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
   } else {
-    const [finalField] = createProcessOutputFields(execution.processType);
-    let finalValue: RuntimeValue | undefined;
-    let sourceBlockId: string | undefined;
-    for (let index = execution.methodSnapshot.blocks.length - 1; index >= 0; index -= 1) {
-      const candidate = execution.methodSnapshot.blocks[index];
-      if (candidate.type === "VALIDAR" || candidate.type === "ESCOLHER") continue;
-      const candidateOutput = candidate.outputs?.find(
-        (output) => output.key === finalField.key && output.type === finalField.type,
-      );
-      if (!candidateOutput) continue;
-      const candidateExecution = execution.blocks.find((item) => item.blockId === candidate.id);
-      const value = candidateExecution?.values[finalField.key];
-      if (!isEmptyRuntimeValue(value)) {
-        finalValue = value;
-        sourceBlockId = candidate.id;
-        break;
-      }
-    }
-    if (finalValue !== undefined) {
-      execution.output = {
-        processType: execution.processType,
-        values: { [finalField.key]: finalValue },
-        sourceBlockId,
-        createdAt: now,
-      };
+    const output = deriveProcessOutput(execution);
+    if (output) {
+      execution.output = output;
       recordProcessOutputDelivery(execution, execution.output.values, now);
       execution.outputStatus = "completed";
       execution.status = "completed";
@@ -508,6 +725,9 @@ function executionById(executionId: string) {
 }
 
 function persistPluginExecution(execution: ProcessExecution, project: Project) {
+  const latestProject = readPayload<Project>("projects", project.id);
+  if (latestProject) Object.assign(project, latestProject);
+  execution.revision = (executionById(execution.id)?.revision ?? 0) + 1;
   execution.updatedAt = new Date().toISOString();
   updateProjectAfterPluginBlock(project, execution);
   const persist = () => {
@@ -520,6 +740,7 @@ function persistPluginExecution(execution: ProcessExecution, project: Project) {
   };
   if (database.inTransaction) persist();
   else database.transaction(persist)();
+  queueOrchestratorReconciliationForProject(execution.projectId);
 }
 
 function failAutomaticPluginStart(executionId: string, blockId: string, message: string) {
@@ -585,6 +806,311 @@ function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
         );
       });
   }, 0);
+}
+
+const orchestratorReconciliationLocks = new Set<string>();
+
+function parseOrchestratorRow(row?: { payload: string }) {
+  return row ? (JSON.parse(row.payload) as ExecutionOrchestrator) : undefined;
+}
+
+function executionOrchestratorById(id: string) {
+  return parseOrchestratorRow(
+    database.prepare("SELECT payload FROM execution_orchestrators WHERE id = ?").get(id) as
+      { payload: string } | undefined,
+  );
+}
+
+function executionOrchestrators(channelId?: string) {
+  const rows = channelId
+    ? (database
+        .prepare(
+          "SELECT payload FROM execution_orchestrators WHERE channel_id = ? ORDER BY created_at DESC",
+        )
+        .all(channelId) as { payload: string }[])
+    : (database
+        .prepare("SELECT payload FROM execution_orchestrators ORDER BY created_at DESC")
+        .all() as { payload: string }[]);
+  return rows.map((row) => JSON.parse(row.payload) as ExecutionOrchestrator);
+}
+
+function persistExecutionOrchestrator(orchestrator: ExecutionOrchestrator, create = false) {
+  orchestrator.updatedAt = new Date().toISOString();
+  if (create) {
+    database
+      .prepare(
+        `INSERT INTO execution_orchestrators
+          (id, channel_id, payload, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orchestrator.id,
+        orchestrator.channelId,
+        JSON.stringify(orchestrator),
+        orchestrator.createdAt,
+        orchestrator.updatedAt,
+      );
+    return;
+  }
+  database
+    .prepare("UPDATE execution_orchestrators SET payload = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(orchestrator), orchestrator.updatedAt, orchestrator.id);
+}
+
+function setExecutionOrchestratorState(
+  orchestrator: ExecutionOrchestrator,
+  patch: Partial<ExecutionOrchestrator>,
+) {
+  const changed = Object.entries(patch).some(
+    ([key, value]) => orchestrator[key as keyof ExecutionOrchestrator] !== value,
+  );
+  if (!changed) return false;
+  Object.assign(orchestrator, patch);
+  persistExecutionOrchestrator(orchestrator);
+  return true;
+}
+
+function createOrchestratedProject(channelId: string, title: string, index: number): Project {
+  const stages = Object.fromEntries(
+    PROCESS_ORDER.map((processType) => [processType, "not_started"]),
+  ) as Project["stages"];
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    title,
+    channelId,
+    currentStage: "theme",
+    state: "not_started",
+    progress: 0,
+    deadline: "Sem prazo",
+    duration: "—",
+    updatedAt: "Agora",
+    createdAt: now,
+    stages,
+    assignee: { name: "Não atribuído", initials: "—" },
+    thumbHue: (index * 47 + 211) % 360,
+  };
+}
+
+function startOrchestratedProcess(
+  project: Project,
+  channel: Channel,
+  processType: UniversalProcess,
+) {
+  const existing = executionFor(project.id, processType);
+  if (existing) return { execution: existing };
+
+  const savedMethod = channel.methods?.[processType];
+  const method = savedMethod
+    ? {
+        name: savedMethod.name || `Método de ${PROCESS_META[processType].label}`,
+        imageUrl: savedMethod.imageUrl,
+        processType,
+        blocks: normalizeMethodBlocks(savedMethod.blocks ?? [], processType),
+      }
+    : undefined;
+  const issue = getMethodConfigurationIssue(method);
+  if (!method || issue) return { issue: issue ?? "O método deste processo não está disponível." };
+
+  const now = new Date().toISOString();
+  const methodSnapshot = structuredClone(method);
+  const execution: ProcessExecution = {
+    id: randomUUID(),
+    projectId: project.id,
+    channelId: channel.id,
+    processType,
+    methodSnapshot,
+    blocks: methodSnapshot.blocks.map((block, index) => ({
+      blockId: block.id,
+      status:
+        index === 0
+          ? block.operator === "Humano"
+            ? "awaiting_human"
+            : "blocked_executor"
+          : "pending",
+      values: {},
+      attempt: 1,
+      startedAt: index === 0 ? now : undefined,
+    })),
+    status: methodSnapshot.blocks[0].operator === "Humano" ? "awaiting_human" : "blocked_executor",
+    outputStatus: "pending",
+    createdAt: now,
+    updatedAt: now,
+  };
+  project.stages = {
+    ...project.stages,
+    [processType]: execution.status === "awaiting_human" ? "awaiting_human" : "processing",
+  };
+  project.currentStage = processType;
+  project.state = project.stages[processType];
+  project.updatedAt = "Agora";
+
+  database.transaction(() => {
+    database
+      .prepare(
+        `INSERT INTO process_executions (id, project_id, process_type, payload, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(execution.id, execution.projectId, processType, JSON.stringify(execution), now);
+    database
+      .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(project), project.id);
+  })();
+  scheduleAutomaticPluginBlock(execution);
+  return { execution };
+}
+
+function orchestrationMessage(
+  status: ExecutionOrchestratorStatus,
+  project: Project,
+  processType: UniversalProcess,
+) {
+  const processLabel = PROCESS_META[processType].label;
+  if (status === "awaiting_human") {
+    return `${project.title} aguarda uma ação humana em ${processLabel}.`;
+  }
+  if (status === "blocked") {
+    return `${project.title} está bloqueado em ${processLabel}: configure o executor necessário.`;
+  }
+  if (status === "failed") return `${project.title} encontrou um erro em ${processLabel}.`;
+  return `Executando ${processLabel} em ${project.title}.`;
+}
+
+function reconcileExecutionOrchestrator(id: string) {
+  if (orchestratorReconciliationLocks.has(id)) return;
+  orchestratorReconciliationLocks.add(id);
+  try {
+    const orchestrator = executionOrchestratorById(id);
+    if (!orchestrator || !ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status)) return;
+    const channel = readPayload<Channel>("channels", orchestrator.channelId);
+    if (!channel) {
+      setExecutionOrchestratorState(orchestrator, {
+        status: "failed",
+        message: "O canal desta orquestração não existe mais.",
+      });
+      return;
+    }
+
+    const steps = buildOrchestratorSteps(orchestrator.projectIds, orchestrator.mode);
+    while (orchestrator.currentStep < steps.length) {
+      const step = steps[orchestrator.currentStep];
+      const project = readPayload<Project>("projects", step.projectId);
+      if (!project) {
+        setExecutionOrchestratorState(orchestrator, {
+          status: "failed",
+          message: "Um projeto da orquestração não existe mais.",
+          currentProjectId: step.projectId,
+          currentProcessType: step.processType,
+        });
+        return;
+      }
+
+      const started = startOrchestratedProcess(project, channel, step.processType);
+      if (!started.execution) {
+        setExecutionOrchestratorState(orchestrator, {
+          status: "blocked",
+          currentProjectId: step.projectId,
+          currentProcessType: step.processType,
+          message: started.issue,
+        });
+        return;
+      }
+      const execution = started.execution;
+      if (execution.status === "completed") {
+        orchestrator.currentStep += 1;
+        continue;
+      }
+      if (execution.status === "cancelled") {
+        setExecutionOrchestratorState(orchestrator, {
+          status: "cancelled",
+          currentProjectId: step.projectId,
+          currentProcessType: step.processType,
+          message: "A execução atual foi cancelada.",
+        });
+        return;
+      }
+
+      const activeBlockExecution = execution.blocks.find((item) => item.status !== "completed");
+      const activeBlock = activeBlockExecution
+        ? execution.methodSnapshot.blocks.find((item) => item.id === activeBlockExecution.blockId)
+        : undefined;
+      const status: ExecutionOrchestratorStatus =
+        execution.status === "awaiting_human" || execution.status === "awaiting_output"
+          ? "awaiting_human"
+          : execution.status === "failed"
+            ? "failed"
+            : execution.status === "blocked_executor" && !activeBlock?.plugin
+              ? "blocked"
+              : "running";
+      setExecutionOrchestratorState(orchestrator, {
+        status,
+        currentProjectId: step.projectId,
+        currentProcessType: step.processType,
+        message: execution.error ?? orchestrationMessage(status, project, step.processType),
+      });
+      return;
+    }
+
+    setExecutionOrchestratorState(orchestrator, {
+      currentStep: steps.length,
+      totalSteps: steps.length,
+      status: "completed",
+      currentProjectId: undefined,
+      currentProcessType: undefined,
+      message: "Todos os projetos da orquestração foram concluídos.",
+      completedAt: new Date().toISOString(),
+    });
+  } finally {
+    orchestratorReconciliationLocks.delete(id);
+  }
+}
+
+function queueOrchestratorReconciliation(id: string) {
+  setTimeout(() => reconcileExecutionOrchestrator(id), 0);
+}
+
+function queueOrchestratorReconciliationForProject(projectId: string) {
+  for (const orchestrator of executionOrchestrators()) {
+    if (
+      ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status) &&
+      orchestrator.projectIds.includes(projectId)
+    ) {
+      queueOrchestratorReconciliation(orchestrator.id);
+    }
+  }
+}
+
+function cancelStoredProcessExecution(execution: ProcessExecution, project: Project) {
+  delete project.runThrough;
+  delete project.runFrom;
+  execution.revision = (execution.revision ?? 0) + 1;
+  pluginJobs.requestCancellation(execution.id);
+  execution.status = "cancelled";
+  execution.blocks = execution.blocks.map((item) =>
+    item.status === "completed" ? item : { ...item, status: "cancelled" },
+  );
+  execution.updatedAt = new Date().toISOString();
+  project.stages = { ...project.stages, [execution.processType]: "not_started" };
+  project.currentStage = execution.processType;
+  project.state = "not_started";
+  project.updatedAt = "Agora";
+  database.transaction(() => {
+    database
+      .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(execution), execution.updatedAt, execution.id);
+    database
+      .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(project), project.id);
+  })();
+  void processDuePluginJobs();
+}
+
+function resumeExecutionOrchestrators() {
+  for (const orchestrator of executionOrchestrators()) {
+    if (ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status)) {
+      reconcileExecutionOrchestrator(orchestrator.id);
+    }
+  }
 }
 
 function mergeStoredArtifacts(current: StoredFile[], incoming: StoredFile[] = []) {
@@ -668,13 +1194,14 @@ function markPluginJobCancelled(
   );
 }
 
-async function pluginSecretsForJob(pluginId: string, secretKeys: string[]) {
-  const secrets: Record<string, string> = {};
-  for (const key of secretKeys) {
-    const value = await getPluginSecret(pluginId, key);
-    if (value) secrets[key] = value;
-  }
-  return secrets;
+async function resolvePluginConnection(plugin: RegisteredPlugin, requestedConnectionId?: string) {
+  return resolvePluginConnectionSecrets(plugin, requestedConnectionId, {
+    migrateLegacy: () => migrateLegacyPluginConnection(plugin),
+    listConnections: () => pluginConnections.list(plugin.id),
+    getConnection: (connectionId) => pluginConnections.get(plugin.id, connectionId),
+    getSecret: (connectionId, secretKey) =>
+      getPluginConnectionSecret(plugin.id, connectionId, secretKey),
+  });
 }
 
 async function processPluginJob(
@@ -685,8 +1212,8 @@ async function processPluginJob(
   const claim = existingClaim ?? pluginJobs.claim(jobId);
   if (!claim) return pluginJobs.get(jobId);
   const { job } = claim;
-  const execution = executionById(job.executionId);
-  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  let execution = executionById(job.executionId);
+  let project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
   if (!execution || !project) {
     return markPluginJobFailed(
       claim,
@@ -696,8 +1223,8 @@ async function processPluginJob(
       "abandoned",
     );
   }
-  const block = execution.methodSnapshot.blocks.find((item) => item.id === job.blockId);
-  const blockExecution = execution.blocks.find((item) => item.blockId === job.blockId);
+  let block = execution.methodSnapshot.blocks.find((item) => item.id === job.blockId);
+  let blockExecution = execution.blocks.find((item) => item.blockId === job.blockId);
   if (!block || !blockExecution || (blockExecution.attempt ?? 1) !== job.attempt) {
     return markPluginJobFailed(
       claim,
@@ -747,8 +1274,8 @@ async function processPluginJob(
   }
 
   const remainingMs = new Date(job.deadlineAt).getTime() - Date.now();
-  const storedSecrets = await pluginSecretsForJob(plugin.id, plugin.manifest.secretKeys ?? []);
-  const secrets = { ...storedSecrets, ...transientSecrets };
+  let storedSecrets: Record<string, string> = {};
+  let secrets: Record<string, string> = { ...transientSecrets };
   const workspaceDirectory = executionWorkspaceForPlugin(plugin);
   // Browser-driven capabilities legitimately need more than two minutes for
   // page loading, model generation and UI transitions. Honor the capability's
@@ -759,6 +1286,18 @@ async function processPluginJob(
   );
 
   try {
+    const requestedConnectionId =
+      typeof job.request.settings.connectionId === "string"
+        ? job.request.settings.connectionId
+        : undefined;
+    const resolvedConnection = await resolvePluginConnection(plugin, requestedConnectionId);
+    storedSecrets = resolvedConnection.secrets;
+    secrets = { ...storedSecrets, ...transientSecrets };
+    for (const secretKey of plugin.manifest.secretKeys ?? []) {
+      if (!secrets[secretKey]) {
+        throw new Error("Crie ou associe uma conta local válida a este bloco antes de executar.");
+      }
+    }
     if (isPluginJobTimedOut(job)) {
       if (job.jobId && capability.execution.supportsCancellation) {
         await executeRegisteredPlugin(
@@ -823,11 +1362,32 @@ async function processPluginJob(
         : ({ mode: "resume", jobId: job.jobId! } as const);
     const pluginResponse = await executeRegisteredPlugin(
       plugin,
-      { ...job.request, invocation },
+      invocationRequestForJob(job, invocation),
       invocationTimeout,
       secrets,
       { workspaceDirectory, existingArtifacts: job.partialArtifacts },
     );
+
+    // No object captured before an external await is allowed to overwrite newer state.
+    execution = executionById(job.executionId);
+    project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+    block = execution?.methodSnapshot.blocks.find((item) => item.id === job.blockId);
+    blockExecution = execution?.blocks.find((item) => item.blockId === job.blockId);
+    if (
+      !execution ||
+      !project ||
+      !block ||
+      !blockExecution ||
+      execution.status === "cancelled" ||
+      (blockExecution.attempt ?? 1) !== job.attempt
+    ) {
+      return markPluginJobCancelled(
+        claim,
+        undefined,
+        undefined,
+        "Resultado de execução encerrada descartado.",
+      );
+    }
 
     if (pluginResponse.status === "pending") {
       if (capability.execution.mode !== "async") {
@@ -894,6 +1454,55 @@ async function processPluginJob(
     }
 
     if (pluginResponse.status === "error") {
+      const partialValues = {
+        ...job.partialValues,
+        ...mappedPluginValues(
+          block,
+          pluginResponse.partialValues ?? {},
+          job.request.outputContract,
+        ),
+      };
+      const partialArtifacts = mergeStoredArtifacts(
+        job.partialArtifacts,
+        pluginResponse.storedArtifacts,
+      );
+      const fallback = job.profileFallback;
+      if (fallback && canAdvanceProfileFallback(job, pluginResponse)) {
+        const currentProfile = fallback.candidates[fallback.activeIndex];
+        const nextIndex = fallback.activeIndex + 1;
+        const nextProfile = fallback.candidates[nextIndex];
+        const saved = pluginJobs.save(claim, {
+          ...job,
+          status: "starting",
+          retryCount: job.retryCount + 1,
+          profileFallback: {
+            ...fallback,
+            activeIndex: nextIndex,
+            history: [
+              ...fallback.history,
+              {
+                profile: currentProfile,
+                code: pluginResponse.code,
+                message: pluginResponse.message,
+              },
+            ],
+          },
+          partialValues,
+          partialArtifacts,
+          error: pluginResponse.message,
+          message: `Falha em ${currentProfile}; continuando com ${nextProfile}.`,
+          nextPollAt: new Date().toISOString(),
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution.status = "in_progress";
+        blockExecution.values = structuredClone(partialValues);
+        blockExecution.progressMessage = saved.message;
+        blockExecution.logs = pluginResponse.logs;
+        execution.status = "running";
+        recordBlockDeliveries(execution, block, partialValues, "partial");
+        persistPluginExecution(execution, project);
+        return saved;
+      }
       if (
         pluginResponse.retryable &&
         job.retryCount < 2 &&
@@ -908,6 +1517,8 @@ async function processPluginJob(
           ...job,
           status: job.jobId ? "pending" : "starting",
           retryCount,
+          partialValues,
+          partialArtifacts,
           error: pluginResponse.message,
           message: `Tentativa ${retryCount + 1}: ${pluginResponse.message}`,
           nextPollAt: new Date(Date.now() + retryAfterMs).toISOString(),
@@ -927,6 +1538,70 @@ async function processPluginJob(
       ...job.partialValues,
       ...mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
     };
+    const completedConversationId = pluginResponse.conversation?.id
+      ? normalizePluginConversationId(pluginResponse.conversation.id)
+      : undefined;
+    const itemOrchestration = job.itemOrchestration;
+    if (itemOrchestration) {
+      const outputKey =
+        job.request.outputContract.find((field) => field.portKey === itemOrchestration.outputPort)
+          ?.key ?? itemOrchestration.outputPort;
+      const combinedOutputKey = itemOrchestration.combinedOutputPort
+        ? (job.request.outputContract.find(
+            (field) => field.portKey === itemOrchestration.combinedOutputPort,
+          )?.key ?? itemOrchestration.combinedOutputPort)
+        : undefined;
+      const accumulated = combineOrchestratedTextOutput(
+        appendOrchestratedOutput(
+          job.partialValues,
+          mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
+          outputKey,
+        ),
+        outputKey,
+        combinedOutputKey,
+      );
+      if (itemOrchestration.currentIndex + 1 < itemOrchestration.items.length) {
+        const nextIndex = itemOrchestration.currentIndex + 1;
+        const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
+        const activeProfile = job.profileFallback
+          ? job.profileFallback.candidates[job.profileFallback.activeIndex]
+          : profileConfigurationKey
+            ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
+            : undefined;
+        const nextRequest = requestForNextOrchestratedItem(job, {
+          conversationId: completedConversationId,
+          sourceProfile: activeProfile,
+          fallbackContext: pluginConversationFallbackContext(block, accumulated),
+        });
+        const saved = pluginJobs.save(claim, {
+          ...job,
+          request: nextRequest,
+          status: "starting",
+          nextPollAt: new Date().toISOString(),
+          retryCount: 0,
+          partialValues: accumulated,
+          partialArtifacts: mergeStoredArtifacts(
+            job.partialArtifacts,
+            pluginResponse.storedArtifacts,
+          ),
+          itemOrchestration: { ...itemOrchestration, currentIndex: nextIndex },
+          progress: nextIndex / itemOrchestration.items.length,
+          message: `Item ${nextIndex} de ${itemOrchestration.items.length} concluído.`,
+          error: undefined,
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution.status = "in_progress";
+        blockExecution.values = structuredClone(accumulated);
+        blockExecution.progress = saved.progress;
+        blockExecution.progressMessage = saved.message;
+        blockExecution.logs = pluginResponse.logs;
+        execution.status = "running";
+        recordBlockDeliveries(execution, block, accumulated, "partial");
+        persistPluginExecution(execution, project);
+        return saved;
+      }
+      Object.assign(values, accumulated);
+    }
     if (
       block.type === "ESCOLHER" &&
       !job.request.context.selectedCollection?.items.some(
@@ -963,7 +1638,26 @@ async function processPluginJob(
       },
       (saved) => {
         if (saved.status === "cancel_requested") return;
+        if (!execution || !project || !block || !blockExecution) return;
         finishPluginBlock(execution, block, blockExecution, values);
+        if (completedConversationId) {
+          const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
+          const activeProfile = job.profileFallback
+            ? job.profileFallback.candidates[job.profileFallback.activeIndex]
+            : profileConfigurationKey
+              ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
+              : undefined;
+          blockExecution.pluginConversation = {
+            pluginId: plugin.id,
+            connectionId: block.plugin?.connectionId,
+            profile: activeProfile,
+            id: completedConversationId,
+            fallbackContext: pluginConversationFallbackContext(block, values),
+          };
+        }
+        blockExecution.retryMode = undefined;
+        blockExecution.retryConversationContext = undefined;
+        blockExecution.retryConversationAttachments = undefined;
         blockExecution.logs = pluginResponse.logs;
         blockExecution.progress = 1;
         blockExecution.progressMessage = undefined;
@@ -974,6 +1668,56 @@ async function processPluginJob(
     return saved;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível executar o plugin.";
+    execution = executionById(job.executionId);
+    project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+    blockExecution = execution?.blocks.find((item) => item.blockId === job.blockId);
+    if (
+      !execution ||
+      !project ||
+      !blockExecution ||
+      execution.status === "cancelled" ||
+      (blockExecution.attempt ?? 1) !== job.attempt
+    ) {
+      return markPluginJobCancelled(
+        claim,
+        undefined,
+        undefined,
+        "Execução encerrada; falha tardia descartada.",
+      );
+    }
+    const errorCode = (error as { code?: string })?.code || "JOB_FAILED";
+    const fallback = job.profileFallback;
+    if (fallback && canAdvanceProfileFallback(job, { code: errorCode, message, status: "error" })) {
+      const currentProfile = fallback.candidates[fallback.activeIndex];
+      const nextIndex = fallback.activeIndex + 1;
+      const nextProfile = fallback.candidates[nextIndex];
+      const saved = pluginJobs.save(claim, {
+        ...job,
+        status: "starting",
+        retryCount: job.retryCount + 1,
+        profileFallback: {
+          ...fallback,
+          activeIndex: nextIndex,
+          history: [
+            ...fallback.history,
+            {
+              profile: currentProfile,
+              code: errorCode,
+              message,
+            },
+          ],
+        },
+        error: message,
+        message: `Falha em ${currentProfile}; continuando com ${nextProfile}.`,
+        nextPollAt: new Date().toISOString(),
+      });
+      if (saved.status === "cancel_requested") return saved;
+      blockExecution.status = "in_progress";
+      blockExecution.progressMessage = saved.message;
+      execution.status = "running";
+      persistPluginExecution(execution, project);
+      return saved;
+    }
     if (job.retryCount < 2 && Date.now() + 1_000 < new Date(job.deadlineAt).getTime()) {
       const retryCount = job.retryCount + 1;
       const saved = pluginJobs.save(claim, {
@@ -995,20 +1739,28 @@ async function processPluginJob(
   }
 }
 
-let pluginJobSchedulerRunning = false;
+let activePluginWorkers = 0;
+const activePluginConcurrencySlots = new Map<string, number>();
 async function processDuePluginJobs() {
-  if (pluginJobSchedulerRunning) return;
-  pluginJobSchedulerRunning = true;
-  try {
-    const dueJobs: ClaimedPluginJob[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      const claim = pluginJobs.claimNext();
-      if (!claim) break;
-      dueJobs.push(claim);
+  while (activePluginWorkers < 4) {
+    const claim = pluginJobs.claimNext();
+    if (!claim) break;
+    const slot = pluginConcurrencySlot(getRegisteredPlugin(claim.job.pluginId), claim.job);
+    const activeInSlot = activePluginConcurrencySlots.get(slot.key) ?? 0;
+    if (activeInSlot >= slot.limit) {
+      pluginJobs.defer(claim, new Date(Date.now() + 250));
+      continue;
     }
-    await Promise.allSettled(dueJobs.map((claim) => processPluginJob(claim.job.id, {}, claim)));
-  } finally {
-    pluginJobSchedulerRunning = false;
+    activePluginWorkers += 1;
+    activePluginConcurrencySlots.set(slot.key, activeInSlot + 1);
+    void processPluginJob(claim.job.id, {}, claim)
+      .catch((error) => console.error("Falha no worker de plugin:", error))
+      .finally(() => {
+        activePluginWorkers -= 1;
+        const remaining = (activePluginConcurrencySlots.get(slot.key) ?? 1) - 1;
+        if (remaining > 0) activePluginConcurrencySlots.set(slot.key, remaining);
+        else activePluginConcurrencySlots.delete(slot.key);
+      });
   }
 }
 
@@ -1047,8 +1799,6 @@ const pluginJobCleanup = setInterval(cleanupAbandonedPluginJobs, 60 * 60 * 1_000
 pluginJobCleanup.unref();
 cleanupAbandonedPluginJobs();
 void processDuePluginJobs();
-
-type PluginSource = "bundled" | "installed";
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -1174,6 +1924,8 @@ function isPluginManifest(manifest: Record<string, unknown>) {
     networkHostsAreValid &&
     (profileSetup === undefined ||
       (isNonEmptyString(profileSetup.configurationKey) &&
+        (profileSetup.fallbackConfigurationKey === undefined ||
+          isNonEmptyString(profileSetup.fallbackConfigurationKey)) &&
         isNonEmptyString(profileSetup.label) &&
         (profileSetup.description === undefined || typeof profileSetup.description === "string") &&
         (profileSetup.prepareTimeoutMs === undefined ||
@@ -1181,7 +1933,13 @@ function isPluginManifest(manifest: Record<string, unknown>) {
             Number(profileSetup.prepareTimeoutMs) >= 30_000 &&
             Number(profileSetup.prepareTimeoutMs) <= 900_000)) &&
         Object.keys(profileSetup).every((key) =>
-          ["configurationKey", "label", "description", "prepareTimeoutMs"].includes(key),
+          [
+            "configurationKey",
+            "fallbackConfigurationKey",
+            "label",
+            "description",
+            "prepareTimeoutMs",
+          ].includes(key),
         ))) &&
     (manifest.secretKeys === undefined || isUniqueStringArray(manifest.secretKeys)) &&
     runtime?.kind === "node" &&
@@ -1193,6 +1951,7 @@ function isPluginManifest(manifest: Record<string, unknown>) {
       if (!value || typeof value !== "object") return false;
       const capability = value as Record<string, unknown>;
       const execution = capability.execution as Record<string, unknown> | undefined;
+      const itemOrchestration = execution?.itemOrchestration as Record<string, unknown> | undefined;
       const cost = capability.cost as Record<string, unknown> | undefined;
       const dataPolicy = capability.dataPolicy as Record<string, unknown> | undefined;
       const capabilitySideEffects = capability.sideEffects;
@@ -1280,6 +2039,16 @@ function isPluginManifest(manifest: Record<string, unknown>) {
           (Number.isInteger(execution.maxConcurrency) &&
             Number(execution.maxConcurrency) >= 1 &&
             Number(execution.maxConcurrency) <= 100)) &&
+        (itemOrchestration === undefined ||
+          (itemOrchestration.mode === "sequential" &&
+            isNonEmptyString(itemOrchestration.inputPort) &&
+            isNonEmptyString(itemOrchestration.outputPort) &&
+            (capability.inputPorts as Array<Record<string, unknown>>).some(
+              (port) => port.key === itemOrchestration.inputPort,
+            ) &&
+            (capability.outputPorts as Array<Record<string, unknown>>).some(
+              (port) => port.key === itemOrchestration.outputPort,
+            ))) &&
         isUniqueStringArray(capabilitySideEffects, sideEffects) &&
         (!usesNetwork || manifestPermissions.includes("network")) &&
         (!capabilitySideEffects.includes("local_artifact") ||
@@ -1301,45 +2070,6 @@ function isPluginManifest(manifest: Record<string, unknown>) {
     new Set(capabilities.map((capability) => String((capability as Record<string, unknown>).id)))
       .size === capabilities.length,
   );
-}
-
-function discoverPlugins(root: string, source: PluginSource, relativeRoot: string) {
-  if (!existsSync(root)) return { plugins: [], issues: [] };
-  const plugins: Array<{
-    id: string;
-    source: PluginSource;
-    directory: string;
-    manifest: Record<string, unknown>;
-  }> = [];
-  const issues: Array<{ directory: string; message: string }> = [];
-
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = path.join(root, entry.name, "contentflow.plugin.json");
-    if (!existsSync(manifestPath)) continue;
-    const directory = `${relativeRoot}/${entry.name}`;
-    try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-      if (!isPluginManifest(manifest)) {
-        throw new Error("Manifesto incompleto ou incompatível.");
-      }
-      const pluginDirectory = path.resolve(root, entry.name);
-      const entrypointPath = path.resolve(pluginDirectory, String(manifest.entrypoint));
-      if (
-        !entrypointPath.startsWith(`${pluginDirectory}${path.sep}`) ||
-        !existsSync(entrypointPath)
-      ) {
-        throw new Error("O entrypoint declarado não existe dentro da pasta do plugin.");
-      }
-      plugins.push({ id: String(manifest.id), source, directory, manifest });
-    } catch (error) {
-      issues.push({
-        directory,
-        message: error instanceof Error ? error.message : "Manifesto inválido.",
-      });
-    }
-  }
-  return { plugins, issues };
 }
 
 function migrateLegacyLibraryItems() {
@@ -1421,8 +2151,36 @@ function migrateLegacyLibraryItems() {
 
 migrateLegacyLibraryItems();
 
+const methodTestRunIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const methodTestRetentionMs = 60 * 60 * 1_000;
+
+function methodTestRunDirectory(runId: string) {
+  if (!methodTestRunIdPattern.test(runId)) {
+    throw new Error("Identificador de teste inválido.");
+  }
+  return path.join(methodTestsDirectory, runId);
+}
+
+function cleanupExpiredMethodTests() {
+  const cutoff = Date.now() - methodTestRetentionMs;
+  for (const entry of readdirSync(methodTestsDirectory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !methodTestRunIdPattern.test(entry.name)) continue;
+    const directory = path.join(methodTestsDirectory, entry.name);
+    try {
+      if (statSync(directory).mtimeMs < cutoff) rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // Another request may have removed the temporary run concurrently.
+    }
+  }
+}
+
+cleanupExpiredMethodTests();
+const methodTestCleanupTimer = setInterval(cleanupExpiredMethodTests, 15 * 60 * 1_000);
+methodTestCleanupTimer.unref();
+
 const app = express();
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(
   "/api/files",
   express.static(uploadsDirectory, {
@@ -1436,6 +2194,87 @@ app.use(
     },
   }),
 );
+app.use(
+  "/api/method-block-tests/files",
+  express.static(methodTestsDirectory, {
+    dotfiles: "deny",
+    fallthrough: false,
+    setHeaders(response, filePath) {
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      if (activeUploadExtensions.has(path.extname(filePath).toLowerCase())) {
+        response.setHeader("Content-Disposition", "attachment");
+      }
+    },
+  }),
+);
+
+app.post(
+  "/api/method-block-tests/:runId/uploads",
+  express.raw({ type: "application/octet-stream", limit: maxUploadBytes }),
+  (request, response) => {
+    let runDirectory: string;
+    try {
+      runDirectory = methodTestRunDirectory(request.params.runId);
+    } catch (error) {
+      response
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : "Teste inválido." });
+      return;
+    }
+    const originalName = decodeUploadName(request.headers["x-file-name"]);
+    const mimeType = String(request.headers["x-file-type"] ?? "application/octet-stream")
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+      response.status(400).json({ error: "Arquivo vazio ou inválido." });
+      return;
+    }
+    const extension = path
+      .extname(originalName)
+      .replace(/[^a-zA-Z0-9.]/g, "")
+      .slice(0, 12)
+      .toLowerCase();
+    if (activeUploadExtensions.has(extension) || activeUploadMimeTypes.has(mimeType)) {
+      response.status(415).json({
+        error:
+          "Esse formato ativo não pode ser usado no teste. Envie uma mídia ou arquivo de dados.",
+      });
+      return;
+    }
+    if (directorySize(methodTestsDirectory, true) + request.body.length > maxUploadStorageBytes) {
+      response.status(507).json({
+        error: `Os arquivos temporários de teste atingiram o limite de ${maxUploadStorageGb} GB.`,
+      });
+      return;
+    }
+    const filesDirectory = path.join(runDirectory, "files");
+    mkdirSync(filesDirectory, { recursive: true });
+    const id = randomUUID();
+    const storedName = `${id}${extension}`;
+    writeFileSync(path.join(filesDirectory, storedName), request.body);
+    response.status(201).json({
+      id,
+      name: path.basename(originalName),
+      mimeType,
+      size: request.body.length,
+      url: `/api/method-block-tests/files/${request.params.runId}/files/${storedName}`,
+    });
+  },
+);
+
+app.delete("/api/method-block-tests/:runId", (request, response) => {
+  try {
+    rmSync(methodTestRunDirectory(request.params.runId), { recursive: true, force: true });
+    response.status(204).end();
+  } catch (error) {
+    response
+      .status(400)
+      .json({ error: error instanceof Error ? error.message : "Teste inválido." });
+  }
+});
 
 app.post(
   "/api/uploads",
@@ -1484,30 +2323,101 @@ app.get("/api/health", (_request, response) => {
   response.json({ ok: true });
 });
 
+app.post("/api/method-packages/export", async (request, response) => {
+  try {
+    if (typeof request.body?.manifest !== "string") {
+      response.status(400).json({ error: "Manifesto ausente." });
+      return;
+    }
+    const archive = await createMethodPackage(request.body.manifest, (url) => {
+      const storedName = url.slice("/api/files/".length);
+      if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Capa local inválida.");
+      return readFileSync(path.join(uploadsDirectory, storedName));
+    });
+    response.type("application/zip").send(archive);
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : "Não foi possível criar o pacote.",
+    });
+  }
+});
+
+app.post(
+  "/api/method-packages/import",
+  express.raw({ type: ["application/zip", "application/octet-stream"], limit: "20mb" }),
+  async (request, response) => {
+    try {
+      if (!Buffer.isBuffer(request.body) || !request.body.length) {
+        response.status(400).json({ error: "Pacote vazio ou inválido." });
+        return;
+      }
+      const manifest = await readMethodPackage(request.body, (assetPath, data) => {
+        if (uploadDirectorySize() + data.length > maxUploadStorageBytes) {
+          throw new Error(
+            `O armazenamento local de uploads atingiu o limite de ${maxUploadStorageGb} GB.`,
+          );
+        }
+        const extension = path.extname(assetPath).toLowerCase();
+        if (![".webp", ".png", ".jpg"].includes(extension)) {
+          throw new Error("Formato de capa inválido.");
+        }
+        const storedName = `${randomUUID()}${extension}`;
+        writeFileSync(path.join(uploadsDirectory, storedName), data);
+        return `/api/files/${storedName}`;
+      });
+      response.json({ manifest });
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : "Não foi possível abrir o pacote.",
+      });
+    }
+  },
+);
+
 app.get("/api/preferences", (_request, response) => {
   response.json(readPreferences());
 });
 
 app.put("/api/preferences", (request, response) => {
+  const current = readPreferences();
   const theme = request.body?.theme;
   const language = request.body?.language;
+  const notificationSound = request.body?.notificationSound;
+  const systemNotifications = request.body?.systemNotifications;
+  const methodsLibraryView = request.body?.methodsLibraryView ?? current.methodsLibraryView;
   if (
     !(["light", "dark"] as const).includes(theme) ||
-    !(["pt-BR", "en", "es"] as const).includes(language)
+    !(["pt-BR", "en", "es"] as const).includes(language) ||
+    typeof notificationSound !== "boolean" ||
+    typeof systemNotifications !== "boolean" ||
+    !(["methods", "channels"] as const).includes(methodsLibraryView)
   ) {
-    response.status(400).json({ error: "PreferÃªncias invÃ¡lidas." });
+    response.status(400).json({ error: "Preferências inválidas." });
     return;
   }
   database
     .prepare(
-      `INSERT INTO app_preferences (id, theme, language, updated_at)
-       VALUES ('global', ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         theme = excluded.theme,
-         language = excluded.language,
-         updated_at = excluded.updated_at`,
+      `INSERT INTO app_preferences (
+          id, theme, language, notification_sound, system_notifications, methods_library_view,
+          updated_at
+        )
+        VALUES ('global', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          theme = excluded.theme,
+          language = excluded.language,
+          notification_sound = excluded.notification_sound,
+          system_notifications = excluded.system_notifications,
+          methods_library_view = excluded.methods_library_view,
+          updated_at = excluded.updated_at`,
     )
-    .run(theme, language, new Date().toISOString());
+    .run(
+      theme,
+      language,
+      Number(notificationSound),
+      Number(systemNotifications),
+      methodsLibraryView,
+      new Date().toISOString(),
+    );
   response.json(readPreferences());
 });
 
@@ -1522,15 +2432,253 @@ app.get("/api/plugins", (_request, response) => {
       manifest: plugin.manifest,
       enabled,
       executable: Boolean(plugin.executable && enabled),
-      sandboxed: plugin.source !== "bundled",
+      sandboxed: true,
       networkIsolation: communitySandboxAvailable,
+      profileCount: plugin.manifest.profileSetup ? profileInventory(plugin).length : undefined,
     };
   });
   response.json({
     plugins,
     issues: registry.issues,
-    examplesDirectory: process.env.CONTENTFLOW_EXAMPLES_DIR,
   });
+});
+
+app.get("/api/plugins/:pluginId/icon", (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const iconPath = plugin?.manifest.branding?.iconPath;
+  if (!plugin || !iconPath) {
+    response.status(404).end();
+    return;
+  }
+  const absoluteIconPath = path.resolve(plugin.absoluteDirectory, iconPath);
+  if (!absoluteIconPath.startsWith(`${plugin.absoluteDirectory}${path.sep}`)) {
+    response.status(404).end();
+    return;
+  }
+  response.setHeader("Cache-Control", "public, max-age=3600");
+  response.type(
+    path.extname(absoluteIconPath).toLowerCase() === ".webp" ? "image/webp" : "image/png",
+  );
+  response.sendFile(absoluteIconPath);
+});
+
+function storedChannels() {
+  const rows = database.prepare("SELECT payload FROM channels").all() as { payload: string }[];
+  return parseRows(rows);
+}
+
+function profileInventory(plugin: RegisteredPlugin) {
+  const setup = plugin.manifest.profileSetup;
+  if (!setup) return [];
+  const channels = storedChannels();
+  database.transaction(() =>
+    syncPluginProfilesFromMethods(pluginProfiles, channels, plugin.id, setup, randomUUID),
+  )();
+  const usages = findPluginProfileUsages(channels, plugin.id, setup);
+  return pluginProfiles.list(plugin.id).map((profile) => ({
+    ...profile,
+    usages: usages.get(profile.alias.toLocaleLowerCase()) ?? [],
+  }));
+}
+
+function registeredProfilePlugin(pluginId: string) {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(pluginId);
+  if (!plugin?.manifest.profileSetup) return undefined;
+  return plugin;
+}
+
+app.get("/api/plugins/:pluginId/profiles", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  response.json({ profiles: profileInventory(plugin), browserBridgeDirectory });
+});
+
+app.post("/api/plugins/:pluginId/profiles", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  try {
+    const name = normalizePluginProfileName(request.body?.name);
+    const profileId = randomUUID();
+    const aliasBase =
+      request.body?.alias === undefined
+        ? pluginProfileAliasFromName(name) || `perfil-${profileId.slice(0, 8)}`
+        : normalizePluginProfileAlias(request.body.alias);
+    let alias = aliasBase;
+    let suffix = 2;
+    while (pluginProfiles.findByAlias(plugin.id, alias)) {
+      const suffixText = `-${suffix++}`;
+      alias = `${aliasBase.slice(0, 48 - suffixText.length).replace(/-+$/, "")}${suffixText}`;
+    }
+    const profile = pluginProfiles.create({ id: profileId, pluginId: plugin.id, name, alias });
+    response.status(201).json({ ...profile, usages: [] });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível criar o perfil.",
+    });
+  }
+});
+
+app.patch("/api/plugins/:pluginId/profiles/:profileId", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  try {
+    const name = normalizePluginProfileName(request.body?.name);
+    const profile = pluginProfiles.rename(plugin.id, request.params.profileId, name);
+    if (!profile) {
+      response.status(404).json({ error: "Perfil não encontrado." });
+      return;
+    }
+    const usages = findPluginProfileUsages(
+      storedChannels(),
+      plugin.id,
+      plugin.manifest.profileSetup!,
+    );
+    response.json({
+      ...profile,
+      usages: usages.get(profile.alias.toLocaleLowerCase()) ?? [],
+    });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível renomear o perfil.",
+    });
+  }
+});
+
+app.delete("/api/plugins/:pluginId/profiles/:profileId", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  const profile = pluginProfiles.get(plugin.id, request.params.profileId);
+  if (!profile) {
+    response.status(404).json({ error: "Perfil não encontrado." });
+    return;
+  }
+  const usages =
+    findPluginProfileUsages(storedChannels(), plugin.id, plugin.manifest.profileSetup!).get(
+      profile.alias.toLocaleLowerCase(),
+    ) ?? [];
+  if (usages.length) {
+    response.status(409).json({
+      error: "Este perfil ainda é usado por Métodos. Troque essas referências antes de removê-lo.",
+      usages,
+    });
+    return;
+  }
+  pluginProfiles.remove(plugin.id, profile.id);
+  response.status(204).end();
+});
+
+async function executePluginProfileAction(
+  plugin: RegisteredPlugin,
+  action: "status" | "prepare",
+  profileName: string,
+) {
+  const setup = plugin.manifest.profileSetup as PluginProfileSetup;
+  const profileKey = setup.configurationKey;
+  const capability = plugin.manifest.capabilities.find(
+    (candidate) => candidate.blockConfigSchema.properties?.[profileKey],
+  );
+  if (!capability) throw new Error("O perfil não pertence à configuração deste plugin.");
+  const pluginSecrets: Record<string, string> = {};
+  for (const declaredSecret of plugin.manifest.secretKeys ?? []) {
+    const storedSecret = await getPluginSecret(plugin.id, declaredSecret);
+    if (storedSecret) pluginSecrets[declaredSecret] = storedSecret;
+  }
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `profile-${randomUUID()}`,
+    traceId: randomUUID(),
+    blockId: "profile-setup",
+    capabilityId: capability.id,
+    attempt: 1,
+    invocation: { mode: "configure", action },
+    configuration: { [profileKey]: profileName },
+    settings: {},
+    inputs: {},
+    inputContract: [],
+    outputContract: [],
+    context: {
+      locale: "pt-BR",
+      timeZone: "America/Sao_Paulo",
+      channel: { id: "profile-setup", name: "Configuração", language: "pt-BR", niche: "" },
+      project: { id: "profile-setup", title: "Preparação de perfil" },
+      processType: "theme",
+      block: { type: "CRIAR", name: "Preparar perfil", instructions: "" },
+      previousProcessOutputs: [],
+      previousBlockOutputs: [],
+    },
+  };
+  const timeoutMs = action === "prepare" ? undefined : 30_000;
+  return executeRegisteredPlugin(plugin, pluginRequest, timeoutMs, pluginSecrets, {
+    workspaceDirectory: executionWorkspaceForPlugin(plugin),
+  });
+}
+
+app.post("/api/plugins/:pluginId/profiles/:profileId/:action", async (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  const action = request.params.action;
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+    response.status(403).json({
+      error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+    });
+    return;
+  }
+  if (action !== "status" && action !== "prepare") {
+    response.status(400).json({ error: "Ação de perfil inválida." });
+    return;
+  }
+  const profile = pluginProfiles.get(plugin.id, request.params.profileId);
+  if (!profile) {
+    response.status(404).json({ error: "Perfil não encontrado." });
+    return;
+  }
+  try {
+    const result = await executePluginProfileAction(plugin, action, profile.alias);
+    if (result.status === "error") {
+      response.status(action === "status" ? 200 : 422).json({
+        ready: false,
+        error: result.message,
+      });
+      return;
+    }
+    const markerReady = result.status === "success" && result.values.ready === true;
+    const bridgeState = markerReady
+      ? browserBridgeProfileState(executionWorkspaceForPlugin(plugin)!, profile.alias)
+      : "unknown";
+    response.json({
+      ready: markerReady && bridgeState !== "missing",
+      bridgeState,
+      error:
+        markerReady && bridgeState === "missing"
+          ? `A ContentFlow Browser Bridge não permaneceu instalada neste perfil. Em chrome://extensions, carregue uma única vez a pasta estável ${browserBridgeDirectory ?? "indicada na Central de Plugins"} e prepare novamente.`
+          : undefined,
+      message:
+        result.status === "success" && typeof result.values.message === "string"
+          ? result.values.message
+          : undefined,
+    });
+  } catch (error) {
+    response.status(422).json({
+      ready: false,
+      error: error instanceof Error ? error.message : "Não foi possível preparar o perfil.",
+    });
+  }
 });
 
 app.post("/api/plugins/:pluginId/profile", async (request, response) => {
@@ -1563,48 +2711,13 @@ app.post("/api/plugins/:pluginId/profile", async (request, response) => {
     response.status(422).json({ error: "Informe o nome do perfil antes de prepará-lo." });
     return;
   }
-  const capability = plugin.manifest.capabilities.find(
-    (candidate) => candidate.blockConfigSchema.properties?.[profileKey],
-  );
-  if (!capability) {
-    response.status(422).json({ error: "O perfil não pertence à configuração deste plugin." });
-    return;
-  }
-
   try {
-    const pluginSecrets: Record<string, string> = {};
-    for (const declaredSecret of plugin.manifest.secretKeys ?? []) {
-      const storedSecret = await getPluginSecret(plugin.id, declaredSecret);
-      if (storedSecret) pluginSecrets[declaredSecret] = storedSecret;
-    }
-    const pluginRequest: PluginExecutionRequest = {
-      executionId: `profile-${randomUUID()}`,
-      traceId: randomUUID(),
-      blockId: "profile-setup",
-      capabilityId: capability.id,
-      attempt: 1,
-      invocation: { mode: "configure", action: action as "status" | "prepare" },
-      configuration: { [profileKey]: profileName.trim() },
-      settings: {},
-      inputs: {},
-      inputContract: [],
-      outputContract: [],
-      context: {
-        locale: "pt-BR",
-        timeZone: "America/Sao_Paulo",
-        channel: { id: "profile-setup", name: "Configuração", language: "pt-BR", niche: "" },
-        project: { id: "profile-setup", title: "Preparação de perfil" },
-        processType: "theme",
-        block: { type: "CRIAR", name: "Preparar perfil", instructions: "" },
-        previousProcessOutputs: [],
-        previousBlockOutputs: [],
-      },
-    };
-    const timeoutMs =
-      action === "prepare" ? (plugin.manifest.profileSetup.prepareTimeoutMs ?? 600_000) : 30_000;
-    const result = await executeRegisteredPlugin(plugin, pluginRequest, timeoutMs, pluginSecrets, {
-      workspaceDirectory: executionWorkspaceForPlugin(plugin),
-    });
+    pluginProfiles.ensure({ id: randomUUID(), pluginId: plugin.id, alias: profileName.trim() });
+    const result = await executePluginProfileAction(
+      plugin,
+      action as "status" | "prepare",
+      profileName.trim(),
+    );
     if (result.status === "error") {
       response.status(action === "status" ? 200 : 422).json({
         ready: false,
@@ -1628,65 +2741,81 @@ app.post("/api/plugins/:pluginId/profile", async (request, response) => {
 });
 
 app.post("/api/plugins/install-from-folder", (request, response) => {
-  const requestedPath = typeof request.body?.path === "string" ? request.body.path.trim() : "";
+  const requestedPath =
+    typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
   if (!requestedPath) {
-    response.status(400).json({ error: "Informe a pasta criada pelo autor ou pela IA." });
+    response.status(400).json({ error: "Informe a pasta de um plugin ou do pacote extraído." });
     return;
   }
-  const sourceDirectory = path.resolve(requestedPath);
-  const manifestPath = path.join(sourceDirectory, "contentflow.plugin.json");
-  if (!existsSync(sourceDirectory) || !statSync(sourceDirectory).isDirectory()) {
-    response.status(404).json({ error: "A pasta informada não existe." });
-    return;
-  }
-  if (!existsSync(manifestPath)) {
-    response.status(422).json({ error: "A pasta não contém contentflow.plugin.json." });
-    return;
-  }
-  let temporaryDestination: string | undefined;
+  const temporaryDestinations: string[] = [];
+  const installedDestinations: string[] = [];
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-    if (!isPluginManifest(manifest)) throw new Error("O manifesto do plugin é inválido.");
-    const pluginId = String(manifest.id);
-    if (!/^[a-z0-9.-]+$/.test(pluginId)) throw new Error("O id do plugin é inválido.");
-    const destination = path.resolve(installedPluginsDirectory, pluginId);
-    if (!destination.startsWith(`${path.resolve(installedPluginsDirectory)}${path.sep}`)) {
-      throw new Error("O destino calculado para o plugin é inválido.");
+    const pluginDirectories = discoverPluginDirectories(requestedPath);
+    const candidates = pluginDirectories.map((sourceDirectory) => {
+      const validated = validatePluginDirectory(sourceDirectory, true);
+      const pluginId = validated.manifest.id;
+      const destination = path.resolve(installedPluginsDirectory, pluginId);
+      if (!destination.startsWith(`${path.resolve(installedPluginsDirectory)}${path.sep}`))
+        throw new Error("O destino calculado para o plugin é inválido.");
+      return { sourceDirectory, pluginId, destination };
+    });
+    if (new Set(candidates.map((candidate) => candidate.pluginId)).size !== candidates.length) {
+      throw new Error("O pacote contém IDs de plugin duplicados.");
     }
-    if (existsSync(destination)) {
-      response.status(409).json({ error: "Esta versão já possui uma pasta instalada." });
-      return;
-    }
+    const skipped = candidates
+      .filter((candidate) => existsSync(candidate.destination))
+      .map((candidate) => candidate.pluginId);
+    const pending = candidates.filter((candidate) => !existsSync(candidate.destination));
     mkdirSync(installedPluginsDirectory, { recursive: true });
-    temporaryDestination = path.join(installedPluginsDirectory, `.install-${randomUUID()}`);
-    cpSync(sourceDirectory, temporaryDestination, {
-      recursive: true,
-      dereference: false,
-      errorOnExist: true,
+    const staged = pending.map((candidate) => {
+      const temporaryDestination = path.join(installedPluginsDirectory, `.install-${randomUUID()}`);
+      temporaryDestinations.push(temporaryDestination);
+      cpSync(candidate.sourceDirectory, temporaryDestination, {
+        recursive: true,
+        dereference: false,
+        errorOnExist: true,
+      });
+      validatePluginDirectory(temporaryDestination, true);
+      return { ...candidate, temporaryDestination };
     });
     const registry = initializePluginRunner();
-    const installed = registry.plugins.find(
-      (plugin) => plugin.id === pluginId && plugin.source === "installed",
-    );
-    if (!installed) {
-      const issue = registry.issues.find((item) => item.directory.includes(pluginId));
-      throw new Error(issue?.message ?? "O pacote não passou pela validação automática.");
+    for (const candidate of staged) {
+      const installed = registry.plugins.find(
+        (plugin) => plugin.id === candidate.pluginId && plugin.source === "installed",
+      );
+      if (!installed) {
+        const issue = registry.issues.find((item) =>
+          item.directory.includes(path.basename(candidate.temporaryDestination)),
+        );
+        throw new Error(issue?.message ?? `${candidate.pluginId} não passou pela validação.`);
+      }
     }
-    renameSync(temporaryDestination, destination);
-    temporaryDestination = undefined;
+    for (const candidate of staged) {
+      renameSync(candidate.temporaryDestination, candidate.destination);
+      temporaryDestinations.splice(
+        temporaryDestinations.indexOf(candidate.temporaryDestination),
+        1,
+      );
+      installedDestinations.push(candidate.destination);
+    }
     initializePluginRunner();
-    response.status(201).json({ id: pluginId, installed: true });
+    response.status(staged.length ? 201 : 200).json({
+      installed: staged.map((candidate) => candidate.pluginId),
+      skipped,
+    });
   } catch (error) {
-    if (temporaryDestination) rmSync(temporaryDestination, { recursive: true, force: true });
+    for (const destination of [...temporaryDestinations, ...installedDestinations])
+      if (existsSync(destination)) rmSync(destination, { recursive: true, force: true });
     initializePluginRunner();
     response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível instalar o plugin.",
+      error: error instanceof Error ? error.message : "Não foi possível instalar os plugins.",
     });
   }
 });
 
 app.post("/api/plugins/link-development-folder", (request, response) => {
-  const requestedPath = typeof request.body?.path === "string" ? request.body.path.trim() : "";
+  const requestedPath =
+    typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
   if (!requestedPath) {
     response.status(400).json({ error: "Informe a pasta de desenvolvimento do plugin." });
     return;
@@ -1729,6 +2858,218 @@ app.post("/api/plugins/link-development-folder", (request, response) => {
   }
 });
 
+function semverCore(version: string) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!match) return undefined;
+  return {
+    numbers: [Number(match[1]), Number(match[2]), Number(match[3])] as const,
+    prerelease: match[4],
+  };
+}
+
+function isNewerPluginVersion(candidate: string, current: string) {
+  const next = semverCore(candidate);
+  const previous = semverCore(current);
+  if (!next || !previous) return false;
+  for (let index = 0; index < next.numbers.length; index += 1) {
+    if (next.numbers[index] !== previous.numbers[index]) {
+      return next.numbers[index] > previous.numbers[index];
+    }
+  }
+  if (next.prerelease === previous.prerelease) return false;
+  if (!next.prerelease) return true;
+  if (!previous.prerelease) return false;
+  return next.prerelease.localeCompare(previous.prerelease, undefined, { numeric: true }) > 0;
+}
+
+let pluginCatalogCache: { catalog: PluginCatalog; loadedAt: number } | undefined;
+
+async function currentPluginCatalog(force = false) {
+  if (!force && pluginCatalogCache && Date.now() - pluginCatalogCache.loadedAt < 5 * 60_000)
+    return pluginCatalogCache.catalog;
+  const catalog = await fetchPluginCatalog(pluginCatalogUrl);
+  pluginCatalogCache = { catalog, loadedAt: Date.now() };
+  return catalog;
+}
+
+app.get("/api/plugins/updates", async (request, response) => {
+  try {
+    const catalog = await currentPluginCatalog(request.query.refresh === "true");
+    const registry = initializePluginRunner();
+    const updates = registry.plugins
+      .filter((plugin) => plugin.source === "installed")
+      .map((plugin) => {
+        const available = catalog.plugins.find((entry) => entry.id === plugin.id);
+        return {
+          id: plugin.id,
+          currentVersion: plugin.manifest.version,
+          version: available?.version,
+          updateAvailable: Boolean(
+            available && isNewerPluginVersion(available.version, plugin.manifest.version),
+          ),
+        };
+      });
+    response.json({ generatedAt: catalog.generatedAt, updates });
+  } catch (error) {
+    response.status(502).json({
+      error: error instanceof Error ? error.message : "Não foi possível consultar as atualizações.",
+    });
+  }
+});
+
+function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDirectory: string) {
+  const installedRoot = existsSync(installedPluginsDirectory)
+    ? realpathSync(installedPluginsDirectory)
+    : path.resolve(installedPluginsDirectory);
+  const destination = existsSync(plugin.absoluteDirectory)
+    ? realpathSync(plugin.absoluteDirectory)
+    : path.resolve(plugin.absoluteDirectory);
+  const updateBackupsDirectory = path.resolve(dataDirectory, "plugins", "update-backups");
+  let temporaryDestination: string | undefined;
+  let backupDestination: string | undefined;
+  let replacementInstalled = false;
+  try {
+    if (!existsSync(sourceDirectory) || !statSync(sourceDirectory).isDirectory())
+      throw new Error("A pasta informada não existe.");
+    if (!destination.startsWith(`${installedRoot}${path.sep}`))
+      throw new Error("A instalação atual não está dentro do armazenamento autorizado.");
+    const source = validatePluginDirectory(sourceDirectory, true);
+    if (source.manifest.id !== plugin.id)
+      throw new Error("A pasta selecionada pertence a outro plugin.");
+    if (!isNewerPluginVersion(source.manifest.version, plugin.manifest.version))
+      throw new Error(
+        `A atualização precisa ser superior à versão atual v${plugin.manifest.version}.`,
+      );
+
+    mkdirSync(installedRoot, { recursive: true });
+    mkdirSync(updateBackupsDirectory, { recursive: true });
+    temporaryDestination = path.join(installedRoot, `.update-${randomUUID()}`);
+    backupDestination = path.join(updateBackupsDirectory, `${plugin.id}-${randomUUID()}`);
+    cpSync(sourceDirectory, temporaryDestination, {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+    });
+    validatePluginDirectory(temporaryDestination, true);
+
+    renameSync(destination, backupDestination);
+    renameSync(temporaryDestination, destination);
+    temporaryDestination = undefined;
+    replacementInstalled = true;
+    const registry = initializePluginRunner();
+    const updated = registry.plugins.find(
+      (candidate) =>
+        candidate.id === plugin.id &&
+        candidate.source === "installed" &&
+        candidate.manifest.version === source.manifest.version,
+    );
+    if (!updated) {
+      const issue = registry.issues.find((item) => item.directory.includes(plugin.id));
+      throw new Error(issue?.message ?? "A nova versão não passou pela validação automática.");
+    }
+    rmSync(backupDestination, { recursive: true, force: true });
+    backupDestination = undefined;
+    return {
+      id: plugin.id,
+      previousVersion: plugin.manifest.version,
+      version: source.manifest.version,
+    };
+  } catch (error) {
+    if (temporaryDestination) rmSync(temporaryDestination, { recursive: true, force: true });
+    if (replacementInstalled && existsSync(destination))
+      rmSync(destination, { recursive: true, force: true });
+    if (backupDestination && existsSync(backupDestination))
+      renameSync(backupDestination, destination);
+    initializePluginRunner();
+    throw error;
+  }
+}
+
+app.put("/api/plugins/:pluginId/update-from-folder", (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
+    return;
+  }
+  if (plugin.source !== "installed") {
+    response.status(409).json({
+      error: "Plugins vinculados usam a própria pasta e não precisam ser substituídos.",
+    });
+    return;
+  }
+  const requestedPath =
+    typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
+  if (!requestedPath) {
+    response.status(400).json({ error: "Informe a pasta da nova versão do plugin." });
+    return;
+  }
+
+  try {
+    response.json(replaceInstalledPluginFromDirectory(plugin, path.resolve(requestedPath)));
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível atualizar o plugin.",
+    });
+  }
+});
+
+app.put("/api/plugins/:pluginId/update-from-catalog", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
+    return;
+  }
+  if (plugin.source !== "installed") {
+    response.status(409).json({
+      error: "Plugins vinculados usam a própria pasta e não recebem atualizações do catálogo.",
+    });
+    return;
+  }
+
+  const downloadsRoot = path.resolve(dataDirectory, "plugins", "catalog-downloads");
+  mkdirSync(downloadsRoot, { recursive: true });
+  const temporaryRoot = mkdtempSync(path.join(downloadsRoot, "update-"));
+  try {
+    const catalog = await currentPluginCatalog(true);
+    const entry = catalog.plugins.find((candidate) => candidate.id === plugin.id);
+    if (!entry) throw new Error("Este plugin não possui atualização no catálogo configurado.");
+    if (!isNewerPluginVersion(entry.version, plugin.manifest.version))
+      throw new Error(`O plugin já está na versão mais recente (v${plugin.manifest.version}).`);
+
+    const archivePath = path.join(temporaryRoot, entry.asset);
+    const extractedRoot = path.join(temporaryRoot, "extracted");
+    await downloadCatalogPlugin(pluginCatalogUrl, entry, archivePath);
+    await extractPluginArchive(archivePath, extractedRoot);
+    const directories = discoverPluginDirectories(extractedRoot);
+    if (directories.length !== 1) throw new Error("O pacote individual contém plugins extras.");
+    response.json(replaceInstalledPluginFromDirectory(plugin, directories[0]));
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível atualizar o plugin.",
+    });
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+function pluginMethodDependencies(pluginId: string) {
+  const rows = database.prepare("SELECT payload FROM channels").all() as { payload: string }[];
+  return findPluginMethodDependencies(parseRows(rows), pluginId);
+}
+
+app.get("/api/plugins/:pluginId/dependencies", (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
+    return;
+  }
+  const dependencies = pluginMethodDependencies(plugin.id);
+  response.json({ dependencies, historicalOutputsPreserved: true });
+});
+
 app.delete("/api/plugins/:pluginId", async (request, response) => {
   initializePluginRunner();
   const plugin = getRegisteredPlugin(request.params.pluginId);
@@ -1736,17 +3077,28 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
   }
-  if (plugin.source === "bundled") {
-    response.status(403).json({ error: "Plugins incluídos fazem parte do ContentFlow OS." });
+  const dependencies = pluginMethodDependencies(plugin.id);
+  if (dependencies.length && request.query.confirmDependencies !== "true") {
+    response.status(409).json({
+      error: "Este plugin ainda é usado por Métodos. Revise as dependências antes de removê-lo.",
+      dependencies,
+      historicalOutputsPreserved: true,
+    });
     return;
   }
   try {
+    const connections = pluginConnections.list(plugin.id, true);
     if (plugin.source === "installed") {
-      const installedRoot = path.resolve(installedPluginsDirectory);
-      if (!plugin.absoluteDirectory.startsWith(`${installedRoot}${path.sep}`)) {
+      const installedRoot = existsSync(installedPluginsDirectory)
+        ? realpathSync(installedPluginsDirectory)
+        : path.resolve(installedPluginsDirectory);
+      const destination = existsSync(plugin.absoluteDirectory)
+        ? realpathSync(plugin.absoluteDirectory)
+        : path.resolve(plugin.absoluteDirectory);
+      if (!destination.startsWith(`${installedRoot}${path.sep}`)) {
         throw new Error("A pasta instalada não está dentro do armazenamento autorizado.");
       }
-      rmSync(plugin.absoluteDirectory, { recursive: true, force: true });
+      rmSync(destination, { recursive: true, force: true });
     } else {
       rmSync(path.join(developmentLinksDirectory, `${plugin.id}.json`), { force: true });
     }
@@ -1754,9 +3106,16 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
       database.prepare("DELETE FROM plugin_consents WHERE plugin_id = ?").run(plugin.id);
       database.prepare("DELETE FROM plugin_workspaces WHERE plugin_id = ?").run(plugin.id);
     })();
+    for (const connection of connections) {
+      for (const secretKey of plugin.manifest.secretKeys ?? []) {
+        await deletePluginConnectionSecret(plugin.id, connection.id, secretKey);
+      }
+    }
     for (const secretKey of plugin.manifest.secretKeys ?? []) {
       await deletePluginSecret(plugin.id, secretKey);
     }
+    database.prepare("DELETE FROM plugin_connections WHERE plugin_id = ?").run(plugin.id);
+    database.prepare("DELETE FROM plugin_profiles WHERE plugin_id = ?").run(plugin.id);
     initializePluginRunner();
     response.status(204).end();
   } catch (error) {
@@ -1771,10 +3130,6 @@ app.put("/api/plugins/:pluginId/consent", (request, response) => {
   const plugin = getRegisteredPlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado no registro local." });
-    return;
-  }
-  if (plugin.source === "bundled") {
-    response.json({ enabled: true });
     return;
   }
   if (!communitySandboxAvailable && request.body?.enabled === true) {
@@ -1809,8 +3164,8 @@ app.put("/api/plugins/:pluginId/consent", (request, response) => {
 app.get("/api/plugins/:pluginId/workspace", (request, response) => {
   initializePluginRunner();
   const plugin = getRegisteredPlugin(request.params.pluginId);
-  if (!plugin || plugin.source === "bundled") {
-    response.status(404).json({ error: "Plugin comunitário não encontrado." });
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
     return;
   }
   response.json({ path: readPluginWorkspace(plugin.id) ?? "" });
@@ -1819,9 +3174,10 @@ app.get("/api/plugins/:pluginId/workspace", (request, response) => {
 app.put("/api/plugins/:pluginId/workspace", (request, response) => {
   initializePluginRunner();
   const plugin = getRegisteredPlugin(request.params.pluginId);
-  const requestedPath = typeof request.body?.path === "string" ? request.body.path.trim() : "";
-  if (!plugin || plugin.source === "bundled") {
-    response.status(404).json({ error: "Plugin comunitário não encontrado." });
+  const requestedPath =
+    typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
     return;
   }
   if (
@@ -1893,90 +3249,657 @@ app.delete("/api/plugins/:pluginId/secrets/:secretKey", async (request, response
   response.json({ connected: false });
 });
 
-app.get("/api/plugins/official-openai-gpt/connection", async (_request, response) => {
-  response.json(await getOpenAIConnection());
-});
+function normalizedConnectionName(value: unknown) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name || name.length > 80)
+    throw new Error("Informe um nome de conexão com até 80 caracteres.");
+  return name;
+}
 
-app.post("/api/plugins/official-openai-gpt/connection", async (request, response) => {
-  const apiKey = typeof request.body?.apiKey === "string" ? request.body.apiKey : "";
-  try {
-    response.json(await connectOpenAI(apiKey));
-  } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível conectar à OpenAI.",
-    });
+async function migrateLegacyPluginConnection(plugin: {
+  id: string;
+  manifest: { secretKeys?: string[] };
+}) {
+  if (pluginConnections.list(plugin.id).length) return;
+  const legacySecrets: Record<string, string> = {};
+  for (const secretKey of plugin.manifest.secretKeys ?? []) {
+    const value = await getPluginSecret(plugin.id, secretKey);
+    if (value) legacySecrets[secretKey] = value;
   }
-});
+  if (!Object.keys(legacySecrets).length) return;
 
-app.post("/api/plugins/official-openai-gpt/models/refresh", async (_request, response) => {
+  const connectionId = randomUUID();
+  pluginConnections.create({
+    id: connectionId,
+    pluginId: plugin.id,
+    name: "Conexão principal",
+    metadata: { migratedFromLegacy: true },
+  });
   try {
-    response.json(await refreshOpenAIModels());
+    for (const [secretKey, value] of Object.entries(legacySecrets)) {
+      await setPluginConnectionSecret(plugin.id, connectionId, secretKey, value);
+      if (!(await getPluginConnectionSecret(plugin.id, connectionId, secretKey))) {
+        throw new Error("A credencial migrada não pôde ser confirmada no cofre seguro.");
+      }
+    }
+    for (const secretKey of Object.keys(legacySecrets)) {
+      await deletePluginSecret(plugin.id, secretKey);
+    }
   } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível atualizar os modelos.",
-    });
+    for (const secretKey of Object.keys(legacySecrets)) {
+      await deletePluginConnectionSecret(plugin.id, connectionId, secretKey);
+    }
+    pluginConnections.remove(plugin.id, connectionId);
+    throw error;
   }
-});
+}
 
-app.delete("/api/plugins/official-openai-gpt/connection", async (_request, response) => {
-  await disconnectOpenAI();
-  response.json(await getOpenAIConnection());
-});
-
-app.get("/api/plugins/official-anthropic-claude/connection", async (_request, response) => {
-  response.json(await getAnthropicConnection());
-});
-
-app.post("/api/plugins/official-anthropic-claude/connection", async (request, response) => {
-  const apiKey = typeof request.body?.apiKey === "string" ? request.body.apiKey : "";
-  try {
-    response.json(await connectAnthropic(apiKey));
-  } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível conectar à Anthropic.",
-    });
+async function publicPluginConnection(
+  plugin: { id: string; manifest: { secretKeys?: string[] } },
+  connection: PluginConnection,
+) {
+  const requiredSecretKeys = plugin.manifest.secretKeys ?? [];
+  const connectedSecretKeys: string[] = [];
+  for (const secretKey of requiredSecretKeys) {
+    if (await getPluginConnectionSecret(plugin.id, connection.id, secretKey)) {
+      connectedSecretKeys.push(secretKey);
+    }
   }
-});
+  return {
+    id: connection.id,
+    pluginId: connection.pluginId,
+    name: connection.name,
+    metadata: connection.metadata,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
+    revokedAt: connection.revokedAt,
+    requiredSecretKeys,
+    connectedSecretKeys,
+    connected:
+      !connection.revokedAt &&
+      requiredSecretKeys.length > 0 &&
+      connectedSecretKeys.length === requiredSecretKeys.length,
+  };
+}
 
-app.post("/api/plugins/official-anthropic-claude/models/refresh", async (_request, response) => {
-  try {
-    response.json(await refreshAnthropicModels());
-  } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível atualizar os modelos.",
-    });
-  }
-});
-
-app.delete("/api/plugins/official-anthropic-claude/connection", async (_request, response) => {
-  await disconnectAnthropic();
-  response.json(await getAnthropicConnection());
-});
-
-app.get("/api/plugins/:pluginId/source", (request, response) => {
+app.get("/api/plugins/:pluginId/connections", async (request, response) => {
   initializePluginRunner();
   const plugin = getRegisteredPlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
   }
-  if (plugin.source !== "bundled") {
-    response.status(403).json({ error: "O código de plugins externos não é exposto pela API." });
+  try {
+    await migrateLegacyPluginConnection(plugin);
+    const includeRevoked = request.query.includeRevoked === "true";
+    response.json({
+      connections: await Promise.all(
+        pluginConnections
+          .list(plugin.id, includeRevoked)
+          .map((connection) => publicPluginConnection(plugin, connection)),
+      ),
+    });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível listar as conexões.",
+    });
+  }
+});
+
+app.post("/api/plugins/:pluginId/connections", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
     return;
   }
-  const allowedExtensions = new Set([".ts", ".js", ".json", ".md"]);
-  const files = readdirSync(plugin.absoluteDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && allowedExtensions.has(path.extname(entry.name)))
-    .map((entry) => {
-      const absolutePath = path.join(plugin.absoluteDirectory, entry.name);
-      const content = readFileSync(absolutePath, "utf8");
-      return {
-        path: entry.name,
-        content: content.length > 200_000 ? `${content.slice(0, 200_000)}\n…` : content,
-      };
-    })
-    .sort((left, right) => left.path.localeCompare(right.path));
-  response.json({ root: plugin.directory, files });
+  const requiredSecretKeys = plugin.manifest.secretKeys ?? [];
+  if (!requiredSecretKeys.length) {
+    response.status(409).json({ error: "Este plugin não declara credenciais nomeadas." });
+    return;
+  }
+  let connectionId: string | undefined;
+  try {
+    const name = normalizedConnectionName(request.body?.name);
+    const secrets =
+      request.body?.secrets &&
+      typeof request.body.secrets === "object" &&
+      !Array.isArray(request.body.secrets)
+        ? (request.body.secrets as Record<string, unknown>)
+        : {};
+    const values = Object.fromEntries(
+      requiredSecretKeys.map((secretKey) => {
+        const value = typeof secrets[secretKey] === "string" ? secrets[secretKey].trim() : "";
+        if (!value) throw new Error(`Informe a credencial ${secretKey}.`);
+        return [secretKey, value];
+      }),
+    );
+    connectionId = randomUUID();
+    const connection = pluginConnections.create({ id: connectionId, pluginId: plugin.id, name });
+    for (const [secretKey, value] of Object.entries(values)) {
+      await setPluginConnectionSecret(plugin.id, connectionId, secretKey, value);
+    }
+    response.status(201).json(await publicPluginConnection(plugin, connection));
+  } catch (error) {
+    if (connectionId) {
+      for (const secretKey of requiredSecretKeys) {
+        await deletePluginConnectionSecret(plugin.id, connectionId, secretKey);
+      }
+      pluginConnections.remove(plugin.id, connectionId);
+    }
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível criar a conexão.",
+    });
+  }
+});
+
+app.put("/api/plugins/:pluginId/connections/:connectionId", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado." });
+    return;
+  }
+  try {
+    const renamed = pluginConnections.rename(
+      plugin.id,
+      request.params.connectionId,
+      normalizedConnectionName(request.body?.name),
+    );
+    if (!renamed) {
+      response.status(404).json({ error: "Conexão ativa não encontrada." });
+      return;
+    }
+    response.json(await publicPluginConnection(plugin, renamed));
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível renomear a conexão.",
+    });
+  }
+});
+
+app.post("/api/plugins/:pluginId/connections/:connectionId/test", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const connection = plugin
+    ? pluginConnections.get(plugin.id, request.params.connectionId)
+    : undefined;
+  if (!plugin || !connection || connection.revokedAt) {
+    response.status(404).json({ error: "Conexão ativa não encontrada." });
+    return;
+  }
+  try {
+    const secrets: Record<string, string> = {};
+    for (const secretKey of plugin.manifest.secretKeys ?? []) {
+      const value = await getPluginConnectionSecret(plugin.id, connection.id, secretKey);
+      if (!value) throw new Error(`A conexão não possui ${secretKey}.`);
+      secrets[secretKey] = value;
+    }
+    const tested = pluginConnections.updateMetadata(plugin.id, connection.id, {
+      ...connection.metadata,
+      testedAt: new Date().toISOString(),
+      verification: "local-vault",
+    })!;
+    response.json({ ...(await publicPluginConnection(plugin, tested)), valid: true });
+  } catch (error) {
+    response.status(422).json({
+      valid: false,
+      error: error instanceof Error ? error.message : "Não foi possível testar a conexão.",
+    });
+  }
+});
+
+app.delete("/api/plugins/:pluginId/connections/:connectionId", async (request, response) => {
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const connection = plugin
+    ? pluginConnections.get(plugin.id, request.params.connectionId)
+    : undefined;
+  if (!plugin || !connection || connection.revokedAt) {
+    response.status(404).json({ error: "Conexão ativa não encontrada." });
+    return;
+  }
+  const rows = database.prepare("SELECT payload FROM channels").all() as { payload: string }[];
+  const dependencies = findPluginConnectionDependencies(parseRows(rows), plugin.id, connection.id);
+  if (dependencies.length && request.query.confirmDependencies !== "true") {
+    response.status(409).json({
+      error: "Esta conexão ainda é usada por Métodos. Revise as dependências antes de revogá-la.",
+      dependencies,
+    });
+    return;
+  }
+  for (const secretKey of plugin.manifest.secretKeys ?? []) {
+    await deletePluginConnectionSecret(plugin.id, connection.id, secretKey);
+  }
+  const revoked = pluginConnections.revoke(plugin.id, connection.id)!;
+  response.json(await publicPluginConnection(plugin, revoked));
+});
+
+let activeMethodBlockTests = 0;
+
+app.post("/api/method-block-tests", async (request, response) => {
+  const body = request.body as {
+    runId?: string;
+    channelId?: string;
+    processType?: UniversalProcess;
+    blockId?: string;
+    blocks?: ActionBlock[];
+    inputValues?: Record<string, RuntimeValue>;
+    projectTitle?: string;
+    projectDeadline?: string;
+  };
+  let runDirectory: string;
+  try {
+    if (!body.runId) throw new Error("Identificador de teste ausente.");
+    runDirectory = methodTestRunDirectory(body.runId);
+  } catch (error) {
+    response
+      .status(400)
+      .json({ error: error instanceof Error ? error.message : "Teste inválido." });
+    return;
+  }
+  if (
+    !body.channelId ||
+    !body.processType ||
+    !PROCESS_ORDER.includes(body.processType) ||
+    !body.blockId ||
+    !Array.isArray(body.blocks) ||
+    body.blocks.length < 1 ||
+    body.blocks.length > 200 ||
+    !body.inputValues ||
+    typeof body.inputValues !== "object" ||
+    Array.isArray(body.inputValues)
+  ) {
+    response.status(400).json({ error: "Configuração do teste de bloco inválida." });
+    return;
+  }
+
+  let blocks: ActionBlock[];
+  try {
+    blocks = normalizeMethodBlocks(body.blocks, body.processType);
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "O bloco não possui uma configuração válida.",
+    });
+    return;
+  }
+  const block = blocks.find((candidate) => candidate.id === body.blockId);
+  const channel = readPayload<Channel>("channels", body.channelId);
+  if (!block || !channel) {
+    response.status(404).json({ error: "Bloco ou canal não encontrado." });
+    return;
+  }
+  if (block.operator === "Humano") {
+    response.status(422).json({
+      error: "Blocos humanos não executam plugin. Use a prévia dos campos para revisar o contrato.",
+    });
+    return;
+  }
+  if (!block.plugin) {
+    response.status(422).json({ error: "Selecione um plugin e uma capacidade antes de testar." });
+    return;
+  }
+
+  const plugin = getRegisteredPlugin(block.plugin.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Plugin não encontrado no registro local." });
+    return;
+  }
+  if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+    response.status(403).json({
+      error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+    });
+    return;
+  }
+  const capability = plugin.manifest.capabilities.find(
+    (candidate) => candidate.id === block.plugin?.capabilityId,
+  );
+  if (
+    !capability ||
+    capability.operator !== block.operator ||
+    !capability.blockTypes.includes(block.type) ||
+    (capability.processTypes && !capability.processTypes.includes(body.processType))
+  ) {
+    response.status(422).json({ error: "A capacidade não é compatível com este bloco." });
+    return;
+  }
+
+  const testInputs: BlockInputBinding[] = [...(block.inputs ?? [])];
+  if (block.type === "VALIDAR" && block.validation?.targetBlockId) {
+    const targetBlock = blocks.find(
+      (candidate) => candidate.id === block.validation?.targetBlockId,
+    );
+    const targetOutput =
+      targetBlock?.outputs?.find((field) => field.key === block.validation?.targetOutputKey) ??
+      targetBlock?.outputs?.[0];
+    if (targetOutput) {
+      testInputs.unshift({
+        id: "__validation_target__",
+        label: targetOutput.label,
+        type: targetOutput.type,
+        source: "static",
+        recordFields: targetOutput.recordFields,
+        presentation: targetOutput.presentation,
+      });
+    }
+  }
+  const resolvedTestInputs = testInputs.map((input) => ({
+    input,
+    value:
+      body.inputValues?.[input.id] ??
+      (input.source === "static" && typeof input.staticValue === "string"
+        ? input.staticValue
+        : undefined),
+  }));
+  const missingInputs = resolvedTestInputs.filter(({ value }) => isEmptyRuntimeValue(value));
+  if (missingInputs.length) {
+    response.status(422).json({
+      error: `Preencha os dados de teste: ${missingInputs.map(({ input }) => input.label).join(", ")}.`,
+    });
+    return;
+  }
+  const usedInputPorts = new Set<string>();
+  const assignedInputs = resolvedTestInputs.map(({ input, value }) => {
+    const port = selectPluginInputPort(input, capability.inputPorts, usedInputPorts);
+    if (port && !port.multiple) usedInputPorts.add(port.key);
+    return { input, value: value!, port };
+  });
+  const unsupportedInputs = assignedInputs.filter((item) => !item.port);
+  if (unsupportedInputs.length) {
+    response.status(422).json({
+      error: `O plugin não aceita: ${unsupportedInputs.map(({ input }) => input.label).join(", ")}.`,
+    });
+    return;
+  }
+
+  const inputs = Object.fromEntries(
+    capability.inputPorts.flatMap((port) => {
+      const assigned = assignedInputs.filter((item) => item.port?.key === port.key);
+      return assigned.length
+        ? [
+            [
+              port.key,
+              composePluginPortValue(
+                assigned.map(({ input, value }) => ({ label: input.label, value })),
+              ),
+            ],
+          ]
+        : [];
+    }),
+  ) as Record<string, RuntimeValue>;
+  const inputContract = assignedInputs.map(({ input, port }) => ({
+    id: input.id,
+    portKey: port?.key ?? input.id,
+    label: input.label,
+    type: input.type,
+    recordFields: input.recordFields,
+    presentation: input.presentation,
+  }));
+  const outputContract: PluginFieldContract[] =
+    block.type === "ESCOLHER"
+      ? [
+          {
+            label: "Item escolhido",
+            key: "selectedItemId",
+            type: "text",
+            required: true,
+            portKey: capability.outputPorts[0]?.key ?? "result",
+          },
+        ]
+      : (block.outputs ?? []).map((field) => ({
+          label: field.label,
+          key: field.key,
+          type: field.type,
+          required: field.required,
+          options: field.options,
+          recordFields: field.recordFields,
+          presentation: field.presentation,
+          portKey:
+            capability.outputPorts.find((port) => port.producedTypes.includes(field.type))?.key ??
+            capability.outputPorts[0]?.key ??
+            field.key,
+        }));
+  if (!outputContract.length) {
+    response.status(422).json({ error: "Defina ao menos uma entrega antes de testar o bloco." });
+    return;
+  }
+
+  const executionParameters = Object.fromEntries(
+    (block.parameters ?? []).map((parameter) => [parameter.key, parameter.value]),
+  );
+  const resolvedInstruction = resolveInstructionTemplate(block.instructions ?? "", {
+    channel: { name: channel.name, language: channel.language, niche: channel.niche },
+    project: {
+      title: body.projectTitle?.trim() || "Projeto de teste",
+      deadline: body.projectDeadline?.trim() || "",
+    },
+    block: { name: block.name ?? block.type, type: block.type },
+    inputs: assignedInputs.map(({ input, port, value }) => ({
+      id: input.id,
+      label: input.label,
+      sourceKey: input.sourceKey,
+      portKey: port?.key,
+      value,
+    })),
+    parameters: executionParameters,
+  });
+  if (resolvedInstruction.unresolved.length) {
+    response.status(422).json({
+      error: `Variáveis sem valor no teste: ${resolvedInstruction.unresolved
+        .map((variable) => `{{${variable}}}`)
+        .join(", ")}.`,
+    });
+    return;
+  }
+  if (capability.instructionUsage === "required" && !resolvedInstruction.instruction) {
+    response.status(422).json({ error: "Defina a instrução do bloco antes de testar." });
+    return;
+  }
+
+  let resolvedConnection: Awaited<ReturnType<typeof resolvePluginConnection>>;
+  try {
+    resolvedConnection = await resolvePluginConnection(plugin, block.plugin.connectionId);
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível carregar a conexão.",
+    });
+    return;
+  }
+  const missingSecret = (plugin.manifest.secretKeys ?? []).find(
+    (secretKey) => !resolvedConnection.secrets[secretKey],
+  );
+  if (missingSecret) {
+    response.status(422).json({
+      error: `Crie ou associe uma conta local válida a este bloco (${missingSecret}).`,
+    });
+    return;
+  }
+
+  const selectedCollection =
+    block.type === "ESCOLHER" && block.collectionId
+      ? readPayload<StrategicCollection>("library_collections", block.collectionId)
+      : undefined;
+  const selectedCollectionItems = selectedCollection
+    ? (
+        database
+          .prepare("SELECT payload FROM library_items WHERE collection_id = ?")
+          .all(selectedCollection.id) as { payload: string }[]
+      ).map((row) => JSON.parse(row.payload) as ChannelLibraryItem)
+    : [];
+  if (block.type === "ESCOLHER" && (!selectedCollection || !selectedCollectionItems.length)) {
+    response.status(422).json({ error: "A coleção vinculada precisa possuir itens para o teste." });
+    return;
+  }
+
+  const referencedInputIds = new Set(resolvedInstruction.referencedInputIds);
+  const instructionContextInputs = Object.fromEntries(
+    capability.inputPorts.flatMap((port) => {
+      const unreferenced = assignedInputs.filter(
+        (item) => item.port?.key === port.key && !referencedInputIds.has(item.input.id),
+      );
+      return unreferenced.length
+        ? [
+            [
+              port.key,
+              composePluginPortValue(
+                unreferenced.map(({ input, value }) => ({ label: input.label, value })),
+              ),
+            ],
+          ]
+        : [];
+    }),
+  ) as Record<string, RuntimeValue>;
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `method-test-${body.runId}`,
+    traceId: randomUUID(),
+    blockId: block.id,
+    capabilityId: capability.id,
+    attempt: 1,
+    invocation: { mode: "start" },
+    configuration: { ...block.plugin.configuration, ...executionParameters },
+    settings: resolvedConnection.connectionId
+      ? { connectionId: resolvedConnection.connectionId }
+      : {},
+    inputs,
+    instructionContextInputs,
+    inputContract,
+    inputDeliveries: inputContract.map((item) => ({
+      inputId: item.id,
+      portKey: item.portKey,
+      itemIds: [],
+    })),
+    outputContract,
+    validation: block.validation,
+    resolvedInstruction: resolvedInstruction.instruction,
+    unresolvedInstructionVariables: [],
+    conversation: plugin.manifest.supportsConversationContinuation ? { mode: "new" } : undefined,
+    context: {
+      runMode: "method_test",
+      locale: channel.language || "pt-BR",
+      timeZone: "America/Sao_Paulo",
+      channel: {
+        id: channel.id,
+        name: channel.name,
+        language: channel.language,
+        niche: channel.niche,
+      },
+      project: {
+        id: `method-test-${body.runId}`,
+        title: body.projectTitle?.trim() || "Projeto de teste",
+      },
+      processType: body.processType,
+      block: {
+        type: block.type,
+        name: block.name ?? block.type,
+        instructions: block.instructions ?? "",
+      },
+      selectedCollection: selectedCollection
+        ? {
+            collectionId: selectedCollection.id,
+            items: selectedCollectionItems.map((item) => ({
+              id: item.id,
+              values: collectionItemValuesForPlugin(selectedCollection, item),
+            })),
+          }
+        : undefined,
+      previousProcessOutputs: [],
+      previousBlockOutputs: [],
+      previousDeliveries: [],
+    },
+  };
+  const slot = pluginConcurrencySlotForRequest(
+    plugin,
+    plugin.id,
+    capability.id,
+    pluginRequest.configuration,
+  );
+  const activeInSlot = activePluginConcurrencySlots.get(slot.key) ?? 0;
+  if (activeMethodBlockTests >= 2 || activeInSlot >= slot.limit) {
+    response.status(409).json({
+      error: "Esse plugin ou perfil já está em uso. Aguarde a execução atual terminar.",
+    });
+    return;
+  }
+
+  mkdirSync(path.join(runDirectory, "files"), { recursive: true });
+  const controller = new AbortController();
+  const abortIfDisconnected = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  request.once("aborted", abortIfDisconnected);
+  response.once("close", abortIfDisconnected);
+  activeMethodBlockTests += 1;
+  activePluginConcurrencySlots.set(slot.key, activeInSlot + 1);
+  try {
+    const workspaceDirectory = plugin.manifest.profileSetup
+      ? executionWorkspaceForPlugin(plugin)
+      : path.join(runDirectory, "workspace", plugin.id.replace(/[^A-Za-z0-9._-]/g, "_"));
+    const executionOptions = {
+      workspaceDirectory,
+      artifactDirectory: path.join(runDirectory, "files"),
+      artifactUrlPrefix: `/api/method-block-tests/files/${body.runId}/files`,
+      signal: controller.signal,
+    };
+    const deadline = Date.now() + (capability.execution.defaultTimeoutMs ?? 60_000);
+    let pluginResponse: PluginExecutionResponse = await executeRegisteredPlugin(
+      plugin,
+      pluginRequest,
+      Math.max(1_000, deadline - Date.now()),
+      resolvedConnection.secrets,
+      executionOptions,
+    );
+    let storedArtifacts = pluginResponse.storedArtifacts ?? [];
+    while (pluginResponse.status === "pending") {
+      if (capability.execution.mode !== "async") {
+        throw new Error("Uma capacidade imediata não pode devolver pending.");
+      }
+      if (!pluginResponse.jobId || Date.now() >= deadline) {
+        throw new Error("O teste excedeu o tempo máximo declarado pelo plugin.");
+      }
+      const pollAfterMs = pluginResponse.pollAfterMs;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(250, Math.min(30_000, pollAfterMs))),
+      );
+      pluginResponse = await executeRegisteredPlugin(
+        plugin,
+        { ...pluginRequest, invocation: { mode: "resume", jobId: pluginResponse.jobId } },
+        Math.max(1_000, deadline - Date.now()),
+        resolvedConnection.secrets,
+        { ...executionOptions, existingArtifacts: storedArtifacts },
+      );
+      storedArtifacts = pluginResponse.storedArtifacts ?? storedArtifacts;
+    }
+    if (pluginResponse.status === "error") {
+      response.status(422).json({
+        error: pluginResponse.message,
+        code: pluginResponse.code,
+        values: pluginResponse.partialValues ?? {},
+      });
+      return;
+    }
+    response.json({
+      ok: true,
+      runId: body.runId,
+      values: mappedPluginValues(block, pluginResponse.values, outputContract),
+      outputs: block.type === "ESCOLHER" ? outputContract : (block.outputs ?? []),
+      usage: pluginResponse.usage,
+      temporary: true,
+    });
+  } catch (error) {
+    if (!response.headersSent) {
+      response.status(controller.signal.aborted ? 499 : 422).json({
+        error: error instanceof Error ? error.message : "Não foi possível testar o bloco.",
+      });
+    }
+  } finally {
+    request.off("aborted", abortIfDisconnected);
+    response.off("close", abortIfDisconnected);
+    activeMethodBlockTests -= 1;
+    const remaining = (activePluginConcurrencySlots.get(slot.key) ?? 1) - 1;
+    if (remaining > 0) activePluginConcurrencySlots.set(slot.key, remaining);
+    else activePluginConcurrencySlots.delete(slot.key);
+    void processDuePluginJobs();
+  }
 });
 
 app.post("/api/execute-block", async (request, response) => {
@@ -2074,6 +3997,23 @@ app.post("/api/execute-block", async (request, response) => {
       .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
       .all(project.id) as { payload: string }[]
   ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+  let conversation: PluginExecutionRequest["conversation"];
+  try {
+    conversation = resolvePluginConversation({
+      block,
+      blockExecution,
+      execution,
+      projectExecutions,
+      pluginId: plugin.id,
+      supportsContinuation: plugin.manifest.supportsConversationContinuation === true,
+      profileSetup: plugin.manifest.profileSetup,
+    });
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível resolver a conversa.",
+    });
+    return;
+  }
   const channelProjects = (
     database.prepare("SELECT payload FROM projects WHERE channel_id = ?").all(channel.id) as {
       payload: string;
@@ -2119,11 +4059,7 @@ app.post("/api/execute-block", async (request, response) => {
 
   const usedInputPorts = new Set<string>();
   const assignedInputs = resolvedInputs.map((item) => {
-    const port = capability.inputPorts.find(
-      (candidate) =>
-        candidate.acceptedTypes.includes(item.input.type) &&
-        (candidate.multiple || !usedInputPorts.has(candidate.key)),
-    );
+    const port = selectPluginInputPort(item.input, capability.inputPorts, usedInputPorts);
     if (port && !port.multiple) usedInputPorts.add(port.key);
     return { resolved: item, port };
   });
@@ -2306,27 +4242,88 @@ app.post("/api/execute-block", async (request, response) => {
             capability.outputPorts[0]?.key ??
             field.key,
         }));
-  const { api_key: transientApiKey, ...executionParameters } = body.parameters;
-  const secretKey =
-    plugin.id === "official-openai-gpt"
-      ? "OPENAI_API_KEY"
-      : plugin.id === "official-anthropic-claude"
-        ? "ANTHROPIC_API_KEY"
-        : undefined;
-  const providedApiKey = typeof transientApiKey === "string" ? transientApiKey.trim() : "";
-  const storedApiKey =
-    !providedApiKey && plugin.id === "official-openai-gpt"
-      ? await getOpenAIApiKey()
-      : !providedApiKey && plugin.id === "official-anthropic-claude"
-        ? await getAnthropicApiKey()
-        : undefined;
-  const apiKey = providedApiKey || storedApiKey;
-  const pluginSecrets: Record<string, string> = {};
-  for (const declaredSecret of plugin.manifest.secretKeys ?? []) {
-    const storedSecret = await getPluginSecret(plugin.id, declaredSecret);
-    if (storedSecret) pluginSecrets[declaredSecret] = storedSecret;
+  const methodParameterValues = Object.fromEntries(
+    (block.parameters ?? []).map((parameter) => [parameter.key, parameter.value]),
+  );
+  const providedExecutionParameters = body.parameters;
+  const executionParameters = {
+    ...methodParameterValues,
+    ...providedExecutionParameters,
+  };
+  const resolvedInstruction = resolveInstructionTemplate(block.instructions ?? "", {
+    channel: {
+      name: channel.name,
+      language: channel.language,
+      niche: channel.niche,
+    },
+    project: { title: project.title, deadline: project.deadline },
+    block: { name: block.name ?? block.type, type: block.type },
+    inputs: assignedInputs.map(({ resolved, port }) => ({
+      id: resolved.input.id,
+      label: resolved.input.label,
+      sourceKey: resolved.resolvedSourceKey ?? resolved.input.sourceKey,
+      portKey: port?.key,
+      value: resolved.value ?? null,
+    })),
+    parameters: executionParameters,
+  });
+  if (resolvedInstruction.unresolved.length) {
+    response.status(422).json({
+      error: `Variáveis sem valor no prompt: ${resolvedInstruction.unresolved
+        .map((variable) => `{{${variable}}}`)
+        .join(", ")}. Revise as entradas conectadas ao bloco.`,
+    });
+    return;
   }
-  if (secretKey && apiKey) pluginSecrets[secretKey] = apiKey;
+  if (capability.instructionUsage === "required" && !resolvedInstruction.instruction) {
+    response.status(422).json({
+      error: `Defina o prompt do bloco “${block.name ?? block.type}” antes de executar.`,
+    });
+    return;
+  }
+  const referencedInstructionInputIds = new Set(resolvedInstruction.referencedInputIds);
+  const instructionContextInputs = Object.fromEntries(
+    capability.inputPorts.flatMap((port) => {
+      const assigned = assignedInputs.filter((item) => item.port?.key === port.key);
+      if (!assigned.length) {
+        return inputs[port.key] === undefined ? [] : [[port.key, inputs[port.key]]];
+      }
+      const unreferenced = assigned.filter(
+        (item) => !referencedInstructionInputIds.has(item.resolved.input.id),
+      );
+      if (!unreferenced.length) return [];
+      return [
+        [
+          port.key,
+          composePluginPortValue(
+            unreferenced.map(({ resolved }) => ({
+              label: resolved.input.label,
+              value: resolved.value ?? null,
+            })),
+          ),
+        ],
+      ];
+    }),
+  ) as Record<string, RuntimeValue>;
+  let resolvedConnection: Awaited<ReturnType<typeof resolvePluginConnection>>;
+  try {
+    resolvedConnection = await resolvePluginConnection(plugin, block.plugin.connectionId);
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível carregar a conexão.",
+    });
+    return;
+  }
+  const pluginSecrets: Record<string, string> = { ...resolvedConnection.secrets };
+  const missingSecret = (plugin.manifest.secretKeys ?? []).find(
+    (declaredSecret) => !pluginSecrets[declaredSecret],
+  );
+  if (missingSecret) {
+    response.status(422).json({
+      error: `Crie ou associe uma conta local válida a este bloco (${missingSecret}).`,
+    });
+    return;
+  }
   const pluginRequest: PluginExecutionRequest = {
     executionId: execution.id,
     traceId: randomUUID(),
@@ -2338,8 +4335,11 @@ app.post("/api/execute-block", async (request, response) => {
       ...block.plugin.configuration,
       ...executionParameters,
     },
-    settings: {},
+    settings: resolvedConnection.connectionId
+      ? { connectionId: resolvedConnection.connectionId }
+      : {},
     inputs,
+    instructionContextInputs,
     inputContract,
     inputDeliveries: resolvedInputs.map((item, index) => ({
       inputId: item.input.id,
@@ -2350,6 +4350,12 @@ app.post("/api/execute-block", async (request, response) => {
     outputContract,
     validation: block.validation,
     retryFeedback: blockExecution.retryFeedback,
+    resolvedInstruction: instructionWithRetryFeedback(
+      resolvedInstruction.instruction,
+      blockExecution.retryFeedback,
+    ),
+    unresolvedInstructionVariables: resolvedInstruction.unresolved,
+    conversation,
     context: {
       locale: channel.language || "pt-BR",
       timeZone: "America/Sao_Paulo",
@@ -2371,7 +4377,7 @@ app.post("/api/execute-block", async (request, response) => {
             collectionId: selectedCollection.id,
             items: selectedCollectionItems.map((item) => ({
               id: item.id,
-              values: item.values,
+              values: collectionItemValuesForPlugin(selectedCollection, item),
             })),
           }
         : undefined,
@@ -2393,6 +4399,22 @@ app.post("/api/execute-block", async (request, response) => {
     },
   };
 
+  const latestExecution = executionById(execution.id);
+  if (!latestExecution) {
+    response.status(404).json({ error: "Execução removida." });
+    return;
+  }
+  if (
+    latestExecution.status === "cancelled" ||
+    (latestExecution.revision ?? 0) !== (execution.revision ?? 0)
+  ) {
+    response.status(202).json({
+      ok: true,
+      execution: latestExecution,
+      project: readPayload<Project>("projects", project.id),
+    });
+    return;
+  }
   const executionTimeoutMs = capability.execution.defaultTimeoutMs ?? 60_000;
   const createdJob = pluginJobs.create(
     createPersistentPluginJob({
@@ -2400,6 +4422,8 @@ app.post("/api/execute-block", async (request, response) => {
       pluginVersion: plugin.manifest.version,
       request: pluginRequest,
       timeoutMs: executionTimeoutMs,
+      profileFallback: orderedProfileCandidates(plugin.manifest, pluginRequest.configuration),
+      itemOrchestration: declaredItemOrchestration(capability, pluginRequest),
     }),
   );
   blockExecution.status = "in_progress";
@@ -2410,24 +4434,6 @@ app.post("/api/execute-block", async (request, response) => {
   persistPluginExecution(execution, project);
 
   if (capability.execution.mode === "async") {
-    if (providedApiKey && !storedApiKey) {
-      const claim = pluginJobs.claim(createdJob.id);
-      const failed = claim
-        ? markPluginJobFailed(
-            claim,
-            execution,
-            project,
-            "Jobs persistentes exigem que a credencial seja salva na Central de Plugins.",
-          )
-        : createdJob;
-      response.status(422).json({
-        error: failed.error,
-        job: publicPluginJob(failed),
-        execution: executionById(execution.id) ?? execution,
-        project: readPayload<Project>("projects", project.id) ?? project,
-      });
-      return;
-    }
     void processDuePluginJobs();
     response.status(202).json({
       ok: true,
@@ -2585,6 +4591,7 @@ app.post("/api/channels/:id/research/plan/from-theme", (request, response) => {
     research: {
       pluginId: source.plugin.pluginId,
       capabilityId: source.plugin.capabilityId,
+      connectionId: source.plugin.connectionId,
       cadence: "manual",
       configuration: source.plugin.configuration,
       recordsKey: records.key,
@@ -2692,6 +4699,17 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
   );
   if (!capability || capability.operator !== "Código" || !capability.blockTypes.includes("BUSCAR"))
     return response.status(422).json({ error: "A capability de pesquisa não é compatível." });
+  let connection: Awaited<ReturnType<typeof resolvePluginConnection>>;
+  try {
+    connection = await resolvePluginConnection(plugin, channel.research.connectionId);
+    if ((plugin.manifest.secretKeys ?? []).some((key) => !connection.secrets[key])) {
+      return response.status(422).json({ error: "Configure a conexão do plugin de pesquisa." });
+    }
+  } catch (error) {
+    return response
+      .status(422)
+      .json({ error: error instanceof Error ? error.message : "Conexão indisponível." });
+  }
   const now = new Date().toISOString();
   const run: ChannelResearchRun = {
     id: randomUUID(),
@@ -2703,11 +4721,6 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
     records: [],
   };
   saveResearchRun(run);
-  const secrets: Record<string, string> = {};
-  for (const key of plugin.manifest.secretKeys ?? []) {
-    const value = await getPluginSecret(plugin.id, key);
-    if (value) secrets[key] = value;
-  }
   const pluginRequest: PluginExecutionRequest = {
     executionId: `channel-research:${run.id}`,
     traceId: randomUUID(),
@@ -2716,7 +4729,7 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
     attempt: 1,
     invocation: { mode: "start" },
     configuration: channel.research.configuration,
-    settings: {},
+    settings: connection.connectionId ? { connectionId: connection.connectionId } : {},
     inputs: {},
     inputContract: [],
     outputContract: researchOutputContract(capability),
@@ -2746,7 +4759,7 @@ app.post("/api/channels/:id/research/runs", async (request, response) => {
       plugin,
       pluginRequest,
       capability.execution.defaultTimeoutMs ?? 90_000,
-      secrets,
+      connection.secrets,
     );
     run.updatedAt = new Date().toISOString();
     run.completedAt = run.updatedAt;
@@ -2795,6 +4808,266 @@ app.get("/api/youtube/channel", async (request, response) => {
   }
 });
 
+function stateSnapshot() {
+  return database.transaction(() => {
+    const read = <T>(table: string) =>
+      (
+        database.prepare(`SELECT payload FROM ${table} ORDER BY rowid DESC`).all() as {
+          payload: string;
+        }[]
+      ).map((row) => JSON.parse(row.payload) as T);
+    return {
+      revision: (
+        database.prepare("SELECT revision FROM state_clock WHERE id = 1").get() as {
+          revision: number;
+        }
+      ).revision,
+      channels: (
+        database
+          .prepare(
+            `SELECT channels.payload FROM channels LEFT JOIN channel_order ON channel_order.channel_id = channels.id
+        ORDER BY CASE WHEN channel_order.position IS NULL THEN 1 ELSE 0 END, channel_order.position ASC, channels.created_at DESC`,
+          )
+          .all() as { payload: string }[]
+      ).map((row) => {
+        const channel = JSON.parse(row.payload) as Channel;
+        channel.activeProjects = (
+          database
+            .prepare("SELECT COUNT(*) AS count FROM projects WHERE channel_id = ?")
+            .get(channel.id) as { count: number }
+        ).count;
+        return channel;
+      }),
+      projects: read<Project>("projects"),
+      executions: read<ProcessExecution>("process_executions"),
+      orchestrators: read<ExecutionOrchestrator>("execution_orchestrators"),
+      libraryItems: read<ChannelLibraryItem>("library_items"),
+      libraryCollections: read<StrategicCollection>("library_collections"),
+    };
+  })();
+}
+
+app.get("/api/state", (request, response) => {
+  const revision = (
+    database.prepare("SELECT revision FROM state_clock WHERE id = 1").get() as { revision: number }
+  ).revision;
+  response.setHeader("Cache-Control", "no-store");
+  if (request.query.since === String(revision)) {
+    response.status(204).end();
+    return;
+  }
+  response.json(stateSnapshot());
+});
+
+const commandSchema = z.object({
+  id: z.string().uuid(),
+  action: z.enum([
+    "start",
+    "choose",
+    "draft",
+    "outputDraft",
+    "completeHuman",
+    "completeOutput",
+    "retry",
+    "reset",
+  ]),
+  projectId: z.string().optional(),
+  processType: z.enum(PROCESS_ORDER).optional(),
+  executionId: z.string().optional(),
+  blockId: z.string().optional(),
+  itemId: z.string().optional(),
+  attempt: z.number().int().positive().optional(),
+  values: z.record(z.string(), z.unknown()).optional(),
+});
+
+app.post("/api/commands", (request, response) => {
+  const parsed = commandSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "Comando inválido." });
+    return;
+  }
+  const command = parsed.data;
+  try {
+    const result = database.transaction(() => {
+      const receipt = database
+        .prepare("SELECT payload FROM execution_commands WHERE id = ?")
+        .get(command.id) as { payload: string } | undefined;
+      if (receipt) return JSON.parse(receipt.payload);
+      const state = stateSnapshot();
+      const execution = state.executions.find((item) => item.id === command.executionId);
+      const project = state.projects.find(
+        (item) => item.id === (execution?.projectId ?? command.projectId),
+      );
+      if (!project) throw new Error("Projeto não encontrado.");
+      if (command.action !== "start" && command.action !== "reset" && !execution)
+        throw new Error("Execução não encontrada.");
+      if (command.blockId) {
+        const block = execution?.blocks.find((item) => item.blockId === command.blockId);
+        if (!block || command.attempt !== (block.attempt ?? 1))
+          throw new Error("Esta etapa mudou. Atualize a tela antes de continuar.");
+      }
+      const engine = executionCommands(state);
+      let result: unknown;
+      let updated = execution;
+      const values = (command.values ?? {}) as Record<string, RuntimeValue>;
+      switch (command.action) {
+        case "start":
+          if (!command.processType) throw new Error("Processo não informado.");
+          updated = engine.startProcessExecution(project.id, command.processType);
+          if (!updated) throw new Error("Configure o Método antes de executar.");
+          project.runThrough = "publishing";
+          project.runFrom = command.processType;
+          result = updated;
+          break;
+        case "choose":
+          result = engine.chooseCollectionItem(
+            execution!.id,
+            command.blockId ?? "",
+            command.itemId ?? "",
+          );
+          break;
+        case "draft":
+          result = engine.saveHumanBlockDraft(execution!.id, command.blockId ?? "", values);
+          break;
+        case "completeHuman":
+          result = engine.completeHumanBlock(execution!.id, command.blockId ?? "", values);
+          break;
+        case "completeOutput":
+          result = engine.completeProcessOutput(execution!.id, values);
+          break;
+        case "outputDraft":
+          if (execution!.status !== "awaiting_output") {
+            result = false;
+            break;
+          }
+          execution!.output = {
+            processType: execution!.processType,
+            values,
+            createdAt: new Date().toISOString(),
+          };
+          result = true;
+          break;
+        case "retry":
+          result = engine.retryBlockExecution(execution!.id, command.blockId ?? "");
+          break;
+        case "reset": {
+          if (!command.processType) throw new Error("Processo não informado.");
+          const prior = state.executions.find(
+            (item) => item.projectId === project.id && item.processType === command.processType,
+          );
+          if (prior && !["completed", "cancelled", "failed"].includes(prior.status))
+            throw new Error("Cancele a execução antes de reiniciar.");
+          if (prior) database.prepare("DELETE FROM process_executions WHERE id = ?").run(prior.id);
+          delete project.runThrough;
+          project.stages[command.processType] = "not_started";
+          project.currentStage = command.processType;
+          project.state = "not_started";
+          project.progress = Math.round(
+            (PROCESS_ORDER.filter((id) => ["done", "approved"].includes(project.stages[id]))
+              .length /
+              PROCESS_ORDER.length) *
+              100,
+          );
+          result = true;
+          break;
+        }
+      }
+      if (
+        result === false ||
+        (result && typeof result === "object" && "ok" in result && !result.ok)
+      )
+        return result;
+      if (updated) {
+        updated.revision = (updated.revision ?? 0) + 1;
+        updated.updatedAt = new Date().toISOString();
+        database
+          .prepare(
+            `INSERT INTO process_executions (id, project_id, process_type, payload, updated_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+          )
+          .run(
+            updated.id,
+            project.id,
+            updated.processType,
+            JSON.stringify(updated),
+            updated.updatedAt,
+          );
+      }
+      database
+        .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+        .run(JSON.stringify(project), project.id);
+      if (!["draft", "outputDraft"].includes(command.action)) {
+        database
+          .prepare("INSERT INTO execution_commands (id, payload) VALUES (?, ?)")
+          .run(command.id, JSON.stringify(result));
+      }
+      return result;
+    })();
+    response.json({ result, state: stateSnapshot() });
+    const projectId =
+      command.projectId ??
+      (command.executionId ? executionById(command.executionId)?.projectId : undefined);
+    if (projectId) {
+      for (const row of database
+        .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
+        .all(projectId) as { payload: string }[])
+        scheduleAutomaticPluginBlock(JSON.parse(row.payload));
+      queueOrchestratorReconciliationForProject(projectId);
+    }
+    reconcileStandaloneProcesses();
+  } catch (error) {
+    response.status(409).json({
+      error: error instanceof Error ? error.message : "Não foi possível aplicar o comando.",
+    });
+  }
+});
+
+function reconcileStandaloneProcesses() {
+  const projects = (
+    database
+      .prepare(
+        "SELECT payload FROM projects WHERE json_extract(payload, '$.runThrough') IS NOT NULL",
+      )
+      .all() as { payload: string }[]
+  ).map((row) => JSON.parse(row.payload) as Project);
+  if (!projects.length) return;
+  const orchestrators = executionOrchestrators();
+  for (const project of projects) {
+    if (
+      !project.runThrough ||
+      orchestrators.some(
+        (item) =>
+          ACTIVE_ORCHESTRATOR_STATUSES.has(item.status) && item.projectIds.includes(project.id),
+      )
+    )
+      continue;
+    const channel = readPayload<Channel>("channels", project.channelId);
+    if (!channel) continue;
+    const current = executionFor(project.id, project.currentStage);
+    if (current && current.status !== "completed") {
+      if (current.status === "blocked_executor") scheduleAutomaticPluginBlock(current);
+      continue;
+    }
+    const next = PROCESS_ORDER.find(
+      (id) =>
+        PROCESS_ORDER.indexOf(id) >= PROCESS_ORDER.indexOf(project.runFrom ?? "theme") &&
+        !["done", "approved"].includes(project.stages[id]),
+    );
+    if (
+      !next ||
+      PROCESS_ORDER.indexOf(next) > PROCESS_ORDER.indexOf(project.runThrough) ||
+      !channel.methods[next]?.blocks.length
+    ) {
+      delete project.runThrough;
+      database
+        .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+        .run(JSON.stringify(project), project.id);
+      continue;
+    }
+    startOrchestratedProcess(project, channel, next);
+  }
+}
+
 app.get("/api/channels", (_request, response) => {
   const rows = database
     .prepare(
@@ -2810,10 +5083,60 @@ app.get("/api/channels", (_request, response) => {
   response.json(parseRows(rows));
 });
 
+app.get("/api/channels/:id/preferences", (request, response) => {
+  const channel = database.prepare("SELECT 1 FROM channels WHERE id = ?").get(request.params.id);
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  const stored = database
+    .prepare("SELECT project_view AS projectView FROM channel_preferences WHERE channel_id = ?")
+    .get(request.params.id) as { projectView: "cards" | "list" } | undefined;
+  response.json({ projectView: stored?.projectView ?? "cards" });
+});
+
+app.put("/api/channels/:id/preferences", (request, response) => {
+  const projectView = request.body?.projectView;
+  if (!(["cards", "list"] as const).includes(projectView)) {
+    response.status(400).json({ error: "Preferência de visualização inválida." });
+    return;
+  }
+  const channel = database.prepare("SELECT 1 FROM channels WHERE id = ?").get(request.params.id);
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (projectView === "cards") {
+    database.prepare("DELETE FROM channel_preferences WHERE channel_id = ?").run(request.params.id);
+  } else {
+    database
+      .prepare(
+        `INSERT INTO channel_preferences (channel_id, project_view, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(channel_id) DO UPDATE SET
+           project_view = excluded.project_view,
+           updated_at = excluded.updated_at`,
+      )
+      .run(request.params.id, projectView, new Date().toISOString());
+  }
+  response.json({ projectView });
+});
+
 app.post("/api/channels", (request, response) => {
-  const channel = request.body as StoredPayload;
+  const channel = request.body as Channel;
   if (!channel?.id || !channel.createdAt) {
     response.status(400).json({ error: "Canal inválido." });
+    return;
+  }
+  if (
+    typeof channel.methodsImageUrl === "string" &&
+    (!(
+      /^data:image\/(webp|png|jpeg);base64,/.test(channel.methodsImageUrl) ||
+      /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(channel.methodsImageUrl)
+    ) ||
+      channel.methodsImageUrl.length > 1_500_000)
+  ) {
+    response.status(400).json({ error: "Capa do Canal inválida." });
     return;
   }
   const insertChannel = database.transaction(() => {
@@ -2863,12 +5186,103 @@ app.put("/api/channels/order", (request, response) => {
   response.json({ channelIds: requestedIds });
 });
 
+app.put("/api/channels/:id/methods/:processType", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  const processType = request.params.processType as UniversalProcess;
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (!PROCESS_ORDER.includes(processType) || !Array.isArray(request.body?.blocks)) {
+    response.status(400).json({ error: "Método inválido." });
+    return;
+  }
+  channel.methods[processType] = {
+    name:
+      typeof request.body?.name === "string" && request.body.name.trim()
+        ? request.body.name.trim().slice(0, 200)
+        : channel.methods[processType]?.name || `Método de ${PROCESS_META[processType].label}`,
+    imageUrl:
+      typeof request.body?.imageUrl === "string" &&
+      (/^data:image\/(webp|png|jpeg);base64,/.test(request.body.imageUrl) ||
+        /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(request.body.imageUrl))
+        ? request.body.imageUrl.slice(0, 1_500_000)
+        : channel.methods[processType]?.imageUrl,
+    processType,
+    blocks: normalizeMethodBlocks(request.body.blocks, processType),
+  };
+  database
+    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+    .run(JSON.stringify(channel), channel.id);
+  response.json(channel.methods[processType]);
+});
+
+app.put("/api/channels/:id/methods", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  const methods = request.body?.methods as
+    Partial<Record<UniversalProcess, ProcessMethod>> | undefined;
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (!methods || typeof methods !== "object" || Array.isArray(methods)) {
+    response.status(400).json({ error: "Pacote de Métodos inválido." });
+    return;
+  }
+  const entries = Object.entries(methods) as [UniversalProcess, ProcessMethod][];
+  if (
+    !entries.length ||
+    entries.some(
+      ([processType, method]) =>
+        !PROCESS_ORDER.includes(processType) ||
+        method?.processType !== processType ||
+        !Array.isArray(method.blocks),
+    )
+  ) {
+    response.status(400).json({ error: "Pacote de Métodos inválido." });
+    return;
+  }
+  for (const [processType, method] of entries) {
+    channel.methods[processType] = {
+      name:
+        typeof method.name === "string" && method.name.trim()
+          ? method.name.trim().slice(0, 200)
+          : `Método de ${PROCESS_META[processType].label}`,
+      imageUrl:
+        typeof method.imageUrl === "string" &&
+        (/^data:image\/(webp|png|jpeg);base64,/.test(method.imageUrl) ||
+          /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(method.imageUrl))
+          ? method.imageUrl.slice(0, 1_500_000)
+          : undefined,
+      processType,
+      blocks: normalizeMethodBlocks(method.blocks, processType),
+    };
+  }
+  database
+    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+    .run(JSON.stringify(channel), channel.id);
+  response.json({ methods: channel.methods });
+});
+
 app.put("/api/channels/:id", (request, response) => {
-  const channel = request.body as StoredPayload;
+  const channel = request.body as Channel;
   if (!channel?.id || channel.id !== request.params.id) {
     response.status(400).json({ error: "Canal inválido." });
     return;
   }
+  if (
+    typeof channel.methodsImageUrl === "string" &&
+    (!(
+      /^data:image\/(webp|png|jpeg);base64,/.test(channel.methodsImageUrl) ||
+      /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(channel.methodsImageUrl)
+    ) ||
+      channel.methodsImageUrl.length > 1_500_000)
+  ) {
+    response.status(400).json({ error: "Capa do Canal inválida." });
+    return;
+  }
+  const current = readPayload<Channel>("channels", channel.id);
+  if (current) channel.methods = current.methods;
   const result = database
     .prepare("UPDATE channels SET payload = ? WHERE id = ?")
     .run(JSON.stringify(channel), channel.id);
@@ -2892,7 +5306,12 @@ app.post("/api/channels/:id/sync-youtube", async (request, response) => {
   try {
     const channel = JSON.parse(row.payload) as StoredPayload;
     const profile = await fetchYouTubeChannel(channel.handle ?? "");
-    const updated = { ...channel, ...profile };
+    const latest = readPayload<Channel>("channels", request.params.id);
+    if (!latest) {
+      response.status(404).json({ error: "Canal removido durante a atualização." });
+      return;
+    }
+    const updated = { ...latest, ...profile };
     database
       .prepare("UPDATE channels SET payload = ? WHERE id = ?")
       .run(JSON.stringify(updated), request.params.id);
@@ -2910,11 +5329,17 @@ app.delete("/api/channels/:id", (request, response) => {
       .prepare("SELECT id FROM projects WHERE channel_id = ?")
       .all(channelId) as { id: string }[];
     for (const project of projects) {
+      for (const row of database
+        .prepare("SELECT id FROM process_executions WHERE project_id = ?")
+        .all(project.id) as { id: string }[])
+        pluginJobs.requestCancellation(row.id);
       database.prepare("DELETE FROM process_executions WHERE project_id = ?").run(project.id);
     }
     database.prepare("DELETE FROM projects WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM library_items WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM library_collections WHERE channel_id = ?").run(channelId);
+    database.prepare("DELETE FROM execution_orchestrators WHERE channel_id = ?").run(channelId);
+    database.prepare("DELETE FROM channel_preferences WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_research_runs WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_research_briefs WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_order WHERE channel_id = ?").run(channelId);
@@ -2922,6 +5347,202 @@ app.delete("/api/channels/:id", (request, response) => {
   });
   const result = remove(request.params.id) as { changes: number };
   response.status(result.changes ? 204 : 404).end();
+});
+
+function executionOrchestratorState(orchestrator: ExecutionOrchestrator) {
+  const projects = orchestrator.projectIds
+    .map((id) => readPayload<Project>("projects", id))
+    .filter((project): project is Project => !!project);
+  const executions = orchestrator.projectIds.flatMap(
+    (projectId) =>
+      parseRows(
+        database
+          .prepare(
+            "SELECT payload FROM process_executions WHERE project_id = ? ORDER BY updated_at DESC",
+          )
+          .all(projectId) as { payload: string }[],
+      ) as ProcessExecution[],
+  );
+  return {
+    orchestrator,
+    channel: readPayload<Channel>("channels", orchestrator.channelId),
+    projects,
+    executions,
+  };
+}
+
+app.get("/api/orchestrators", (request, response) => {
+  const channelId =
+    typeof request.query.channelId === "string" ? request.query.channelId : undefined;
+  response.json(executionOrchestrators(channelId));
+});
+
+app.get("/api/orchestrators/:id/state", (request, response) => {
+  const orchestrator = executionOrchestratorById(request.params.id);
+  if (!orchestrator) {
+    response.status(404).json({ error: "Orquestração não encontrada." });
+    return;
+  }
+  reconcileExecutionOrchestrator(orchestrator.id);
+  response.json(executionOrchestratorState(executionOrchestratorById(orchestrator.id)!));
+});
+
+app.post("/api/orchestrators/:id/resume", (request, response) => {
+  const orchestrator = executionOrchestratorById(request.params.id);
+  if (!orchestrator) {
+    response.status(404).json({ error: "Orquestração não encontrada." });
+    return;
+  }
+  if (orchestrator.status !== "failed") {
+    response.status(409).json({ error: "Somente uma fila com erro pode ser retomada." });
+    return;
+  }
+  const otherActive = executionOrchestrators(orchestrator.channelId).find(
+    (item) => item.id !== orchestrator.id && ACTIVE_ORCHESTRATOR_STATUSES.has(item.status),
+  );
+  if (otherActive) {
+    response.status(409).json({ error: "Este canal já possui outra orquestração em andamento." });
+    return;
+  }
+  if (orchestrator.currentProjectId && orchestrator.currentProcessType) {
+    const execution = executionFor(orchestrator.currentProjectId, orchestrator.currentProcessType);
+    if (execution?.status === "failed") {
+      response.status(409).json({
+        error: "Corrija ou tente novamente a etapa que falhou antes de retomar a fila.",
+      });
+      return;
+    }
+    if (execution?.status === "cancelled") {
+      response.status(409).json({
+        error: "A execução atual foi cancelada e não pode ser retomada nesta fila.",
+      });
+      return;
+    }
+  }
+
+  setExecutionOrchestratorState(orchestrator, {
+    status: "running",
+    message: "Retomando a fila a partir da última etapa preservada.",
+    completedAt: undefined,
+    stoppedAt: undefined,
+  });
+  reconcileExecutionOrchestrator(orchestrator.id);
+  response.json(executionOrchestratorState(executionOrchestratorById(orchestrator.id)!));
+});
+
+app.post("/api/orchestrators/:id/stop", (request, response) => {
+  const orchestrator = executionOrchestratorById(request.params.id);
+  if (!orchestrator) {
+    response.status(404).json({ error: "Orquestração não encontrada." });
+    return;
+  }
+  if (orchestrator.status === "completed") {
+    response.status(409).json({ error: "Uma orquestração concluída não pode ser parada." });
+    return;
+  }
+  if (orchestrator.status === "cancelled") {
+    response.json(executionOrchestratorState(orchestrator));
+    return;
+  }
+
+  const stoppedAt = new Date().toISOString();
+  setExecutionOrchestratorState(orchestrator, {
+    status: "cancelled",
+    message: "Fila interrompida pelo usuário. Os projetos criados foram preservados.",
+    stoppedAt,
+  });
+
+  if (orchestrator.currentProjectId && orchestrator.currentProcessType) {
+    const project = readPayload<Project>("projects", orchestrator.currentProjectId);
+    const execution = project
+      ? executionFor(orchestrator.currentProjectId, orchestrator.currentProcessType)
+      : undefined;
+    if (
+      project &&
+      execution &&
+      execution.status !== "completed" &&
+      execution.status !== "cancelled"
+    ) {
+      cancelStoredProcessExecution(execution, project);
+    }
+  }
+
+  response.json(executionOrchestratorState(executionOrchestratorById(orchestrator.id)!));
+});
+
+app.post("/api/orchestrators", (request, response) => {
+  const body = request.body as {
+    channelId?: string;
+    mode?: ExecutionOrchestratorMode;
+    quantity?: number;
+    projectPrefix?: string;
+  };
+  const channel = body.channelId ? readPayload<Channel>("channels", body.channelId) : undefined;
+  const quantity = Math.trunc(Number(body.quantity));
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (body.mode !== "end_to_end" && body.mode !== "batch") {
+    response.status(400).json({ error: "Modo de orquestração inválido." });
+    return;
+  }
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 50) {
+    response.status(400).json({ error: "Escolha entre 1 e 50 projetos." });
+    return;
+  }
+  const active = executionOrchestrators(channel.id).find((orchestrator) =>
+    ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status),
+  );
+  if (active) {
+    response.status(409).json({
+      error: "Este canal já possui uma orquestração em andamento.",
+      orchestrator: active,
+    });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const projectPrefix = body.projectPrefix?.trim() || "Produção orquestrada";
+  const projects = Array.from({ length: quantity }, (_, index) =>
+    createOrchestratedProject(channel.id, `${projectPrefix} ${index + 1}`, index),
+  );
+  const steps = buildOrchestratorSteps(
+    projects.map((project) => project.id),
+    body.mode,
+  );
+  const orchestrator: ExecutionOrchestrator = {
+    id: randomUUID(),
+    channelId: channel.id,
+    mode: body.mode,
+    quantity,
+    projectPrefix,
+    projectIds: projects.map((project) => project.id),
+    currentStep: 0,
+    totalSteps: steps.length,
+    status: "running",
+    message: "Preparando a primeira execução.",
+    createdAt: now,
+    updatedAt: now,
+  };
+  channel.activeProjects += quantity;
+
+  database.transaction(() => {
+    const insertProject = database.prepare(
+      "INSERT INTO projects (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const project of projects) {
+      insertProject.run(project.id, project.channelId, JSON.stringify(project), project.createdAt);
+    }
+    database
+      .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(channel), channel.id);
+    persistExecutionOrchestrator(orchestrator, true);
+  })();
+  reconcileExecutionOrchestrator(orchestrator.id);
+  response
+    .status(201)
+    .json(executionOrchestratorState(executionOrchestratorById(orchestrator.id)!));
 });
 
 app.get("/api/projects", (request, response) => {
@@ -2966,7 +5587,22 @@ app.put("/api/projects/:id", (request, response) => {
 });
 
 app.delete("/api/projects/:id", (request, response) => {
+  const activeOrchestrator = executionOrchestrators().find(
+    (orchestrator) =>
+      ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status) &&
+      orchestrator.projectIds.includes(request.params.id),
+  );
+  if (activeOrchestrator) {
+    response.status(409).json({
+      error: "Pare a fila do orquestrador antes de excluir um projeto vinculado a ela.",
+    });
+    return;
+  }
   const remove = database.transaction((projectId: string) => {
+    for (const row of database
+      .prepare("SELECT id FROM process_executions WHERE project_id = ?")
+      .all(projectId) as { id: string }[])
+      pluginJobs.requestCancellation(row.id);
     database.prepare("DELETE FROM process_executions WHERE project_id = ?").run(projectId);
     return database.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   });
@@ -3039,7 +5675,12 @@ app.get("/api/executions", (request, response) => {
 });
 
 app.get("/api/executions/:id/state", (request, response) => {
-  const execution = executionById(request.params.id);
+  const projectId = typeof request.query.projectId === "string" ? request.query.projectId : "";
+  const processType =
+    typeof request.query.processType === "string" ? request.query.processType : "";
+  const execution =
+    executionById(request.params.id) ||
+    (projectId && processType ? executionFor(projectId, processType) : undefined);
   const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
   if (!execution || !project) {
     response.status(404).json({ error: "Execução não encontrada." });
@@ -3060,26 +5701,81 @@ app.post("/api/executions/:id/cancel", (request, response) => {
     response.status(409).json({ error: "Uma execução concluída não pode ser cancelada." });
     return;
   }
-  pluginJobs.requestCancellation(execution.id);
-  execution.status = "cancelled";
-  execution.blocks = execution.blocks.map((item) =>
-    item.status === "completed" ? item : { ...item, status: "cancelled" },
-  );
-  execution.updatedAt = new Date().toISOString();
-  project.stages = { ...project.stages, [execution.processType]: "not_started" };
-  project.currentStage = execution.processType;
-  project.state = "not_started";
-  project.updatedAt = "Agora";
-  database.transaction(() => {
-    database
-      .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(execution), execution.updatedAt, execution.id);
-    database
-      .prepare("UPDATE projects SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(project), project.id);
-  })();
-  void processDuePluginJobs();
+  cancelStoredProcessExecution(execution, project);
   response.status(202).json({ ok: true, execution, project });
+});
+
+// Recovery preserves orchestration state; never reuse the destructive full retry path.
+app.post("/api/executions/:id/resume-items", (request, response) => {
+  const body = request.body ?? {};
+  if (
+    body.confirmedNoUncapturedOutput !== true ||
+    typeof body.jobId !== "string" ||
+    typeof body.expectedUpdatedAt !== "string" ||
+    typeof body.reconciliationNote !== "string"
+  ) {
+    response
+      .status(400)
+      .json({ error: "Reconcilie a tentativa externa antes de retomar os itens salvos." });
+    return;
+  }
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  const job = pluginJobs.get(body.jobId);
+  const blockExecution = execution?.blocks.find((b) => b.blockId === job?.blockId);
+  const block = execution?.methodSnapshot.blocks.find((b) => b.id === job?.blockId);
+  const plugin = job ? getRegisteredPlugin(job.pluginId) : undefined;
+  const capability = plugin?.manifest.capabilities.find((c) => c.id === job?.capabilityId);
+  const policy = capability?.execution.itemOrchestration;
+  if (
+    !execution ||
+    !project ||
+    !job ||
+    job.executionId !== execution.id ||
+    execution.status !== "failed" ||
+    blockExecution?.status !== "failed" ||
+    (blockExecution.attempt ?? 1) !== job.attempt ||
+    block?.plugin?.pluginId !== job.pluginId ||
+    block.plugin.capabilityId !== job.capabilityId ||
+    !plugin?.executable ||
+    !pluginConsentIsCurrent(plugin) ||
+    !policy ||
+    policy.inputPort !== job.itemOrchestration?.inputPort ||
+    policy.outputPort !== job.itemOrchestration?.outputPort ||
+    policy.combinedOutputPort !== job.itemOrchestration?.combinedOutputPort ||
+    JSON.stringify(blockExecution.values) !== JSON.stringify(job.partialValues)
+  ) {
+    response.status(409).json({
+      error:
+        "Execução, contrato, consentimento ou entregas mudaram; recuperação recusada sem apagar dados.",
+    });
+    return;
+  }
+  try {
+    const saved = pluginJobs.resumeFailedItems(
+      job.id,
+      body.expectedUpdatedAt,
+      {
+        pluginVersion: plugin.manifest.version,
+        timeoutMs: capability.execution.defaultTimeoutMs ?? 60_000,
+        reconciliationNote: body.reconciliationNote,
+      },
+      (next) => {
+        blockExecution.status = "in_progress";
+        blockExecution.error = undefined;
+        blockExecution.progressMessage = next.message;
+        execution.status = "running";
+        execution.error = undefined;
+        persistPluginExecution(execution, project);
+      },
+    );
+    response.status(202).json({ ok: true, job: publicPluginJob(saved), execution, project });
+    void processDuePluginJobs();
+  } catch (error) {
+    response
+      .status(409)
+      .json({ error: error instanceof Error ? error.message : "Não foi possível retomar." });
+  }
 });
 
 app.post("/api/executions", (request, response) => {
@@ -3088,12 +5784,17 @@ app.post("/api/executions", (request, response) => {
     response.status(400).json({ error: "Execução inválida." });
     return;
   }
+  const existing = executionFor(execution.projectId, execution.processType as UniversalProcess);
+  if (existing) {
+    response
+      .status(409)
+      .json({ error: "Este processo já possui uma execução.", execution: existing });
+    return;
+  }
   database
     .prepare(
       `INSERT INTO process_executions (id, project_id, process_type, payload, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(project_id, process_type) DO UPDATE SET
-         id = excluded.id, payload = excluded.payload, updated_at = excluded.updated_at`,
+       VALUES (?, ?, ?, ?, ?)`,
     )
     .run(
       execution.id,
@@ -3103,20 +5804,40 @@ app.post("/api/executions", (request, response) => {
       execution.updatedAt,
     );
   scheduleAutomaticPluginBlock(execution as unknown as ProcessExecution);
+  queueOrchestratorReconciliationForProject(execution.projectId);
   response.status(201).json(execution);
 });
 
 app.put("/api/executions/:id", (request, response) => {
-  const execution = request.body as StoredPayload;
+  const execution = request.body as ProcessExecution;
   if (!execution?.id || execution.id !== request.params.id || !execution.updatedAt) {
     response.status(400).json({ error: "Execução inválida." });
     return;
   }
+  const current = executionById(execution.id);
+  if (!current) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  if (
+    (execution.revision ?? 0) !== (current.revision ?? 0) ||
+    execution.projectId !== current.projectId ||
+    execution.processType !== current.processType ||
+    JSON.stringify(execution.methodSnapshot) !== JSON.stringify(current.methodSnapshot) ||
+    (current.status === "cancelled" && execution.status !== "cancelled")
+  ) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de continuar." });
+    return;
+  }
+  execution.revision = (current.revision ?? 0) + 1;
   const result = database
     .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
     .run(JSON.stringify(execution), execution.updatedAt, execution.id);
   if (result.changes) {
     scheduleAutomaticPluginBlock(execution as unknown as ProcessExecution);
+    if (execution.projectId) queueOrchestratorReconciliationForProject(execution.projectId);
   }
   response
     .status(result.changes ? 200 : 404)
@@ -3124,6 +5845,7 @@ app.put("/api/executions/:id", (request, response) => {
 });
 
 app.delete("/api/executions/:id", (request, response) => {
+  pluginJobs.requestCancellation(request.params.id);
   const result = database
     .prepare("DELETE FROM process_executions WHERE id = ?")
     .run(request.params.id);
@@ -3266,8 +5988,12 @@ const payloadErrorHandler: ErrorRequestHandler = (error, _request, response, nex
 app.use(payloadErrorHandler);
 
 app.listen(port, "127.0.0.1", () => {
-  console.log(`ContentFlow OS API local pronta em http://127.0.0.1:${port}`);
+  console.log(`ContentFlow API local pronta em http://127.0.0.1:${port}`);
+  resumeExecutionOrchestrators();
 });
+
+setInterval(resumeExecutionOrchestrators, 2_000).unref();
+setInterval(reconcileStandaloneProcesses, 1_000).unref();
 
 function boundedEnvironmentNumber(
   name: string,
@@ -3288,12 +6014,22 @@ function decodeUploadName(value: string | string[] | undefined) {
 }
 
 function uploadDirectorySize() {
-  return readdirSync(uploadsDirectory, { withFileTypes: true }).reduce((total, entry) => {
-    if (!entry.isFile()) return total;
-    try {
-      return total + statSync(path.join(uploadsDirectory, entry.name)).size;
-    } catch {
-      return total;
-    }
-  }, 0);
+  return directorySize(uploadsDirectory);
+}
+
+function directorySize(directory: string, recursive = false): number {
+  try {
+    return readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
+      const entryPath = path.join(directory, entry.name);
+      if (recursive && entry.isDirectory()) return total + directorySize(entryPath, true);
+      if (!entry.isFile()) return total;
+      try {
+        return total + statSync(entryPath).size;
+      } catch {
+        return total;
+      }
+    }, 0);
+  } catch {
+    return 0;
+  }
 }

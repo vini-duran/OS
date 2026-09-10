@@ -9,6 +9,8 @@ import {
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { AppPreferencesProvider } from "@/lib/app-preferences";
+import { DesktopHumanTaskNotifications } from "@/components/desktop-human-task-notifications";
+import { useDatabaseConnectionError } from "@/lib/store";
 
 import appCss from "../styles.css?url";
 
@@ -74,15 +76,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "ContentFlow OS — Gerenciador estratégico de métodos" },
+      { title: "ContentFlow — Gerenciador estratégico de métodos" },
       {
         name: "description",
         content:
           "Gerenciador estratégico de métodos para a produção completa de canais do YouTube: tema, roteiro, narração, edição e publicação.",
       },
-      { name: "author", content: "ContentFlow OS" },
+      { name: "author", content: "ContentFlow" },
       { name: "theme-color", content: "#08111F" },
-      { property: "og:title", content: "ContentFlow OS" },
+      { property: "og:title", content: "ContentFlow" },
       {
         property: "og:description",
         content:
@@ -96,7 +98,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      { rel: "icon", href: "/favicon-32.png", type: "image/png", sizes: "32x32" },
+      { rel: "icon", href: "/favicon-192.png", type: "image/png", sizes: "192x192" },
+      { rel: "apple-touch-icon", href: "/apple-touch-icon.png", sizes: "180x180" },
     ],
   }),
   shellComponent: RootShell,
@@ -121,10 +125,20 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const connectionError = useDatabaseConnectionError();
 
   return (
     <QueryClientProvider client={queryClient}>
       <AppPreferencesProvider>
+        <DesktopHumanTaskNotifications />
+        {connectionError && (
+          <div
+            role="alert"
+            className="sticky top-0 z-50 border-b border-destructive/40 bg-background px-4 py-3 text-center text-sm text-destructive"
+          >
+            {connectionError}
+          </div>
+        )}
         {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />
       </AppPreferencesProvider>

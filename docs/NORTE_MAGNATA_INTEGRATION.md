@@ -1,50 +1,32 @@
-# Integração Norte Magnata no ContentFlow OS
+# Integração Norte Magnata — fonte histórica e destino atual
 
 ## Estado
 
-Esta integração está em desenvolvimento na branch `codex/norte-magnata-brief-pesquisa`.
+A pesquisa estratégica por canal foi preservada na consolidação da main 0.5.5.
+Veja [funcionamento](CHANNEL_RESEARCH.md) e [decisões/evidências](MAIN_055_RECONCILIATION.md).
+Sua presença na fonte não prova que esteja na release instalada.
 
-O primeiro incremento cria a base universal de pesquisa por canal:
+As pastas `plugins/private/norte-magnata-*` e o template em `docs/templates/`
+foram mantidos para não descartar o trabalho da main anterior. São referências
+históricas, **não instrução para substituir os plugins da produção atual**.
+Não são incluídos nem ativados pelo build desktop.
 
-```text
-Pesquisa factual manual
-→ brief local sem IA
-→ aprovação explícita
-→ Biblioteca Estratégica
-→ Método Tema curado
-```
+## Destinos canônicos
 
-Ela não executa título, thumbnail, roteiro, narração, assets, edição, renderização ou publicação.
+- [Automation_Magnata](https://github.com/vini-duran/Automation_Magnata):
+  Proposta Única, Métodos, estratégia, documentação e operação do projeto.
+- [ContentFlow_Universal_Integrations](https://github.com/vini-duran/ContentFlow_Universal_Integrations):
+  componentes reutilizáveis, governança, entrada e atualização.
+- [OS](https://github.com/vini-duran/OS): aplicativo, runtime e compatibilidade.
+- Somente local: banco ativo, mídias, credenciais, cookies e perfis de navegador.
 
-## O que é versionado aqui
+Não migrar ou instalar essas cópias históricas por conta própria. A migração de
+fontes específicas exige comparar origem, versão, dependências e testes com o
+repositório do projeto, preservando os caminhos operacionais existentes.
 
-- código do ContentFlow OS;
-- plugins privados e seus testes;
-- templates de Método;
-- documentação operacional;
-- instruções de atualização, teste e handoff.
+## Outra máquina
 
-## O que não entra no Git
-
-- chaves de API, tokens, cookies e sessões;
-- perfil Chrome, dados de Keychain e credenciais do macOS;
-- caminhos absolutos da máquina;
-- banco local do App, uploads e mídia de produção.
-
-## Continuidade em outra máquina
-
-1. Clone o fork `vini-duran/OS` na branch aprovada.
-2. Instale as dependências e use o runtime compatível com o `package.json`.
-3. Instale o App empacotado correspondente ao commit aprovado; não misture App antigo com plugins novos.
-4. Vincule cada pasta de plugin e conceda somente as permissões declaradas.
-5. Preencha credenciais no cofre local do App. Nunca copie o banco ou Keychain enquanto o App estiver aberto.
-6. Leia `CHANNEL_RESEARCH.md` antes de configurar o Norte Magnata.
-
-## Critério para promover ao main
-
-- App de teste para macOS compilado a partir do commit exato;
-- plugin de pesquisa preserva consentimento em atualização compatível;
-- chaves continuam no cofre após fechar/reabrir o App;
-- fluxo Pesquisa → Brief → Tema é testado sem produção real;
-- `typecheck`, build e testes do plugin passam;
-- nenhum segredo ou arquivo local entra no diff.
+Use a main universal e o artefato fixado no manifesto aprovado. Não procure
+uma branch antiga, não compile o Core para instalar plugins, não recrie produção
+nem copie banco/cofre como método de atualização. O projeto designado fornece
+seu resumo vigente e a etapa autorizada depois da entrada universal.

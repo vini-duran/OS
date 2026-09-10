@@ -34,11 +34,16 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
 
 ## Estado da rodada 2026-09-09
 
-### Último avanço — distribuição candidata publicada e download conferido
+### Último avanço — fonte reconciliada e distribuição identificada
+
+A base funcional 0.5.5 foi reconciliada com a main anterior sem descartar a
+pesquisa de canal e os consentimentos compatíveis. Veja
+[decisões e evidências](MAIN_055_RECONCILIATION.md). Esta consolidação é de fonte:
+não substitui o aplicativo instalado nem recompõe a release existente.
 
 Release [0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1), fonte `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`. ZIP corrigido de 217598291 bytes, SHA-256 `4bae42ecb876fc443bb888b08628cbed016e496eaf3f483f6f9e90da5dd738e9`. Bundle assinado ad hoc idêntico ao instalado/conferido, extração e download verificados. Atualizador real testado em isolamento com SQLite sintético, sem abrir o app.
 
-Rota limitada ao snapshot de origem homologado. [Registro completo e limites](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/releases/APP_0_5_5_ECOSSISTEMA_1.md). Sem notarização nem promessa de migração de qualquer versão. Reconciliação do código funcional com esta main histórica permanece separada; o portal aponta ao artefato fixado correto.
+Rota limitada ao snapshot de origem homologado. [Registro completo e limites](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/releases/APP_0_5_5_ECOSSISTEMA_1.md). Sem notarização nem promessa de migração de qualquer versão. A release fixada não contém as adições posteriores da consolidação de main.
 
 **Instalação local concluída:** macOS arm64, 0.5.2 → 0.5.5, fonte 64fc1bf,
 no mesmo caminho do aplicativo operacional. Backup do bundle anterior e dados
@@ -64,19 +69,17 @@ autorizar rollback indiscriminado.
   e checkpoint preservados. Nenhum aplicativo instalado ou dado de produção
   foi removido; o volume efetivamente liberado depende do APFS.
 - **Não usar o ZIP antigo para atualizar outra máquina.** Use somente o ZIP
-  corrigido da release acima e o atualizador universal. Reconciliação final
-  do código com a main histórica ainda pendente; o ZIP abaixo é histórico.
+  corrigido da release acima e o atualizador universal. O ZIP abaixo é histórico.
 - Próxima ação detalhada:
-  [pendências da 0.5.5](https://github.com/vini-duran/OS/blob/31de856f60f1ae8064e12c3ffce172abc9b35eda/docs/UPDATE_055_REMAINING.md).
+  [estado e limites da 0.5.5](UPDATE_055_REMAINING.md).
   Recuperação:
-  [migração do cofre](https://github.com/vini-duran/OS/blob/31de856f60f1ae8064e12c3ffce172abc9b35eda/docs/CREDENTIAL_VAULT_MIGRATION.md).
+  [migração do cofre](CREDENTIAL_VAULT_MIGRATION.md).
 
-### Base da candidata e evidências anteriores
+### Histórico da candidata — não usar como instrução vigente
 
 Upstream `v0.5.5` (`8fe65673332a8eab8542a72f87966abc94310759`) integrado
-apenas em clone de trabalho do fork para revisão. A distribuição existente
-continua `v0.5.2-ecossistema.1`. A promoção funcional para main e a nova release
-estão pendentes de reconciliação e revisão. A instalação local foi substituída
+inicialmente em clone de trabalho do fork para revisão. Naquele momento a distribuição
+era `v0.5.2-ecossistema.1` e a promoção estava pendente. A instalação local foi substituída
 apenas após os testes e backup descritos acima. Testes de fonte, sozinhos,
 não comprovam migração real.
 
@@ -94,10 +97,9 @@ Avanço da candidata, sem aprovação de instalação:
   separadamente, sem repetir todos os testes.
 - Migração da instalação existente, conexões reais e execução de seus plugins
   não foram validadas por esse cenário sintético. Windows e Linux não homologados.
-- Antes de promover a fonte, reconciliar também as diferenças com a main legada
-  do fork. Não resolver conflitos escolhendo uma branch inteira nem apagar
-  customizações para facilitar o merge. Nenhum merge dessa reconciliação foi
-  aplicado ao aplicativo ou ao checkout operacional.
+- A reconciliação com a main legada, pendente nessa fase, está registrada acima.
+  Não resolver conflitos escolhendo uma branch inteira nem apagar customizações
+  para facilitar o merge. Não foi aplicada ao aplicativo operacional.
 
 ## Histórico: integração v0.3.5 — 2026-08-23
 
