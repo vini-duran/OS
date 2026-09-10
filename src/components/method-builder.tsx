@@ -25,6 +25,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   Code2,
   Copy,
@@ -147,6 +148,7 @@ type DiscoveredPlugin = {
   manifest: PluginManifest;
   enabled?: boolean;
   executable?: boolean;
+  profileCount?: number;
 };
 
 type LocalPluginConnection = {
@@ -158,6 +160,15 @@ type LocalPluginConnection = {
   metadata: Record<string, unknown>;
   requiredSecretKeys: string[];
   connectedSecretKeys: string[];
+};
+
+type ManagedPluginProfile = {
+  id: string;
+  pluginId: string;
+  name: string;
+  alias: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 const BLOCK_META: Record<
@@ -261,6 +272,8 @@ export function MethodBuilder({
   const channels = useChannels();
   const collections = useLibraryCollections(channelId);
   const [processType, setProcessType] = useState<UniversalProcess>(initialProcess ?? "theme");
+  const [draftName, setDraftName] = useState("");
+  const [draftImageUrl, setDraftImageUrl] = useState<string>();
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<ActionBlock[]>([]);
@@ -290,9 +303,9 @@ export function MethodBuilder({
     .filter((candidate) => candidate.id !== channelId)
     .map((candidate) => ({
       channel: candidate,
-      blocks: candidate.methods?.[processType]?.blocks ?? [],
+      method: candidate.methods?.[processType],
     }))
-    .filter((candidate) => candidate.blocks.length > 0);
+    .filter((candidate) => candidate.method?.blocks.length);
 
   currentProcessRef.current = processType;
 
@@ -329,8 +342,11 @@ export function MethodBuilder({
     if (!changedProcess && isDirty) return;
 
     const recovered = changedProcess ? readMethodDraft(channelId, processType) : undefined;
+    const loadedMethod = recovered ?? method;
+    setDraftName(loadedMethod?.name ?? `Método de ${PROCESS_META[processType].label}`);
+    setDraftImageUrl(loadedMethod?.imageUrl);
     setDraftBlocks(
-      structuredClone(recovered?.blocks ?? method?.blocks ?? []).map((block) =>
+      structuredClone(loadedMethod?.blocks ?? []).map((block) =>
         normalizeActionBlock(block, processType),
       ),
     );
@@ -351,6 +367,8 @@ export function MethodBuilder({
         .catch(() => undefined)
         .then(() =>
           setChannelMethod(channel.id, savingProcess, {
+            name: draftName.trim() || `Método de ${PROCESS_META[savingProcess].label}`,
+            imageUrl: draftImageUrl,
             processType: savingProcess,
             blocks: savingBlocks,
           }),
@@ -379,7 +397,7 @@ export function MethodBuilder({
         });
       }
     },
-    [blocks, channel, processType],
+    [blocks, channel, draftImageUrl, draftName, processType],
   );
 
   useEffect(() => {
@@ -405,9 +423,20 @@ export function MethodBuilder({
       pendingFileImport.method.blocks,
       uid,
     ).map((block) => normalizeActionBlock(block, processType));
+    const importedName = pendingFileImport.method.name || pendingFileImport.name;
+    setDraftName(importedName);
+    setDraftImageUrl(pendingFileImport.method.imageUrl);
     setDraftBlocks(importedBlocks);
-    rememberMethodDraft(channelId, processType, { processType, blocks: importedBlocks }, (error) =>
-      toast.error("Método não salvo", { description: error.message }),
+    rememberMethodDraft(
+      channelId,
+      processType,
+      {
+        name: importedName,
+        imageUrl: pendingFileImport.method.imageUrl,
+        processType,
+        blocks: importedBlocks,
+      },
+      (error) => toast.error("Método não salvo", { description: error.message }),
     );
     setSelectedBlockId(importedBlocks[0]?.id ?? null);
     setIsDirty(true);
@@ -423,8 +452,12 @@ export function MethodBuilder({
 
   const saveBlocks = (nextBlocks: ActionBlock[]) => {
     editVersionRef.current += 1;
-    rememberMethodDraft(channelId, processType, { processType, blocks: nextBlocks }, (error) =>
-      toast.error("Método não salvo; rascunho preservado", { description: error.message }),
+    rememberMethodDraft(
+      channelId,
+      processType,
+      { name: draftName, imageUrl: draftImageUrl, processType, blocks: nextBlocks },
+      (error) =>
+        toast.error("Método não salvo; rascunho preservado", { description: error.message }),
     );
     setDraftBlocks(nextBlocks.map((block, order) => ({ ...block, order })));
     setIsDirty(true);
@@ -445,10 +478,12 @@ export function MethodBuilder({
     });
   };
 
-  const importMethod = (sourceChannelName: string, sourceBlocks: ActionBlock[]) => {
-    const importedBlocks = copyImportedBlocks(processType, sourceBlocks, uid, {
+  const importMethod = (sourceChannelName: string, sourceMethod: ProcessMethod) => {
+    const importedBlocks = copyImportedBlocks(processType, sourceMethod.blocks, uid, {
       preserveLocalConnections: true,
     }).map((block) => normalizeActionBlock(block, processType));
+    setDraftName(sourceMethod.name);
+    setDraftImageUrl(sourceMethod.imageUrl);
     saveBlocks(importedBlocks);
     setSelectedBlockId(importedBlocks[0]?.id ?? null);
     setLibraryOpen(false);
@@ -460,9 +495,26 @@ export function MethodBuilder({
   const shareMethod = async () => {
     if (!blocks.length) return;
     const processLabel = PROCESS_META[processType].label;
-    const fileName = `metodo-${processType}.contentflow-method.json`;
-    const contents = serializeMethodFile(`Método de ${processLabel}`, { processType, blocks });
-    const file = new File([contents], fileName, { type: "application/json" });
+    const fileName = `metodo-${processType}.contentflow-method.zip`;
+    const methodName = draftName.trim() || `Método de ${processLabel}`;
+    const contents = serializeMethodFile(
+      methodName,
+      { name: methodName, imageUrl: draftImageUrl, processType, blocks },
+      collections,
+    );
+    const packageResponse = await fetch("/api/method-packages/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manifest: contents }),
+    });
+    if (!packageResponse.ok) {
+      const result = (await packageResponse.json()) as { error?: string };
+      toast.error("Não foi possível criar o pacote", {
+        description: result.error,
+      });
+      return;
+    }
+    const file = new File([await packageResponse.blob()], fileName, { type: "application/zip" });
 
     if (navigator.share && navigator.canShare?.({ files: [file] })) {
       try {
@@ -490,7 +542,22 @@ export function MethodBuilder({
 
   const importSharedMethod = async (file: File) => {
     try {
-      const sharedMethod = parseMethodFile(await file.text());
+      let contents: string;
+      if (file.name.toLocaleLowerCase().endsWith(".zip")) {
+        const response = await fetch("/api/method-packages/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/zip" },
+          body: file,
+        });
+        const result = (await response.json()) as { manifest?: string; error?: string };
+        if (!response.ok || !result.manifest) {
+          throw new Error(result.error ?? "O pacote não pôde ser aberto.");
+        }
+        contents = result.manifest;
+      } else {
+        contents = await file.text();
+      }
+      const sharedMethod = parseMethodFile(contents);
       if (
         isDirty &&
         !window.confirm("Importar substituirá as alterações ainda não salvas. Continuar?")
@@ -571,7 +638,27 @@ export function MethodBuilder({
         <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">Método de {PROCESS_META[processType].label}</h2>
+              <Input
+                value={draftName}
+                onChange={(event) => {
+                  const name = event.target.value.slice(0, 200);
+                  setDraftName(name);
+                  editVersionRef.current += 1;
+                  rememberMethodDraft(
+                    channelId,
+                    processType,
+                    { name, imageUrl: draftImageUrl, processType, blocks },
+                    (error) =>
+                      toast.error("Método não salvo; rascunho preservado", {
+                        description: error.message,
+                      }),
+                  );
+                  setIsDirty(true);
+                  setSaveStatus("pending");
+                }}
+                aria-label="Nome do método"
+                className="h-9 max-w-md text-lg font-semibold"
+              />
               <Badge variant="outline" className="border-brand/30 text-brand-soft">
                 {blocks.length} {blocks.length === 1 ? "bloco" : "blocos"}
               </Badge>
@@ -584,7 +671,7 @@ export function MethodBuilder({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".json,.contentflow-method.json,application/json"
+              accept=".zip,.json,.contentflow-method.json,application/zip,application/json"
               className="hidden"
               onChange={(event) => {
                 const file = event.target.files?.[0];
@@ -629,20 +716,25 @@ export function MethodBuilder({
                 </DialogHeader>
                 {reusableMethods.length ? (
                   <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-                    {reusableMethods.map(({ channel: sourceChannel, blocks: sourceBlocks }) => (
+                    {reusableMethods.map(({ channel: sourceChannel, method: sourceMethod }) => (
                       <button
                         key={sourceChannel.id}
                         type="button"
-                        onClick={() => importMethod(sourceChannel.name, sourceBlocks)}
+                        onClick={() =>
+                          sourceMethod && importMethod(sourceChannel.name, sourceMethod)
+                        }
                         className="flex w-full items-center gap-3 rounded-xl border border-border/70 bg-card p-3 text-left transition hover:border-brand/50 hover:bg-brand/5"
                       >
                         <ChannelAvatar channel={sourceChannel} size="md" />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-semibold">
+                            {sourceMethod?.name}
+                          </span>
+                          <span className="block truncate text-[11px] text-muted-foreground">
                             {sourceChannel.name}
                           </span>
                           <span className="mt-1 flex flex-wrap gap-1">
-                            {sourceBlocks.map((block, index) => (
+                            {sourceMethod?.blocks.map((block, index) => (
                               <Badge key={block.id} variant="secondary" className="text-[9px]">
                                 {index + 1}. {BLOCK_META[block.type].label}
                               </Badge>
@@ -1073,7 +1165,11 @@ function BlockEditor({
     (capability) => capability.id === block.plugin?.capabilityId,
   );
   const configProperties = selectedCapability?.blockConfigSchema.properties ?? {};
-  const profileConfigurationKey = selectedPlugin?.manifest.profileSetup?.configurationKey;
+  const profileSetup = selectedPlugin?.manifest.profileSetup;
+  const profileConfigurationKeys = [
+    profileSetup?.configurationKey,
+    profileSetup?.fallbackConfigurationKey,
+  ].filter((key): key is string => Boolean(key));
   const generationModeSchema = configProperties.generationMode;
   const generationModeOptions = [
     ...(generationModeSchema?.enum ?? []),
@@ -1087,11 +1183,12 @@ function BlockEditor({
       ? generationMode
       : "advanced";
   const primaryConfigurationEntries = Object.entries(configProperties).filter(([key]) =>
-    [profileConfigurationKey, "model", "voice_id"].filter(Boolean).includes(key),
+    ["model", "voice_id"].includes(key),
   );
   const advancedConfigurationEntries = Object.entries(configProperties).filter(
     ([key]) =>
       !(supportsOutlineSequence && key === "generationMode") &&
+      !profileConfigurationKeys.includes(key) &&
       !primaryConfigurationEntries.some(([primaryKey]) => primaryKey === key),
   );
   const conversationSources = PROCESS_ORDER.flatMap((candidateProcess) => {
@@ -1106,36 +1203,22 @@ function BlockEditor({
     });
   });
 
-  const renderConfigurationField = ([key, schema]: [string, JsonSchema]) => {
-    const profileSetup =
-      selectedPlugin?.manifest.profileSetup?.configurationKey === key
-        ? selectedPlugin.manifest.profileSetup
-        : undefined;
-    return (
-      <div key={key} className={cn(profileSetup && "grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]")}>
-        <PluginConfigurationField
-          propertyKey={key}
-          schema={schema}
-          value={block.plugin?.configuration[key]}
-          onChange={(value) =>
-            onChange({
-              plugin: {
-                ...block.plugin!,
-                configuration: { ...block.plugin!.configuration, [key]: value },
-              },
-            })
-          }
-        />
-        {profileSetup && block.plugin && (
-          <ProfileSetupControl
-            pluginId={block.plugin.pluginId}
-            profileSetup={profileSetup}
-            configuration={block.plugin.configuration}
-          />
-        )}
-      </div>
-    );
-  };
+  const renderConfigurationField = ([key, schema]: [string, JsonSchema]) => (
+    <PluginConfigurationField
+      key={key}
+      propertyKey={key}
+      schema={schema}
+      value={block.plugin?.configuration[key]}
+      onChange={(value) =>
+        onChange({
+          plugin: {
+            ...block.plugin!,
+            configuration: { ...block.plugin!.configuration, [key]: value },
+          },
+        })
+      }
+    />
+  );
 
   return (
     <div className="min-w-0">
@@ -1347,9 +1430,16 @@ function BlockEditor({
                     (item) => item.plugin.id === pluginId && item.capability.id === capabilityId,
                   );
                   const properties = selection?.capability.blockConfigSchema.properties ?? {};
+                  const managedProfileKeys = [
+                    selection?.plugin.manifest.profileSetup?.configurationKey,
+                    selection?.plugin.manifest.profileSetup?.fallbackConfigurationKey,
+                  ].filter((key): key is string => Boolean(key));
                   const configuration = Object.fromEntries(
                     Object.entries(properties)
-                      .filter(([, schema]) => schema.default !== undefined)
+                      .filter(
+                        ([key, schema]) =>
+                          schema.default !== undefined && !managedProfileKeys.includes(key),
+                      )
                       .map(([key, schema]) => [key, schema.default as string | number | boolean]),
                   );
                   const requestedInputs = block.inputs?.map((input) => {
@@ -1432,6 +1522,16 @@ function BlockEditor({
                         connectionRequired: true,
                       },
                     })
+                  }
+                />
+              )}
+              {profileSetup && block.plugin && (
+                <ManagedProfileSelector
+                  plugin={selectedPlugin}
+                  profileSetup={profileSetup}
+                  configuration={block.plugin.configuration}
+                  onChange={(configuration) =>
+                    onChange({ plugin: { ...block.plugin!, configuration } })
                   }
                 />
               )}
@@ -2281,139 +2381,202 @@ function InstructionEditor({
   );
 }
 
-function ProfileSetupControl({
-  pluginId,
+function ManagedProfileSelector({
+  plugin,
   profileSetup,
   configuration,
+  onChange,
 }: {
-  pluginId: string;
+  plugin: DiscoveredPlugin;
   profileSetup: PluginProfileSetup;
   configuration: Record<string, string | number | boolean>;
+  onChange: (configuration: Record<string, string | number | boolean>) => void;
 }) {
-  type ProfileStatus = "checking" | "ready" | "missing" | "preparing";
-  const primaryProfile = String(configuration[profileSetup.configurationKey] ?? "").trim();
-  const fallbackProfilesValue = profileSetup.fallbackConfigurationKey
+  const [profiles, setProfiles] = useState<ManagedPluginProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const primaryAlias = String(configuration[profileSetup.configurationKey] ?? "").trim();
+  const fallbackAliases = profileSetup.fallbackConfigurationKey
     ? String(configuration[profileSetup.fallbackConfigurationKey] ?? "")
-    : "";
-  const profileNames = useMemo(
-    () =>
-      [
-        primaryProfile,
-        ...fallbackProfilesValue
-          .split(/[\n,;]+/)
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ].filter((value, index, values) => value && values.indexOf(value) === index),
-    [fallbackProfilesValue, primaryProfile],
-  );
-  const [statuses, setStatuses] = useState<Record<string, ProfileStatus>>({});
+        .split(/[\n,;]+/)
+        .map((value) => value.trim())
+        .filter((value, index, values) => value && values.indexOf(value) === index)
+    : [];
 
   useEffect(() => {
-    if (!profileNames.length) return;
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setStatuses(Object.fromEntries(profileNames.map((name) => [name, "checking"])));
-      void Promise.all(
-        profileNames.map(async (profileName) => {
-          try {
-            const response = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/profile`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "status",
-                configuration: {
-                  ...configuration,
-                  [profileSetup.configurationKey]: profileName,
-                },
-              }),
-              signal: controller.signal,
-            });
-            const payload = (await response.json()) as { ready?: boolean };
-            if (!response.ok) throw new Error();
-            return [profileName, payload.ready ? "ready" : "missing"] as const;
-          } catch {
-            return [profileName, "missing"] as const;
-          }
-        }),
-      ).then((entries) => {
-        if (!controller.signal.aborted) setStatuses(Object.fromEntries(entries));
+    setLoading(true);
+    void fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const result = (await response.json()) as {
+          profiles?: ManagedPluginProfile[];
+          error?: string;
+        };
+        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os perfis.");
+        setProfiles(result.profiles ?? []);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        toast.error("Não foi possível carregar os perfis", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
-    }, 500);
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
     };
-  }, [configuration, pluginId, profileNames, profileSetup.configurationKey]);
+  }, [plugin.id]);
 
-  const prepare = async (profileName: string) => {
-    if (!profileName || statuses[profileName] === "preparing") return;
-    setStatuses((current) => ({ ...current, [profileName]: "preparing" }));
-    toast.info("Prepare a conta na janela do navegador", {
-      description:
-        profileSetup.description ??
-        `A conta ${profileName} será guardada quando a área do provedor estiver pronta.`,
+  function updateFallbacks(nextAliases: string[]) {
+    if (!profileSetup.fallbackConfigurationKey) return;
+    onChange({
+      ...configuration,
+      [profileSetup.fallbackConfigurationKey]: nextAliases.join("\n"),
     });
-    try {
-      const response = await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/profile`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "prepare",
-          configuration: { ...configuration, [profileSetup.configurationKey]: profileName },
-        }),
-      });
-      const payload = (await response.json()) as {
-        ready?: boolean;
-        error?: string;
-        message?: string;
-      };
-      if (!response.ok || !payload.ready) {
-        throw new Error(payload.error ?? "O login não foi confirmado pelo plugin.");
-      }
-      setStatuses((current) => ({ ...current, [profileName]: "ready" }));
-      toast.success("Conta pronta", {
-        description: payload.message ?? `${profileName} está pronta para futuras execuções.`,
-      });
-    } catch (error) {
-      setStatuses((current) => ({ ...current, [profileName]: "missing" }));
-      toast.error("Não foi possível preparar a conta", {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    }
-  };
+  }
+
+  function toggleFallback(alias: string, checked: boolean) {
+    updateFallbacks(
+      checked
+        ? [...fallbackAliases.filter((value) => value !== alias), alias]
+        : fallbackAliases.filter((value) => value !== alias),
+    );
+  }
+
+  function moveFallback(alias: string, direction: -1 | 1) {
+    const index = fallbackAliases.indexOf(alias);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= fallbackAliases.length) return;
+    updateFallbacks(arrayMove(fallbackAliases, index, target));
+  }
 
   return (
-    <div className="flex min-w-44 flex-col justify-end gap-1.5 sm:pt-5">
-      {profileNames.map((profileName, index) => {
-        const status = statuses[profileName] ?? "checking";
-        const accountLabel = index === 0 ? "Conta principal" : `Conta alternativa ${index}`;
-        return (
-          <Button
-            key={profileName}
-            type="button"
-            variant={status === "ready" ? "outline" : "default"}
-            className="justify-start gap-1.5"
-            disabled={status === "preparing" || status === "checking"}
-            onClick={() => void prepare(profileName)}
+    <section className="space-y-3 rounded-lg border border-border/70 bg-card/60 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <Label>Perfil da conta</Label>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Selecione um perfil já cadastrado. A preparação e o gerenciamento ficam em Plugins.
+          </p>
+        </div>
+        <Button type="button" size="sm" variant="ghost" className="h-7 text-[10px]" asChild>
+          <a href="/plugins">Gerenciar perfis</a>
+        </Button>
+      </div>
+
+      {profiles.length ? (
+        <>
+          <Select
+            value={primaryAlias}
+            onValueChange={(alias) =>
+              onChange({
+                ...configuration,
+                [profileSetup.configurationKey]: alias,
+                ...(profileSetup.fallbackConfigurationKey
+                  ? {
+                      [profileSetup.fallbackConfigurationKey]: fallbackAliases
+                        .filter((value) => value !== alias)
+                        .join("\n"),
+                    }
+                  : {}),
+              })
+            }
           >
-            {status === "preparing" || status === "checking" ? (
-              <LoaderCircle className="size-3.5 animate-spin" />
-            ) : status === "ready" ? (
-              <CheckCircle2 className="size-3.5" />
-            ) : (
-              <CircleUserRound className="size-3.5" />
-            )}
-            {status === "ready" ? `${accountLabel} pronta` : profileSetup.label}
-            <span className="ml-auto text-[10px] opacity-70">{profileName}</span>
-          </Button>
-        );
-      })}
-      <p className="text-[10px] text-muted-foreground">
-        {profileNames.length
-          ? "Cada conta mantém login separado. Uma conta alternativa só é usada após falha técnica permitida."
-          : (profileSetup.description ?? "Informe pelo menos um perfil de conta.")}
-      </p>
-    </div>
+            <SelectTrigger>
+              <SelectValue
+                placeholder={loading ? "Carregando perfis…" : "Selecione o perfil principal"}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {profiles.map((profile) => (
+                <SelectItem key={profile.id} value={profile.alias}>
+                  {profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {profileSetup.fallbackConfigurationKey && (
+            <div className="space-y-2">
+              <div>
+                <p className="text-[11px] font-medium">Perfis alternativos</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Em caso de falha, serão tentados na ordem abaixo.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                {profiles
+                  .filter((profile) => profile.alias !== primaryAlias)
+                  .map((profile) => {
+                    const fallbackIndex = fallbackAliases.indexOf(profile.alias);
+                    const selected = fallbackIndex >= 0;
+                    return (
+                      <div
+                        key={profile.id}
+                        className="flex items-center gap-2 rounded-md border border-border/70 px-2.5 py-2"
+                      >
+                        <Checkbox
+                          id={`${plugin.id}-${profile.id}-fallback`}
+                          checked={selected}
+                          onCheckedChange={(checked) =>
+                            toggleFallback(profile.alias, checked === true)
+                          }
+                        />
+                        <Label
+                          htmlFor={`${plugin.id}-${profile.id}-fallback`}
+                          className="min-w-0 flex-1 cursor-pointer text-xs font-normal"
+                        >
+                          {selected && (
+                            <span className="mr-1.5 text-[10px] text-muted-foreground">
+                              {fallbackIndex + 1}.
+                            </span>
+                          )}
+                          {profile.name}
+                        </Label>
+                        {selected && (
+                          <div className="flex gap-0.5">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="size-7"
+                              disabled={fallbackIndex === 0}
+                              aria-label={`Subir ${profile.name}`}
+                              onClick={() => moveFallback(profile.alias, -1)}
+                            >
+                              <ChevronUp className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="size-7"
+                              disabled={fallbackIndex === fallbackAliases.length - 1}
+                              aria-label={`Descer ${profile.name}`}
+                              onClick={() => moveFallback(profile.alias, 1)}
+                            >
+                              <ChevronDown className="size-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
+          {loading
+            ? "Carregando perfis…"
+            : "Nenhum perfil cadastrado para este plugin. Abra Plugins para adicionar o primeiro."}
+        </p>
+      )}
+    </section>
   );
 }
 

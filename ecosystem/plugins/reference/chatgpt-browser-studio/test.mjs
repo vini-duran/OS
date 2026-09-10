@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  CHATGPT_SEND_BUTTON_SELECTORS,
   __test,
   attachmentsAreReady,
   composerUploadState,
@@ -67,7 +68,7 @@ test("não repete no contexto uma entrada já interpolada na instrução", () =>
 
 test("manifesto declara oito capabilities modulares", () => {
   assert.equal(manifest.id, "local.contentflow.chatgpt-browser-studio");
-  assert.equal(manifest.version, "1.0.9");
+  assert.equal(manifest.version, "1.0.10");
   assert.equal(manifest.supportsConversationContinuation, undefined);
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
   assert.equal(manifest.settingsSchema.properties.allowExistingChromeProfile.default, false);
@@ -789,6 +790,13 @@ test("reconhece o controle de geração nos idiomas usados pelo ChatGPT", () => 
   assert.equal(__test.generationControlIsStop("Detener respuesta", "composer-submit-button"), true);
   assert.equal(__test.generationControlIsStop("Enviar mensagem", "composer-submit-button"), false);
   assert.equal(__test.generationControlIsStop("", "stop-button"), true);
+});
+
+test("envia pelo seletor atual e pelo seletor legado do compositor", () => {
+  assert.deepEqual(CHATGPT_SEND_BUTTON_SELECTORS, [
+    'button[data-testid="send-button"]:not(:disabled):not([aria-disabled="true"])',
+    'button#composer-submit-button:not(:disabled):not([aria-disabled="true"])',
+  ]);
 });
 
 test("limpa markdown de saída", () => {

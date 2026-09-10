@@ -720,6 +720,37 @@ async function launchOrReuseChrome({
   );
 }
 
+async function waitForChildExit(child, timeoutMs = 5000) {
+  if (!child || child.exitCode !== null) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+}
+
+async function closeBrowserGracefully(client, child) {
+  try {
+    await client?.send("Browser.close");
+  } catch {}
+  const exited = await waitForChildExit(child);
+  client?.close();
+  if (!exited && child?.exitCode === null) {
+    try {
+      child.kill();
+    } catch {}
+  }
+}
+
 class CdpClient {
   constructor(wsUrl, trace) {
     this.wsUrl = wsUrl;
@@ -958,6 +989,11 @@ function cfGeneratedImages(){return (${collectGeneratedImages.toString()})(docum
 function cfResolveComparison(){const body=document.body?.innerText||'';if(!/giving feedback on a new version|qual resposta voc[êe] prefere|dando feedback sobre uma nova vers[ãa]o/i.test(body))return false;const button=[...document.querySelectorAll('button')].find(el=>cfVisible(el)&&/prefer this response|prefiro esta resposta|choose this response|escolher esta resposta/i.test(cfText(el)));if(!button)return false;button.click();return true}
 function cfResponseState(){const comparisonResolved=cfResolveComparison(),nodes=cfAssistantNodes(),entries=nodes.map(el=>({text:(el.innerText||el.textContent||'').trim(),links:[...el.querySelectorAll('a[href]')].map(a=>({href:a.href,label:(a.innerText||a.textContent||'').trim()})).filter(x=>/^https:\/\//i.test(x.href))})).filter(x=>x.text);return{texts:entries.map(x=>x.text),entries,stop:cfGenerating(),comparisonResolved,bodyHint:(document.body?.innerText||'').slice(0,6000)}}
 `;
+
+export const CHATGPT_SEND_BUTTON_SELECTORS = [
+  'button[data-testid="send-button"]:not(:disabled):not([aria-disabled="true"])',
+  'button#composer-submit-button:not(:disabled):not([aria-disabled="true"])',
+];
 
 async function openNewConversation(client, sessionId, signal) {
   await client.send("Page.navigate", { url: CHATGPT_NEW_URL }, sessionId);
@@ -1301,9 +1337,7 @@ async function clickSend(client, sessionId, bridge, signal, operationKey) {
       bridge.dispatch(
         "click",
         {
-          selectors: [
-            'button[data-testid="send-button"]:not(:disabled):not([aria-disabled="true"])',
-          ],
+          selectors: CHATGPT_SEND_BUTTON_SELECTORS,
         },
         `${operationKey}:${attempt}`,
       ),
@@ -1626,13 +1660,7 @@ async function configureProfile(request, services) {
     );
   } finally {
     bridge?.dispose();
-    try {
-      await client?.send("Browser.close");
-    } catch {}
-    client?.close();
-    try {
-      child?.kill();
-    } catch {}
+    await closeBrowserGracefully(client, child);
   }
 }
 
@@ -1940,6 +1968,8 @@ export const __test = {
   profilePathFor,
   runtimeProfilePath,
   profilePort,
+  waitForChildExit,
+  closeBrowserGracefully,
   taskPageMarker,
   prepareProfileSession,
   searchResponseValues,

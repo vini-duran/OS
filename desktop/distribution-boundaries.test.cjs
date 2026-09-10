@@ -29,6 +29,21 @@ test("atualizações preservam plugins, mas o instalador não os fornece", () =>
   assert.equal(packageJson.build.files.includes("ecosystem/plugins/reference/**/*"), false);
 });
 
+test("distribui a Browser Bridge separadamente em uma pasta estável", () => {
+  const bridgeResource = packageJson.build.extraResources.find(
+    (entry) => typeof entry === "object" && entry.from === "ecosystem/browser-bridge",
+  );
+  assert.equal(bridgeResource.to, "browser-bridge");
+  assert.ok(bridgeResource.filter.includes("manifest.json"));
+  assert.ok(bridgeResource.filter.includes("service-worker.js"));
+  assert.ok(bridgeResource.filter.includes("content-script.js"));
+});
+
+test("dependências requeridas pela API empacotada são dependências de produção", () => {
+  assert.equal(packageJson.dependencies.archiver, "^7.0.1");
+  assert.equal(packageJson.devDependencies.archiver, undefined);
+});
+
 test("o Electron inicia fechado, isolado e sem bloquear no stdout da API", () => {
   assert.match(desktopMain, /show:\s*false/);
   assert.match(desktopMain, /contextIsolation:\s*true/);
@@ -45,6 +60,8 @@ test("a API inesperadamente encerrada também fecha o Electron quando retorna c�
 
 test("pendências humanas atualizam badge e notificações pelo preload isolado", () => {
   assert.match(desktopMain, /setOverlayIcon/);
+  assert.match(desktopMain, /tone === "error"/);
+  assert.match(desktopMain, /value\.severity === "error"/);
   assert.match(desktopMain, /new Notification/);
   assert.match(desktopMain, /notification\.on\("click"/);
   assert.match(desktopPreload, /humanTasks:\s*Object\.freeze/);
