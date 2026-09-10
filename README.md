@@ -2,11 +2,31 @@
 
 Gerenciador estratégico de métodos para organizar e executar a produção de vídeos. O frontend e a API rodam localmente na máquina do usuário.
 
-## V0 para Windows — sem Node ou terminal
+## Entrada do nosso fork e ecossistema
 
-Usuários leigos podem baixar o instalador pronto na página [Releases](https://github.com/andremjr/contentflow-os/releases). O arquivo **Setup** é a opção recomendada: basta executar, escolher a pasta e abrir o atalho do ContentFlow OS. O arquivo **Portable** não instala nada, mas é mais lento para abrir porque descompacta o aplicativo a cada execução.
+Este é o fork `vini-duran/OS`, baseado no trabalho de André Marinho Jr. Nosso
+ecossistema tem governança própria; uma atualização do autor não substitui
+automaticamente nossa distribuição ou a Proposta Única de um projeto.
 
-O aplicativo inclui uma cópia privada do Node 26, abre como um programa comum do Windows e guarda projetos, plugins e credenciais fora da pasta de instalação. Veja [`docs/DESKTOP_V0.md`](docs/DESKTOP_V0.md) para uso, atualização e compilação.
+| Preciso de | Entrada única |
+| --- | --- |
+| Preparar agente/máquina | [Adoção universal na main](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ADOCAO_UNIVERSAL.md) |
+| Atualizar preservando o que funciona | [Procedimento universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZACAO_UNIVERSAL.md) e [cuidados do App macOS](docs/DESKTOP_MACOS.md) |
+| Encontrar plugins, Métodos e skills | [Catálogo universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/CATALOG.json) |
+| Saber o que posso instalar | [Manifesto da distribuição](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/app-distribution.json) |
+| Integrar uma versão do autor | [Sincronização segura](docs/UPSTREAM_SYNC.md) |
+
+**Situação em 2026-09-09:** a entrada foi consolidada na main; o código antigo
+desta main ainda identifica `0.3.5`. A distribuição existente do nosso fork é
+[v0.5.2-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.2-ecossistema.1),
+validada para instalação limpa em macOS arm64, não para migração irrestrita.
+A integração `0.5.5` está em revisão isolada, sem promoção, nova release ou
+substituição do aplicativo instalado. Não compile esta main antiga para fazer
+downgrade de uma instalação mais recente. Consulte o manifesto antes de instalar.
+
+O operador consulta a main; o Orquestrador cuida das branches de preparação e
+promove apenas o que passou pelos testes. Código publicado, release disponível
+e atualização instalada são estados diferentes.
 
 ## Requisitos para desenvolver o núcleo
 
@@ -22,13 +42,15 @@ node --version
 ## Como executar pelo código-fonte
 
 ```sh
-git clone https://github.com/andremjr/contentflow-os.git
-cd contentflow-os
+git clone --branch main https://github.com/vini-duran/OS.git contentflow-fork-isolado
+cd contentflow-fork-isolado
 npm ci
 npm run dev
 ```
 
-Abra `http://127.0.0.1:8080`.
+Exemplo somente para desenvolvimento isolado. Antes de iniciar, configure dados
+e portas de teste conforme a versão, sem usar o banco/cofre ou plugins ativos.
+Não execute ao lado de uma produção sem demonstrar esse isolamento.
 
 ## Criar ou converter um plugin
 
@@ -43,6 +65,11 @@ Para criar com ChatGPT, Claude, Gemini ou outro agente, use o [pacote compacto p
 
 ## Dados locais
 
+Os detalhes abaixo descrevem a base histórica deste checkout, não comprovam o
+diretório de uma instalação atual. Identifique o caminho efetivamente usado pelo
+processo. `ContentFlow`, `ContentFlow OS` e bancos de nomes diferentes não são
+intercambiáveis. Não mova dados para adequá-los ao texto desta documentação.
+
 No Windows, tanto a execução pelo código-fonte quanto a versão instalada usam o mesmo banco SQLite em `%APPDATA%\ContentFlow OS\data\contentflow-os.sqlite`. Assim, canais, projetos e métodos vistos no preview também aparecem no aplicativo compilado. Em outros sistemas, o desenvolvimento continua usando `data/contentflow-os.sqlite` dentro do repositório.
 
 Na primeira execução da versão atual pelo código-fonte no Windows, um banco legado encontrado em `data/` é migrado automaticamente para a área compartilhada quando ainda não existe um banco no destino.
@@ -53,13 +80,9 @@ O bloco `ESCOLHER` pode declarar **Histórico do canal** como contexto para cons
 
 Não há login nem sincronização em nuvem nesta fase.
 
-Faça backup de `%APPDATA%\ContentFlow OS\data` antes de atualizar ou trocar de computador. Para atualizar o código-fonte:
-
-```sh
-git pull
-npm ci
-npm run dev
-```
+Antes de atualizar ou trocar de computador, faça backup consistente do estado
+local e siga o [procedimento de atualização](docs/DESKTOP_MACOS.md). Não execute
+pull, reset ou substituição sobre um checkout operacional com mudanças locais.
 
 ## Privacidade e integrações
 

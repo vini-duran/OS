@@ -1,47 +1,55 @@
-# ContentFlow OS no macOS (Apple Silicon)
+# Atualização do ContentFlow no macOS
 
-## Compilar
+## Para quem opera
 
-O projeto requer Node 26. Na raiz do repositório, execute:
+Não é preciso escolher uma branch. Comece pelo
+[procedimento universal na main](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZACAO_UNIVERSAL.md).
+Ele aponta a distribuição aprovada do nosso fork. A versão do autor é uma
+referência para manutenção, não uma ordem para substituir seu aplicativo.
 
-```bash
-npm ci
-npm run check
-npm run desktop:mac
-```
+Em 2026-09-09, a distribuição existente é `v0.5.2-ecossistema.1`, testada para
+instalação limpa macOS Apple Silicon. A candidata `0.5.5` está em revisão
+isolada. A main histórica `0.3.5` não deve ser instalada sobre uma versão maior.
+Consulte o [manifesto atual](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/app-distribution.json).
 
-O aplicativo será criado em `release/v0/mac-arm64/ContentFlow OS.app`.
+## O que o técnico deve conferir
 
-## Atualizar sem perder dados
+1. **Onde está o trabalho:** Workplace, projeto legado, bundle realmente aberto,
+   diretório de dados em uso e jobs/automação em andamento. Não mude esses caminhos.
+2. **Qual atualização:** origem, commit, versão, arquitetura, pacote completo e
+   SHA-256. Hash do executável Electron sozinho não identifica código/runtime/plugins
+   que ficam dentro do restante do bundle.
+3. **Como preservar:** checkpoint das mudanças locais, cópia recuperável do App
+   e backup consistente dos dados. Banco SQLite ativo pode depender de WAL/SHM;
+   copiar apenas o arquivo principal não comprova backup completo.
+4. **Como testar:** instalação e interface da candidata com dados sintéticos e
+   diretórios exclusivos de userData, dados e saída. Teste de migração real é
+   separado: exige cópia consistente e controlada, sem ativar jobs, contas ou
+   provedores reais. Não exporte o cofre nem segredos para preparar fixtures.
+5. **Quando aplicar:** após os testes específicos da versão, com janela de
+   manutenção sem jobs ativos. Não mate processos nem reinicie geração para atualizar.
+6. **Como voltar:** registre o recibo/checkpoint exato. Se o banco tiver migrado,
+   restaurar só o App antigo pode não ser suficiente; teste a recuperação conjunta.
 
-Os dados locais ficam fora do pacote `.app`, na pasta de dados do macOS. Isso
-inclui banco, projetos, plugins instalados e credenciais guardadas pelo sistema.
-Para atualizar, feche o App e substitua somente `ContentFlow OS.app` por uma
-compilação nova. Não copie, apague ou recrie a pasta de dados.
+Se qualquer item falhar, mantenha a instalação atual e diga o impacto e a
+recomendação: adaptar, incorporar só a melhoria compatível ou aguardar. Não
+transforme falha de migração em aprovação porque os testes de fonte passaram.
 
-O App usa o runtime Node privado e assinado tanto para a API local quanto para
-os plugins. A identidade desse executável permanece estável entre recompilações,
-evitando que o macOS solicite novamente a senha do chaveiro a cada atualização.
-Na primeira utilização desse runtime, o macOS ainda pode pedir autorização uma
-vez; selecione **Sempre Permitir**. O App não depende de `node.exe`, que existe
-apenas no Windows.
+## Bundle, runtime e cofre são coisas distintas
 
-Desde a v0.3.2, todas as credenciais de plugins usam um único registro no
-Chaveiro. Isso evita uma autorização separada para cada chave de um plugin com
-rotação. Registros anteriores permanecem intactos, mas as credenciais precisam
-ser preenchidas novamente uma vez no novo cofre.
+Substituir apenas alguns arquivos de uma compilação não equivale a instalar o
+pacote completo. Antes de usar um atualizador parcial antigo, confira Node,
+dependências nativas, layout e nomes de executáveis exigidos pela nova versão.
 
-Os plugins opcionais oficiais são copiados para
-`~/Documents/ContentFlow OS/Plugins` sem ativação automática. A atualização não
-remove plugins, consentimentos nem credenciais já armazenados na pasta de dados.
+Assinatura, notarização e identidade do executável devem ser verificadas no
+artefato. Não se presume identidade estável entre recompilações nem ausência de
+novo pedido de acesso ao Chaveiro. Se o macOS pedir consentimento ou bloquear a
+abertura, informe a ação exata ao operador; não desative proteções.
 
-## Teste mínimo antes de substituir uma instalação
+## Compilação de desenvolvimento
 
-1. Abra o App compilado diretamente de `release/v0/mac-arm64`.
-2. Confirme que um projeto existente aparece no painel.
-3. Em **Plugins**, confirme que um plugin previamente consentido permanece
-   ativo após atualização compatível.
-4. Feche a janela e abra o App novamente; no macOS a janela deve reaparecer.
-
-Não versionar credenciais, banco local, cookies, perfis do Chrome, mídia ou
-caminhos específicos desta máquina.
+Use Node 26 e os scripts declarados no `package.json` da revisão fixada. O nome
+do script e do bundle muda entre versões; confira-os antes de executar. Faça
+build em checkout isolado, sem instalar em Applications. Registre commit,
+dependências, log, build-info e hash do pacote completo. O build não constitui
+homologação de interface, instalação ou migração.
