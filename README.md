@@ -17,12 +17,14 @@ automaticamente nossa distribuição ou a Proposta Única de um projeto.
 | Integrar uma versão do autor | [Sincronização segura](docs/UPSTREAM_SYNC.md) |
 
 **Situação em 2026-09-09:** a entrada foi consolidada na main; o código antigo
-desta main ainda identifica `0.3.5`. A distribuição existente do nosso fork é
-[v0.5.2-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.2-ecossistema.1),
-validada para instalação limpa em macOS arm64, não para migração irrestrita.
-A integração `0.5.5` está em revisão isolada, sem promoção, nova release ou
-substituição do aplicativo instalado. Não compile esta main antiga para fazer
-downgrade de uma instalação mais recente. Consulte o manifesto antes de instalar.
+desta main ainda identifica `0.3.5`. A distribuição candidata do nosso fork é
+[v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
+com download/hash conferidos e atualização isolada macOS arm64 testada.
+A origem executável é o commit fixado na release, não esta main histórica.
+Atualização de instalações existentes somente por rota homologada, backup e
+pausa combinada; não é migração irrestrita. Use o
+[atualizador da main universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
+Não compile esta main antiga para fazer downgrade de uma instalação mais recente.
 
 O operador consulta a main; o Orquestrador cuida das branches de preparação e
 promove apenas o que passou pelos testes. Código publicado, release disponível
