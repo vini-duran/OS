@@ -11,6 +11,8 @@ A distribuição homologada anterior permanece disponível, sem substituição l
   diretórios ainda inexistentes sob symlinks. A verificação ocorre antes da
   criação de userData e antes de iniciar a API. Helper incluído no pacote.
 - Validação focal: 29 testes do cofre, 2 de conexões e 9 de distribuição passaram.
+- Validação completa da fonte: `npm run check` passou nesta revisão, incluindo
+  lint, tipos, suítes de regressão e build. Isso não é teste de migração nativa.
 
 ## O que ainda impede promoção funcional e instalação
 
