@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -61,7 +61,7 @@ test("copia a Bridge para uma pasta estável de dados", async () => {
       );
     }
     const destination = stageBrowserBridge(path.join(root, "app"), data);
-    assert.equal(destination, path.join(data, "browser-bridge"));
+    assert.equal(destination, await realpath(path.join(data, "browser-bridge")));
     assert.equal(browserBridgeProfileState(data, "default"), "unknown");
   } finally {
     await rm(root, { recursive: true, force: true });
