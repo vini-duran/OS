@@ -233,7 +233,10 @@ export async function executeRegisteredPlugin(
     args.push(`--allow-fs-read=${readable}`);
   }
   if (permissions.has("filesystem:read")) {
-    args.push(`--allow-fs-read=${realUploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
+    args.push(
+      `--allow-fs-read=${realUploadsDirectory}`,
+      `--allow-fs-read=${realWorkspaceDirectory}`,
+    );
     if (workspaceDirectory !== realWorkspaceDirectory) {
       args.push(`--allow-fs-read=${workspaceDirectory}`);
     }
