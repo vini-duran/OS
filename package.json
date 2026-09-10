@@ -147,6 +147,7 @@
     },
     "files": [
       "desktop/main.cjs",
+      "desktop/desktop-paths.cjs",
       "desktop/preload.cjs",
       "desktop/updater.cjs",
       "build/icon.png",

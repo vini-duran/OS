@@ -14,6 +14,7 @@ const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
+const { assertWritableDataOutsideApp } = require("./desktop-paths.cjs");
 
 let mainWindow;
 let webServer;
@@ -30,6 +31,10 @@ const HUMAN_TASK_ROUTE =
 
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
+assertWritableDataOutsideApp(
+  app.getAppPath(),
+  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR || app.getPath("userData"),
+);
 if (process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR) {
   const customUserData = path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR);
   if (!existsSync(customUserData)) {
@@ -81,6 +86,7 @@ async function startDesktop() {
   const dataRoot = path.resolve(
     process.env.CONTENTFLOW_DESKTOP_DATA_DIR ?? path.join(app.getPath("userData"), "data"),
   );
+  assertWritableDataOutsideApp(appRoot, dataRoot);
   const apiPort = await reservePort();
 
   process.env.CONTENTFLOW_API_PORT = String(apiPort);

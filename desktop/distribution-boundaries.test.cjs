@@ -2,11 +2,55 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { assertWritableDataOutsideApp } = require("./desktop-paths.cjs");
 
 const repositoryRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
 const desktopMain = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const desktopPreload = readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
+
+test("proteção de dados integra pacote e precede criação de userData e API", () => {
+  assert.ok(packageJson.build.files.includes("desktop/desktop-paths.cjs"));
+  assert.ok(
+    desktopMain.indexOf("assertWritableDataOutsideApp(\n") <
+      desktopMain.indexOf("mkdirSync(customUserData"),
+  );
+  assert.ok(
+    desktopMain.indexOf("assertWritableDataOutsideApp(appRoot, dataRoot)") <
+      desktopMain.indexOf("const apiPort = await reservePort()"),
+  );
+});
+
+test("dados fora do bundle são aceitos; caminhos internos e symlinks são recusados", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "contentflow-path-guard-"));
+  try {
+    const bundle = path.join(root, "Candidate.app");
+    const appRoot = path.join(bundle, "Contents", "Resources", "app");
+    mkdirSync(appRoot, { recursive: true });
+    for (const destination of [appRoot, path.join(appRoot, "data"), path.join(bundle, "data")]) {
+      assert.throws(
+        () => assertWritableDataOutsideApp(appRoot, destination),
+        /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
+      );
+    }
+    assert.doesNotThrow(() =>
+      assertWritableDataOutsideApp(appRoot, path.join(root, "userData", "data")),
+    );
+    assert.doesNotThrow(() =>
+      assertWritableDataOutsideApp(appRoot, path.join(root, "Candidate.app-other", "data")),
+    );
+    const link = path.join(root, "alias");
+    symlinkSync(bundle, link, "dir");
+    assert.throws(
+      () => assertWritableDataOutsideApp(appRoot, path.join(link, "future", "data")),
+      /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("a distribuição do núcleo não incorpora plugins de referência", () => {
   const packagedSources = [
