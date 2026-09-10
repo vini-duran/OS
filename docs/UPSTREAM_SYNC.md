@@ -34,7 +34,11 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
 
 ## Estado da rodada 2026-09-09
 
-### Último avanço — instalada localmente; distribuição ainda pendente
+### Último avanço — distribuição candidata publicada e download conferido
+
+Release [0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1), fonte `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`. ZIP corrigido de 217598291 bytes, SHA-256 `4bae42ecb876fc443bb888b08628cbed016e496eaf3f483f6f9e90da5dd738e9`. Bundle assinado ad hoc idêntico ao instalado/conferido, extração e download verificados. Atualizador real testado em isolamento com SQLite sintético, sem abrir o app.
+
+Rota limitada ao snapshot de origem homologado. [Registro completo e limites](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/releases/APP_0_5_5_ECOSSISTEMA_1.md). Sem notarização nem promessa de migração de qualquer versão. Reconciliação do código funcional com esta main histórica permanece separada; o portal aponta ao artefato fixado correto.
 
 **Instalação local concluída:** macOS arm64, 0.5.2 → 0.5.5, fonte 64fc1bf,
 no mesmo caminho do aplicativo operacional. Backup do bundle anterior e dados
@@ -59,9 +63,9 @@ autorizar rollback indiscriminado.
   limpo removidos; aproximadamente 1,35 GiB em arquivos. ZIP, commits, evidências
   e checkpoint preservados. Nenhum aplicativo instalado ou dado de produção
   foi removido; o volume efetivamente liberado depende do APFS.
-- **Não usar o ZIP antigo para atualizar outra máquina.** Faltam reconciliação
-  final com a main histórica e publicação/download do pacote de distribuição.
-  A instalação local foi verificada separadamente; o ZIP abaixo é anterior.
+- **Não usar o ZIP antigo para atualizar outra máquina.** Use somente o ZIP
+  corrigido da release acima e o atualizador universal. Reconciliação final
+  do código com a main histórica ainda pendente; o ZIP abaixo é histórico.
 - Próxima ação detalhada:
   [pendências da 0.5.5](https://github.com/vini-duran/OS/blob/31de856f60f1ae8064e12c3ffce172abc9b35eda/docs/UPDATE_055_REMAINING.md).
   Recuperação:
