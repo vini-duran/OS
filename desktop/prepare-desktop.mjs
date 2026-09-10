@@ -81,10 +81,20 @@ await build({
 
 const packageJsonPath = path.join(projectRoot, "package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-  cwd: projectRoot,
-  encoding: "utf8",
-}).trim();
+let sourceCommit = "unknown";
+let sourceBranch = "unknown";
+try {
+  sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+  }).trim();
+  sourceBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+  }).trim();
+} catch {
+  // fallback if git command fails
+}
 
 writeFileSync(
   path.join(desktopBuildDirectory, "build-info.json"),
@@ -95,8 +105,11 @@ writeFileSync(
       platform: process.platform,
       architecture: process.arch,
       sourceCommit,
+      sourceBranch,
       canonical_repository: "https://github.com/vini-duran/OS",
-      canonical_branch: "codex/v0.5.2-candidate",
+      canonical_branch: "main",
+      origin_reference: "origin/codex/v0.5.2-local-candidate",
+      approval_status: "pending_independent_review",
       builtAt: new Date().toISOString(),
     },
     null,

@@ -68,7 +68,7 @@ export function windowsExecutableDiscoveryReadPaths(
   environment: NodeJS.ProcessEnv = process.env,
   platform = process.platform,
 ) {
-  if (platform !== "win32" && !environment.LOCALAPPDATA) return [];
+  if (platform !== "win32") return [];
   return [
     environment.PROGRAMFILES &&
       path.join(environment.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),

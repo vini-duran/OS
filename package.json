@@ -41,7 +41,7 @@
     "test:browser-plugins": "node --test server/browser-plugin-run-mode.test.mjs server/browser-profile-persistence.test.mjs ecosystem/browser-bridge/test.mjs ecosystem/plugins/reference/chatgpt-browser-studio/test.mjs ecosystem/plugins/reference/claude-browser-text/test.mjs ecosystem/plugins/reference/gemini-browser-studio/test.mjs ecosystem/plugins/reference/google-flow-browser-images/test.mjs ecosystem/plugins/reference/grok-browser-studio/test.mjs ecosystem/plugins/reference/meta-ai-browser-studio/test.mjs",
     "release:verify": "npm run test:i18n && npm run check && npm run test:e2e && npm run test:electron",
     "test:sandbox": "tsx server/plugin-sandbox-smoke.ts",
-    "test:presentation": "tsx server/presentation-smoke.ts",
+    "test:presentation": "tsx server/presentation-smoke.ts && tsx --test src/components/image-gallery.test.tsx",
     "test:deliveries": "tsx --test server/deliveries.test.ts",
     "test:channel-history": "tsx --test server/channel-history.test.ts",
     "test:instructions": "tsx --test server/instruction-template.test.ts",
