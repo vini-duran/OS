@@ -5,6 +5,8 @@
 Nosso ecossistema é independente do autor. A atualização só deve entrar se
 preservar nossas funções, dados e fluxo de trabalho. Siga o
 [procedimento universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZACAO_UNIVERSAL.md).
+Para solicitar a próxima rodada, use o
+[prompt universal de atualização](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/PROMPT_ATUALIZACAO.md).
 Em caso de incompatibilidade, apresente impacto, opções e recomendação; mantenha
 a instalação que funciona. Main é a entrada do operador, não um depósito de
 branches ainda quebradas.
@@ -35,8 +37,27 @@ O fork contém personalizações do Norte Magnata, plugins privados e correçõe
 Upstream `v0.5.5` (`8fe65673332a8eab8542a72f87966abc94310759`) integrado
 apenas em clone de trabalho do fork para revisão. A distribuição existente
 continua `v0.5.2-ecossistema.1`. A promoção funcional para main e a nova release
-estão pendentes de correções/revisão e teste visual isolado. Nenhuma instalação
-operacional foi substituída. Testes de fonte não comprovam migração real.
+estão pendentes de reconciliação e revisão. Nenhuma instalação operacional foi
+substituída. Testes de fonte não comprovam migração real.
+
+Avanço da candidata, sem aprovação de instalação:
+
+- Fonte construída: `e5f4dcdedac6fb0cac29166ac650ef375a6f7bd0`, versão 0.5.5,
+  macOS arm64, Node privado 26.7.0.
+- ZIP local: 211540800 bytes; SHA-256
+  `1469383b9a7e00663ab0b3daab2a65e61dbf0d3bbb55217138763ce07c226a5f`.
+  Não é uma release publicada nem o artefato indicado para atualização.
+- Antigravity relatou execução do bundle extraído com dados sintéticos isolados:
+  Dashboard, Métodos, Plugins e galeria/zoom/seleção. O Orquestrador conferiu o
+  checksum e capturas da seleção e coleção vazia. Restauração de foco não está
+  comprovada por uma captura de tela; os limites do relatório são revisados
+  separadamente, sem repetir todos os testes.
+- Migração da instalação existente, conexões reais e execução de seus plugins
+  não foram validadas por esse cenário sintético. Windows e Linux não homologados.
+- Antes de promover a fonte, reconciliar também as diferenças com a main legada
+  do fork. Não resolver conflitos escolhendo uma branch inteira nem apagar
+  customizações para facilitar o merge. Nenhum merge dessa reconciliação foi
+  aplicado ao aplicativo ou ao checkout operacional.
 
 ## Histórico: integração v0.3.5 — 2026-08-23
 
