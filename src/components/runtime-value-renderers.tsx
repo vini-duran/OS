@@ -360,7 +360,11 @@ function ImageGalleryRenderer({ value, compact }: PresentationRendererProps) {
       ? [{ id: value, name: "Imagem", mimeType: "image/*", size: 0, url: value }]
       : [];
   const images = files.length ? files : stringValues;
-  return <ImageGallery images={images} compact={compact} />;
+  return (
+    <div className="w-full lg:grid-cols-4">
+      <ImageGallery images={images} compact={compact} />
+    </div>
+  );
 }
 
 function AudioRenderer({ value }: PresentationRendererProps) {
