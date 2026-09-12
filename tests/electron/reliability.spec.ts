@@ -96,19 +96,29 @@ test("inicia a aplicação desktop isolada e mantém API e navegação responsiv
 test("mostra a quantidade de validações pendentes no ícone da barra de tarefas", async () => {
   const window = await electronApp.firstWindow();
   await expect(window.getByRole("heading", { name: "Visão geral" })).toBeVisible();
-  await electronApp.evaluate(({ BrowserWindow }) => {
+  await electronApp.evaluate(({ app, BrowserWindow }) => {
     const target = BrowserWindow.getAllWindows()[0];
     const testState = globalThis as typeof globalThis & {
       __contentflowBadgeCalls?: Array<{ description: string; hasIcon: boolean }>;
     };
     testState.__contentflowBadgeCalls = [];
-    const original = target.setOverlayIcon.bind(target);
-    target.setOverlayIcon = (overlay, description) => {
+    if (target?.setOverlayIcon) {
+      const original = target.setOverlayIcon.bind(target);
+      target.setOverlayIcon = (overlay, description) => {
+        testState.__contentflowBadgeCalls?.push({
+          description,
+          hasIcon: Boolean(overlay && !overlay.isEmpty()),
+        });
+        original(overlay, description);
+      };
+    }
+    const originalBadgeCount = app.setBadgeCount.bind(app);
+    app.setBadgeCount = (count) => {
       testState.__contentflowBadgeCalls?.push({
-        description,
-        hasIcon: Boolean(overlay && !overlay.isEmpty()),
+        description: `${count} tarefas humanas pendentes`,
+        hasIcon: count > 0,
       });
-      original(overlay, description);
+      return originalBadgeCount(count);
     };
   });
 
