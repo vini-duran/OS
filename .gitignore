@@ -57,7 +57,11 @@ release/
 .idea
 .DS_Store
 *.suo
-*.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Local candidate test staging directories
+download_origin_055/
+staging_real/
+test_e2e_update/
