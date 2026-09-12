@@ -108,7 +108,7 @@ writeFileSync(
       sourceBranch,
       canonical_repository: "https://github.com/vini-duran/OS",
       canonical_branch: "main",
-      origin_reference: "origin/codex/v0.5.2-local-candidate",
+      origin_reference: "origin/main",
       approval_status: "pending_independent_review",
       builtAt: new Date().toISOString(),
     },
