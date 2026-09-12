@@ -1,5 +1,21 @@
 # Registro de Integração e Validação Local — ContentFlow v0.6.1
 
+## Estado vigente — 12/09/2026
+
+A fonte congelada da distribuição é `09da33af2c7f8d58e9eb28078f74ff49989ad8a4`.
+Pacote final: `ContentFlow-v0.6.1-mac-arm64.zip`, 210855243 bytes,
+SHA-256 `ef1b46ee475a71dcb958df917555fce146a306dc88fbe14ff4a9638181ef5a39`.
+Foi instalado e reaberto no aplicativo operacional do mantenedor (0.5.5 → 0.6.1),
+preservando os metadados verificados de 34 plugins, 17 execuções, Métodos,
+conexões/workspaces, 2 canais e 3 projetos. Banco íntegro; nenhuma produção iniciada.
+Distribuição autorizada como pré-lançamento `v0.6.1-ecossistema.1`, macOS arm64.
+O [registro universal vigente](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/releases/APP_0_6_1_CANDIDATE.md)
+detalha os ensaios pelo atualizador canônico, recusas, interface e limites.
+Recibos e caminhos operacionais ficam locais. As informações abaixo são históricas:
+os hashes intermediários não devem ser usados para instalar ou publicar.
+
+## Histórico — primeira validação, substituída pelo aceite acima
+
 Data: 12/09/2026  
 Papel: Executor Local  
 Modo: Validação Local Estrita (sem push, sem tags remotas, sem release no GitHub)  
@@ -16,7 +32,7 @@ Modo: Validação Local Estrita (sem push, sem tags remotas, sem release no GitH
 - **Repositório Universal:** `vini-duran/ContentFlow_Universal_Integrations`
   - **Main autenticada:** `32944d37f845308d63fe6154ca3de4eb5eb91ca8`
 - **Manual de Procedimentos:** `docs/ATUALIZACAO_PUBLICACAO_ECOSSISTEMA.md` registrado explicitamente como proposta local.
-- **Checkout Isolado de Trabalho:** `/Users/viniciusduran/.codex/worktrees/contentflow-v0.6.1-candidate`
+- **Checkout Isolado de Trabalho:** worktree local do mantenedor, separado do aplicativo instalado.
 - **Branch de Integração:** `codex/integrate-upstream-v0.6.1`
 - **Commit de Integração Limpa:** `b4d695ff352a0139b6002026e43147522b3ec669`
 
