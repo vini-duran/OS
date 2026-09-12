@@ -46,8 +46,8 @@ export function ProcessStatus({
   className?: string;
   variant?: "chip" | "dot";
 }) {
-  const meta = STATE_META[state];
-  const tone = TONE_CLASS[meta.tone];
+  const meta = STATE_META[state] ?? STATE_META.not_started;
+  const tone = TONE_CLASS[meta.tone] ?? TONE_CLASS.muted;
   if (variant === "dot") {
     return (
       <span
