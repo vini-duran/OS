@@ -362,6 +362,28 @@ function textAsList(text) {
   return lines.length > 1 ? lines : [String(text ?? "").trim()].filter(Boolean);
 }
 
+function textAsFiniteNumber(text) {
+  const normalized = String(text ?? "")
+    .trim()
+    .replace(",", ".");
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(normalized)) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O ChatGPT precisava devolver somente um número válido para esta entrega.",
+      true,
+    );
+  }
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) {
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "O ChatGPT devolveu um número inválido para esta entrega.",
+      true,
+    );
+  }
+  return value;
+}
+
 function searchResponseValues(text, sources, request) {
   const fields = Array.isArray(request?.outputContract) ? request.outputContract : [];
   if (!fields.length) return { result: text, sources };
@@ -381,7 +403,11 @@ function generationResponseValues(result, responses, request) {
   for (const field of request?.outputContract ?? []) {
     if (field?.key === "parts") values.parts = responses.map((response) => response.text);
     else if (["list", "multiselect"].includes(field?.type)) values[field.key] = textAsList(result);
-    else values[field.key] = result;
+    else if (field?.type === "number") {
+      const value = textAsFiniteNumber(result);
+      values[field.key] = value;
+      if (field.portKey === "result") values.result = value;
+    } else values[field.key] = result;
   }
   return values;
 }
@@ -686,7 +712,18 @@ async function launchOrReuseChrome({
     "--no-default-browser-check",
     CHATGPT_NEW_URL,
   ];
-  if (startMinimized) args.unshift("--start-minimized");
+  if (startMinimized) {
+    // A janela dedicada pode ficar minimizada durante todo o job. Sem estes
+    // flags, o Chrome reduz timers e renderização de uma janela oculta e a UI
+    // do provedor deixa de avançar antes de o polling do handler expirar.
+    args.unshift(
+      "--start-minimized",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-features=CalculateNativeWinOcclusion",
+    );
+  }
   const failures = [];
   for (const executable of executables) {
     let child;
@@ -936,9 +973,33 @@ async function markTaskPage(client, sessionId, request, signal) {
 }
 
 const GENERATION_STOP_PATTERN = /\b(stop|parar|detener|interromper)\b/i;
+const VOICE_READY_PATTERN = /\b(voice|voz)\b/i;
 
 export function generationControlIsStop(text, testId) {
   return String(testId ?? "") === "stop-button" || GENERATION_STOP_PATTERN.test(String(text ?? ""));
+}
+
+export function voiceControlIsReady(text, disabled = false, ariaDisabled = undefined) {
+  return (
+    disabled !== true &&
+    String(ariaDisabled ?? "").toLowerCase() !== "true" &&
+    VOICE_READY_PATTERN.test(String(text ?? ""))
+  );
+}
+
+export function responseHasStrongCompletionSignal({
+  hasNewResponse,
+  generating,
+  voiceReady,
+  completedActionCount,
+  baselineCompletedActionCount,
+}) {
+  return (
+    hasNewResponse === true &&
+    generating !== true &&
+    (voiceReady === true ||
+      Number(completedActionCount ?? 0) > Number(baselineCompletedActionCount ?? 0))
+  );
 }
 
 // Runs in the provider page. Uploaded references can use the same content URL
@@ -983,11 +1044,12 @@ const PAGE_HELPERS = String.raw`
 function cfVisible(el){if(!el||!(el instanceof Element))return false;const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>8&&r.height>8&&r.bottom>0&&r.right>0}
 function cfText(el){return [el?.innerText,el?.textContent,el?.getAttribute?.('aria-label'),el?.getAttribute?.('data-testid')].filter(Boolean).join(' ').replace(/\s+/g,' ').trim()}
 function cfGenerating(){const stopPattern=new RegExp(${JSON.stringify(GENERATION_STOP_PATTERN.source)},'i');return [...document.querySelectorAll('button')].some(el=>cfVisible(el)&&(stopPattern.test(cfText(el))||el.getAttribute('data-testid')==='stop-button'))}
+function cfVoiceReady(){const voicePattern=new RegExp(${JSON.stringify(VOICE_READY_PATTERN.source)},'i');return [...document.querySelectorAll('button')].some(el=>cfVisible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'&&voicePattern.test(cfText(el)))}
 function cfPrompt(){const selectors=['#prompt-textarea','[contenteditable="true"][role="textbox"]','[role="textbox"][aria-label*="Chat" i]'];for(const s of selectors){const el=[...document.querySelectorAll(s)].find(cfVisible);if(el)return el}return null}
 function cfAssistantNodes(){const selectors=['[data-message-author-role="assistant"] .markdown','[data-message-author-role="assistant"]','article[data-testid^="conversation-turn-"] .markdown'];for(const s of selectors){const n=[...document.querySelectorAll(s)].filter(cfVisible);if(n.length)return n}return []}
 function cfGeneratedImages(){return (${collectGeneratedImages.toString()})(document)}
 function cfResolveComparison(){const body=document.body?.innerText||'';if(!/giving feedback on a new version|qual resposta voc[êe] prefere|dando feedback sobre uma nova vers[ãa]o/i.test(body))return false;const button=[...document.querySelectorAll('button')].find(el=>cfVisible(el)&&/prefer this response|prefiro esta resposta|choose this response|escolher esta resposta/i.test(cfText(el)));if(!button)return false;button.click();return true}
-function cfResponseState(){const comparisonResolved=cfResolveComparison(),nodes=cfAssistantNodes(),entries=nodes.map(el=>({text:(el.innerText||el.textContent||'').trim(),links:[...el.querySelectorAll('a[href]')].map(a=>({href:a.href,label:(a.innerText||a.textContent||'').trim()})).filter(x=>/^https:\/\//i.test(x.href))})).filter(x=>x.text);return{texts:entries.map(x=>x.text),entries,stop:cfGenerating(),comparisonResolved,bodyHint:(document.body?.innerText||'').slice(0,6000)}}
+function cfResponseState(){const comparisonResolved=cfResolveComparison(),nodes=cfAssistantNodes(),entries=nodes.map(el=>({text:(el.innerText||el.textContent||'').trim(),links:[...el.querySelectorAll('a[href]')].map(a=>({href:a.href,label:(a.innerText||a.textContent||'').trim()})).filter(x=>/^https:\/\//i.test(x.href))})).filter(x=>x.text);return{texts:entries.map(x=>x.text),entries,stop:cfGenerating(),voiceReady:cfVoiceReady(),completedActionCount:document.querySelectorAll('button[data-testid="copy-turn-action-button"]').length,comparisonResolved,bodyHint:(document.body?.innerText||'').slice(0,6000)}}
 `;
 
 export const CHATGPT_SEND_BUTTON_SELECTORS = [
@@ -1363,7 +1425,14 @@ async function clickSend(client, sessionId, bridge, signal, operationKey) {
 async function responseState(client, sessionId) {
   return await evaluate(client, sessionId, `(() => {${PAGE_HELPERS};return cfResponseState()})()`);
 }
-async function waitForResponse(client, sessionId, baselineCount, timeoutMs, signal) {
+async function waitForResponse(
+  client,
+  sessionId,
+  baselineCount,
+  baselineCompletedActionCount,
+  timeoutMs,
+  signal,
+) {
   const deadline = Date.now() + timeoutMs;
   let previous = "",
     stable = 0,
@@ -1385,9 +1454,42 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       generating: Boolean(state?.stop),
       stablePolls: stable,
     });
+    const strongCompletion = responseHasStrongCompletionSignal({
+      hasNewResponse: Boolean(newest),
+      generating: Boolean(state?.stop),
+      voiceReady: Boolean(state?.voiceReady),
+      completedActionCount: state?.completedActionCount,
+      baselineCompletedActionCount,
+    });
+    if (phase === "completed" && strongCompletion) {
+      await sleep(500, signal);
+      const confirmedState = await responseState(client, sessionId);
+      const confirmedTexts = confirmedState?.texts ?? [];
+      const confirmedNewest = confirmedTexts.length > baselineCount ? confirmedTexts.at(-1) : "";
+      if (
+        confirmedNewest === newest &&
+        responseHasStrongCompletionSignal({
+          hasNewResponse: Boolean(confirmedNewest),
+          generating: Boolean(confirmedState?.stop),
+          voiceReady: Boolean(confirmedState?.voiceReady),
+          completedActionCount: confirmedState?.completedActionCount,
+          baselineCompletedActionCount,
+        })
+      ) {
+        return {
+          text: confirmedNewest.trim(),
+          links: confirmedState.entries?.at(-1)?.links ?? [],
+        };
+      }
+      previous = confirmedNewest;
+      stable = 0;
+      stableSince = confirmedNewest ? Date.now() : 0;
+      continue;
+    }
     // A interface pode ocultar momentaneamente o botão "Parar" durante uma
     // pausa longa do streaming. Exigir uma janela contínua sem alterações evita
-    // capturar apenas o primeiro fragmento de uma resposta ainda em produção.
+    // capturar apenas o primeiro fragmento quando os sinais fortes de conclusão
+    // não estiverem disponíveis nessa variação da interface.
     if (phase === "completed" && Date.now() - stableSince >= 12_000) {
       await sleep(5_000, signal);
       const confirmedState = await responseState(client, sessionId);
@@ -1416,13 +1518,15 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
 
 async function generatePart(client, sessionId, bridge, prompt, settings, signal, operationKey) {
   const before = await responseState(client, sessionId),
-    baseline = before?.texts?.length ?? 0;
+    baseline = before?.texts?.length ?? 0,
+    baselineCompletedActionCount = before?.completedActionCount ?? 0;
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
   await clickSend(client, sessionId, bridge, signal, `send:${operationKey}`);
   return await waitForResponse(
     client,
     sessionId,
     baseline,
+    baselineCompletedActionCount,
     clampInteger(settings?.responseTimeoutSeconds, 600, 30, 3600) * 1000,
     signal,
   );
@@ -1978,6 +2082,8 @@ export const __test = {
   generatedImagesAfterBaseline,
   isCdpConnectionLoss,
   generationControlIsStop,
+  voiceControlIsReady,
+  responseHasStrongCompletionSignal,
   summarizeBlock,
   responsePhase,
 };

@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { CompositionCanvas } from "@/components/composition-canvas";
 import { LineListTextarea } from "@/components/line-list-textarea";
+import { OutputCharacterCount } from "@/components/output-character-count";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -95,12 +96,14 @@ export function RuntimeFieldsForm({
   values,
   dynamicOptions = {},
   uploadFile = uploadLocalFile,
+  showTextareaCharacterCount = false,
   onChange,
 }: {
   fields: BlockFieldDefinition[];
   values: Record<string, RuntimeValue>;
   dynamicOptions?: Record<string, string[]>;
   uploadFile?: (file: File) => Promise<StoredFile>;
+  showTextareaCharacterCount?: boolean;
   onChange: (values: Record<string, RuntimeValue>) => void;
 }) {
   const [uploadingKey, setUploadingKey] = useState<string>();
@@ -138,6 +141,8 @@ export function RuntimeFieldsForm({
     <div className="space-y-4">
       {fields.map((field) => {
         const value = values[field.key];
+        const showTextCharacterCount =
+          showTextareaCharacterCount && (field.type === "text" || field.type === "textarea");
         const options = [
           ...new Set([...(field.options ?? []), ...(dynamicOptions[field.id] ?? [])]),
         ];
@@ -154,17 +159,27 @@ export function RuntimeFieldsForm({
             </Label>
 
             {field.type === "textarea" ? (
-              <Textarea
-                id={field.id}
-                rows={6}
-                value={typeof value === "string" ? value : ""}
-                placeholder={field.placeholder}
-                onChange={(event) => update(field.key, event.target.value)}
-              />
+              <div className="relative">
+                <Textarea
+                  id={field.id}
+                  rows={6}
+                  className={showTextCharacterCount ? "pb-7" : undefined}
+                  value={typeof value === "string" ? value : ""}
+                  placeholder={field.placeholder}
+                  onChange={(event) => update(field.key, event.target.value)}
+                />
+                {showTextCharacterCount && (
+                  <OutputCharacterCount
+                    value={typeof value === "string" ? value : ""}
+                    className="absolute bottom-2 right-3 rounded bg-background/85 px-1"
+                  />
+                )}
+              </div>
             ) : field.type === "records" ? (
               <StructuredRecordsInput
                 field={field}
                 value={value}
+                showTextareaCharacterCount={showTextareaCharacterCount}
                 onChange={(records) => update(field.key, records)}
               />
             ) : field.type === "list" ? (
@@ -309,13 +324,22 @@ export function RuntimeFieldsForm({
                 </label>
               </div>
             ) : (
-              <Input
-                id={field.id}
-                type={field.type === "url" ? "url" : "text"}
-                value={typeof value === "string" ? value : ""}
-                placeholder={field.placeholder}
-                onChange={(event) => update(field.key, event.target.value)}
-              />
+              <div className={showTextCharacterCount ? "relative" : undefined}>
+                <Input
+                  id={field.id}
+                  type={field.type === "url" ? "url" : "text"}
+                  className={showTextCharacterCount ? "pr-10" : undefined}
+                  value={typeof value === "string" ? value : ""}
+                  placeholder={field.placeholder}
+                  onChange={(event) => update(field.key, event.target.value)}
+                />
+                {showTextCharacterCount && (
+                  <OutputCharacterCount
+                    value={typeof value === "string" ? value : ""}
+                    className="absolute inset-y-0 right-3 flex items-center rounded bg-background/85 px-1"
+                  />
+                )}
+              </div>
             )}
           </div>
         );
@@ -327,10 +351,12 @@ export function RuntimeFieldsForm({
 function StructuredRecordsInput({
   field,
   value,
+  showTextareaCharacterCount,
   onChange,
 }: {
   field: BlockFieldDefinition;
   value: RuntimeValue | undefined;
+  showTextareaCharacterCount: boolean;
   onChange: (records: StructuredRecord[]) => void;
 }) {
   const schema = field.recordFields ?? [];
@@ -374,6 +400,7 @@ function StructuredRecordsInput({
                 key={recordField.id}
                 field={recordField}
                 value={record[recordField.key]}
+                showTextareaCharacterCount={showTextareaCharacterCount}
                 onChange={(nextValue) => updateRecord(index, recordField.key, nextValue)}
               />
             ))}
@@ -402,13 +429,17 @@ function StructuredRecordsInput({
 function RecordValueInput({
   field,
   value,
+  showTextareaCharacterCount,
   onChange,
 }: {
   field: RecordFieldDefinition;
   value: StructuredRecord[string] | undefined;
+  showTextareaCharacterCount: boolean;
   onChange: (value: StructuredRecord[string]) => void;
 }) {
   const [uploading, setUploading] = useState(false);
+  const showTextCharacterCount =
+    showTextareaCharacterCount && (field.type === "text" || field.type === "textarea");
 
   async function uploadRecordFile(file?: File) {
     if (!file) return;
@@ -431,11 +462,20 @@ function RecordValueInput({
         {field.required && <span className="ml-1 text-destructive">*</span>}
       </Label>
       {field.type === "textarea" ? (
-        <Textarea
-          rows={4}
-          value={typeof value === "string" ? value : ""}
-          onChange={(event) => onChange(event.target.value)}
-        />
+        <div className="relative">
+          <Textarea
+            rows={4}
+            className={showTextCharacterCount ? "pb-7" : undefined}
+            value={typeof value === "string" ? value : ""}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {showTextCharacterCount && (
+            <OutputCharacterCount
+              value={typeof value === "string" ? value : ""}
+              className="absolute bottom-2 right-3 rounded bg-background/85 px-1"
+            />
+          )}
+        </div>
       ) : field.type === "number" ? (
         <NumberInput
           value={typeof value === "number" ? value : null}
@@ -491,11 +531,20 @@ function RecordValueInput({
           </label>
         </div>
       ) : (
-        <Input
-          type={field.type === "url" ? "url" : "text"}
-          value={typeof value === "string" ? value : ""}
-          onChange={(event) => onChange(event.target.value)}
-        />
+        <div className={showTextCharacterCount ? "relative" : undefined}>
+          <Input
+            type={field.type === "url" ? "url" : "text"}
+            className={showTextCharacterCount ? "pr-10" : undefined}
+            value={typeof value === "string" ? value : ""}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {showTextCharacterCount && (
+            <OutputCharacterCount
+              value={typeof value === "string" ? value : ""}
+              className="absolute inset-y-0 right-3 flex items-center rounded bg-background/85 px-1"
+            />
+          )}
+        </div>
       )}
     </div>
   );

@@ -68,7 +68,7 @@ test("não repete no contexto uma entrada já interpolada na instrução", () =>
 
 test("manifesto declara oito capabilities modulares", () => {
   assert.equal(manifest.id, "local.contentflow.chatgpt-browser-studio");
-  assert.equal(manifest.version, "1.0.10");
+  assert.equal(manifest.version, "1.0.12");
   assert.equal(manifest.supportsConversationContinuation, undefined);
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
   assert.equal(manifest.settingsSchema.properties.allowExistingChromeProfile.default, false);
@@ -81,10 +81,24 @@ test("manifesto declara oito capabilities modulares", () => {
   assert.deepEqual(generation.outputPorts.find((port) => port.key === "result").producedTypes, [
     "text",
     "textarea",
+    "number",
   ]);
   const imageGeneration = manifest.capabilities.find(
     (item) => item.id === "generate-image-in-browser",
   );
+  assert.deepEqual(imageGeneration.inputPorts.find((port) => port.key === "prompt").acceptedTypes, [
+    "text",
+    "textarea",
+    "number",
+    "boolean",
+    "list",
+    "records",
+    "select",
+    "multiselect",
+    "datetime",
+    "url",
+    "thumbnail_layout",
+  ]);
   assert.deepEqual(
     imageGeneration.outputPorts.find((port) => port.key === "images").producedTypes,
     ["files"],
@@ -315,6 +329,22 @@ test("respeita saída list em geração de texto", () => {
       { outputContract: [{ key: "visual_prompts", type: "list" }] },
     ).visual_prompts,
     ["Primeiro prompt", "Segundo prompt", "Terceiro prompt"],
+  );
+});
+
+test("converte uma resposta numérica estrita para uma entrega number", () => {
+  assert.deepEqual(
+    __test.generationResponseValues("7", [{ text: "7" }], {
+      outputContract: [{ key: "sections", type: "number", portKey: "result" }],
+    }),
+    { result: 7, sections: 7 },
+  );
+  assert.throws(
+    () =>
+      __test.generationResponseValues("sete", [{ text: "sete" }], {
+        outputContract: [{ key: "sections", type: "number", portKey: "result" }],
+      }),
+    /somente um número válido/,
   );
 });
 
@@ -790,6 +820,43 @@ test("reconhece o controle de geração nos idiomas usados pelo ChatGPT", () => 
   assert.equal(__test.generationControlIsStop("Detener respuesta", "composer-submit-button"), true);
   assert.equal(__test.generationControlIsStop("Enviar mensagem", "composer-submit-button"), false);
   assert.equal(__test.generationControlIsStop("", "stop-button"), true);
+});
+
+test("reconhece o controle de voz pronto sem depender de um único idioma", () => {
+  assert.equal(__test.voiceControlIsReady("Start Voice"), true);
+  assert.equal(__test.voiceControlIsReady("Iniciar voz"), true);
+  assert.equal(__test.voiceControlIsReady("Iniciar chat de voz"), true);
+  assert.equal(__test.voiceControlIsReady("Start Voice", true), false);
+  assert.equal(__test.voiceControlIsReady("Start Voice", false, "true"), false);
+  assert.equal(__test.voiceControlIsReady("Start dictation"), false);
+});
+
+test("aceita apenas sinais fortes associados a uma nova resposta concluída", () => {
+  const completed = {
+    hasNewResponse: true,
+    generating: false,
+    voiceReady: false,
+    completedActionCount: 3,
+    baselineCompletedActionCount: 2,
+  };
+  assert.equal(__test.responseHasStrongCompletionSignal(completed), true);
+  assert.equal(
+    __test.responseHasStrongCompletionSignal({
+      ...completed,
+      completedActionCount: 2,
+      voiceReady: true,
+    }),
+    true,
+  );
+  assert.equal(
+    __test.responseHasStrongCompletionSignal({ ...completed, hasNewResponse: false }),
+    false,
+  );
+  assert.equal(__test.responseHasStrongCompletionSignal({ ...completed, generating: true }), false);
+  assert.equal(
+    __test.responseHasStrongCompletionSignal({ ...completed, completedActionCount: 2 }),
+    false,
+  );
 });
 
 test("envia pelo seletor atual e pelo seletor legado do compositor", () => {

@@ -5,6 +5,7 @@ import {
   PROCESS_ORDER,
   type Channel,
   type Project,
+  type StrategicCollection,
 } from "../../src/lib/domain";
 
 async function seed(request: APIRequestContext) {
@@ -104,6 +105,88 @@ test("cria somente um projeto em clique duplo e não fecha o formulário em falh
   ).toHaveLength(1);
 });
 
+test("expõe e persiste o contrato ambíguo do plugin no editor do Método", async ({
+  page,
+  request,
+}) => {
+  const channel = await seed(request);
+  expect(
+    (
+      await request.put("/api/plugins/com.contentflow.e2e-contract/consent", {
+        data: { enabled: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  const block = {
+    id: "claude-sequence",
+    type: "CRIAR",
+    operator: "IA",
+    name: "Roteiro em sequência",
+    instructions: "Escreva o roteiro.",
+    inputs: [
+      {
+        id: "prompts",
+        label: "Prompts",
+        type: "list",
+        source: "static",
+        staticValue: "Primeiro\nSegundo",
+      },
+      {
+        id: "sections",
+        label: "Quantidade",
+        type: "number",
+        source: "static",
+        staticValue: "2",
+      },
+    ],
+    outputs: [
+      {
+        id: "script",
+        key: "script",
+        label: "Roteiro",
+        type: "textarea",
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+    plugin: {
+      pluginId: "com.contentflow.e2e-contract",
+      capabilityId: "generate",
+      configuration: {},
+    },
+  };
+  expect(
+    (
+      await request.put(`/api/channels/${channel.id}/methods/script`, {
+        data: { name: "Roteiro", blocks: [block] },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  await page.goto(`/channel/${channel.id}/methods?process=script`);
+  await page.getByRole("button", { name: /01 Criar Roteiro em sequência/ }).click();
+  await expect(page.getByText("Requer ajustes", { exact: true })).toBeVisible();
+  await page.getByText("Plugin executor", { exact: true }).click();
+  await expect(page.getByText("Parâmetros do prompt (0)", { exact: true })).toBeVisible();
+  await page.getByText("Dados usados pelo plugin", { exact: true }).click();
+
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").nth(2).click();
+  await page.getByRole("option", { name: "Outline / estrutura", exact: true }).click();
+  await dialog.getByRole("combobox").nth(3).click();
+  await page.getByRole("option", { name: "Quantidade de blocos", exact: true }).click();
+
+  await expect(page.getByText("Pronto para executar", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const channels = (await (await request.get("/api/channels")).json()) as Channel[];
+      const saved = channels.find((item) => item.id === channel.id)?.methods.script.blocks[0];
+      return saved?.inputs?.map((input) => input.portKey);
+    })
+    .toEqual(["outline", "sections"]);
+});
+
 test("cria uma coleção estratégica com o campo de nome focável e clicável", async ({
   page,
   request,
@@ -124,134 +207,32 @@ test("cria uma coleção estratégica com o campo de nome focável e clicável",
   await expect(page.getByText("Estruturas E2E", { exact: true })).toBeVisible();
 });
 
-test("testa um bloco com entradas temporárias sem criar execução ou histórico", async ({
-  request,
-}) => {
-  const channel = await seed(request);
-  const pluginId = "com.contentflow.kit-text-demo";
-  expect(
-    (
-      await request.put(`/api/plugins/${encodeURIComponent(pluginId)}/consent`, {
-        data: { enabled: true },
-      })
-    ).ok(),
-  ).toBeTruthy();
-  const before = (await (await request.get("/api/state")).json()) as {
-    projects: unknown[];
-    executions: unknown[];
-  };
-  const runId = randomUUID();
-  const block = {
-    id: "test-only-block",
-    type: "CRIAR" as const,
-    operator: "Código" as const,
-    name: "Transformar tema",
-    instructions: "Considere o prazo {{project.deadline}}.",
-    inputs: [
-      {
-        id: "test-theme",
-        label: "Tema anterior",
-        type: "textarea" as const,
-        source: "previous_process" as const,
-        sourceProcessType: "theme" as const,
-        sourceKey: "theme",
-      },
-    ],
-    outputs: [
-      {
-        id: "test-result",
-        key: "result",
-        label: "Resultado",
-        type: "textarea" as const,
-        required: true,
-      },
-    ],
-    parameters: [],
-    order: 0,
-    plugin: {
-      pluginId,
-      capabilityId: "demo",
-      configuration: {},
-    },
-  };
-  const result = await request.post("/api/method-block-tests", {
-    data: {
-      runId,
-      channelId: channel.id,
-      processType: "title",
-      blockId: block.id,
-      blocks: [block],
-      inputValues: { "test-theme": "tema informado durante o teste" },
-      projectTitle: "Projeto temporário",
-      projectDeadline: "2026-09-30",
-    },
-  });
-  const payload = await result.json();
-  expect(result.ok(), JSON.stringify(payload)).toBeTruthy();
-  expect(payload.values).toEqual({ result: "TEMA INFORMADO DURANTE O TESTE" });
-  const after = (await (await request.get("/api/state")).json()) as {
-    projects: unknown[];
-    executions: unknown[];
-  };
-  expect(after.projects).toHaveLength(before.projects.length);
-  expect(after.executions).toHaveLength(before.executions.length);
-  expect((await request.delete(`/api/method-block-tests/${runId}`)).status()).toBe(204);
-});
-
-test("editor solicita entradas temporárias e visualiza o resultado do bloco", async ({
+test("canal preserva somente o código regional escolhido no campo de idioma", async ({
   page,
   request,
 }) => {
-  const channel = await seed(request);
-  const pluginId = "com.contentflow.kit-text-demo";
-  await request.put(`/api/plugins/${encodeURIComponent(pluginId)}/consent`, {
-    data: { enabled: true },
-  });
-  const block = {
-    id: "editor-test-block",
-    type: "CRIAR",
-    operator: "Código",
-    name: "Transformar tema",
-    instructions: "Considere o prazo {{project.deadline}}.",
-    inputs: [
-      {
-        id: "editor-test-theme",
-        label: "Tema anterior",
-        type: "textarea",
-        source: "previous_process",
-        sourceProcessType: "theme",
-        sourceKey: "theme",
-      },
-    ],
-    outputs: [
-      {
-        id: "editor-test-result",
-        key: "result",
-        label: "Resultado",
-        type: "textarea",
-        required: true,
-      },
-    ],
-    parameters: [],
-    order: 0,
-    plugin: { pluginId, capabilityId: "demo", configuration: {} },
-  };
-  expect(
-    (
-      await request.put(`/api/channels/${channel.id}/methods/title`, {
-        data: { blocks: [block] },
-      })
-    ).ok(),
-  ).toBeTruthy();
+  const original = (await (await request.get("/api/preferences")).json()) as Record<
+    string,
+    unknown
+  >;
+  const channelName = `Canal regional ${randomUUID().slice(0, 6)}`;
+  const existingChannel = await seed(request);
 
-  await page.goto(`/channel/${channel.id}/methods?process=title`);
-  await page.getByText("Transformar tema", { exact: true }).first().click();
-  await expect(page.getByText("Testar somente este bloco", { exact: true })).toBeVisible();
-  await page.getByLabel("Prazo fictício do Projeto", { exact: true }).fill("2026-09-30");
-  await page.getByLabel(/Tema anterior para teste/).fill("tema temporário");
-  await page.getByRole("button", { name: "Executar teste", exact: true }).click();
-  await expect(page.getByText("TEMA TEMPORÁRIO", { exact: true })).toBeVisible();
-  await expect(page.getByText(/não entrou no histórico do Canal/i)).toBeVisible();
+  try {
+    await request.put("/api/preferences", { data: { ...original, language: "pt-BR" } });
+    await page.goto("/dashboard");
+    await expect(page.getByText(existingChannel.name, { exact: true }).first()).toBeVisible();
+    await page.getByRole("button", { name: "Novo canal", exact: true }).click();
+    await page.getByLabel("Nome do canal *", { exact: true }).fill(channelName);
+    await page.getByLabel("Idioma", { exact: true }).click();
+    await page.getByRole("option", { name: /inglês.*EN-AU/i }).click();
+    await page.getByRole("button", { name: "Criar canal", exact: true }).click();
+
+    const channels = (await (await request.get("/api/channels")).json()) as Channel[];
+    expect(channels.find((channel) => channel.name === channelName)?.language).toBe("EN-AU");
+  } finally {
+    await request.put("/api/preferences", { data: original });
+  }
 });
 
 test("centraliza perfis no plugin e deixa o Método apenas selecionar perfis existentes", async ({
@@ -317,6 +298,7 @@ test("centraliza perfis no plugin e deixa o Método apenas selecionar perfis exi
 
   await page.goto(`/channel/${channel.id}/methods?process=title`);
   await page.getByText("Criar título com perfil", { exact: true }).first().click();
+  await page.getByText("Plugin executor", { exact: true }).click();
   const profileSection = page.locator("section").filter({
     hasText: "Selecione um perfil já cadastrado",
   });
@@ -397,11 +379,147 @@ test("editor mantém entradas e variáveis do prompt sincronizadas", async ({ pa
   await expect(page.getByText(/Este bloco não precisa de uma entrada específica/i)).toBeVisible();
 
   await page.getByRole("button", { name: "Adicionar entrada", exact: true }).last().click();
-  await expect(prompt).toHaveValue("Use apenas o contexto. {{inputs.nova_entrada_1}}");
+  await expect(page.locator("textarea").first()).toHaveValue(
+    "Use apenas o contexto. {{inputs.nova_entrada_1}}",
+  );
+  await page.locator("button[aria-expanded]").filter({ hasText: "Nova entrada 1" }).click();
   await page.getByPlaceholder("Nome da entrada", { exact: true }).fill("Briefing");
-  await expect(prompt).toHaveValue("Use apenas o contexto. {{inputs.briefing}}");
+  await expect(page.locator("textarea").first()).toHaveValue(
+    "Use apenas o contexto. {{inputs.briefing}}",
+  );
   await page.getByRole("button", { name: "Remover entrada Briefing", exact: true }).click();
-  await expect(prompt).toHaveValue("Use apenas o contexto.");
+  await expect(page.locator("textarea").first()).toHaveValue("Use apenas o contexto.");
+});
+
+test("editor expõe um campo da coleção como saída do bloco Escolher", async ({ page, request }) => {
+  const channel = await seed(request);
+  const collection: StrategicCollection = {
+    id: randomUUID(),
+    channelId: channel.id,
+    name: "Layouts E2E",
+    fields: [
+      { id: "layout-name", label: "Nome do layout", type: "text", required: true },
+      { id: "layout-field", label: "Layout", type: "thumbnail_layout", required: true },
+    ],
+    createdAt: new Date().toISOString(),
+  };
+  expect((await request.post("/api/library/collections", { data: collection })).ok()).toBeTruthy();
+
+  const chooseBlock = {
+    id: "choose-thumbnail-layout",
+    type: "ESCOLHER",
+    operator: "Humano",
+    name: "Escolher layout",
+    instructions: "",
+    inputs: [],
+    outputs: [],
+    parameters: [],
+    order: 0,
+    collectionId: collection.id,
+  };
+  const createBlock = {
+    id: "create-thumbnail-from-layout",
+    type: "CRIAR",
+    operator: "Humano",
+    name: "Criar thumbnail do layout",
+    instructions: "Use {{inputs.layout_escolhido}}.",
+    inputs: [
+      {
+        id: "chosen-layout",
+        label: "layout escolhido",
+        type: "thumbnail_layout",
+        source: "previous_block",
+        blockId: chooseBlock.id,
+        sourceKey: "layout-field",
+      },
+    ],
+    outputs: [
+      {
+        id: "thumbnail-output",
+        key: "thumbnail",
+        label: "Thumbnail",
+        type: "image",
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 1,
+  };
+  expect(
+    (
+      await request.put(`/api/channels/${channel.id}/methods/thumbnail`, {
+        data: { name: "Thumbnail com layout", blocks: [chooseBlock, createBlock] },
+      })
+    ).ok(),
+  ).toBeTruthy();
+
+  await page.goto(`/channel/${channel.id}/methods?process=thumbnail`);
+  await page.getByText("Criar thumbnail do layout", { exact: true }).first().click();
+  await page.locator("button[aria-expanded]").filter({ hasText: "layout escolhido" }).click();
+
+  const sourceField = page.getByText("Saída do bloco", { exact: true }).locator("xpath=..");
+  await expect(sourceField.getByRole("combobox")).toContainText("Layout");
+
+  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByText("Escolher layout", { exact: true }).first().click();
+  await expect(page.getByText("Coleção estratégica", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/Considerar escolhas anteriores/)).toBeVisible();
+  await expect(page.getByText("Item escolhido", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Resultado desta ação", { exact: true })).toHaveCount(0);
+});
+
+test("editor destaca o tipo do bloco junto ao ícone na visão geral", async ({ page, request }) => {
+  const channel = await seed(request);
+  await page.goto(`/channel/${channel.id}/methods?process=theme`);
+
+  const card = page.locator("article > button").filter({ hasText: "Entrega theme" });
+  const type = card.getByText("Criar", { exact: true });
+  const title = card.getByText("Entrega theme", { exact: true });
+
+  await expect(type).toHaveClass(/text-brand/);
+  const icon = type.locator("xpath=..").locator("svg");
+  await expect(icon).toHaveClass(/text-brand/);
+  const typeBox = await type.boundingBox();
+  const titleBox = await title.boundingBox();
+  expect(typeBox).not.toBeNull();
+  expect(titleBox).not.toBeNull();
+  expect(typeBox!.x).toBeLessThan(titleBox!.x);
+});
+
+test("editor reúne a configuração e expande entradas e entregas individualmente", async ({
+  page,
+  request,
+}) => {
+  const channel = await seed(request);
+  await page.goto(`/channel/${channel.id}/methods?process=theme`);
+  await page.getByText("Entrega theme", { exact: true }).first().click();
+
+  const actionName = page.getByLabel("Nome da ação", { exact: true });
+  await expect(actionName).toHaveValue("Entrega theme");
+  await expect(page.getByPlaceholder(/Ex: Criar referências/)).toHaveCount(0);
+  await actionName.fill("Entrega theme renomeada");
+  await actionName.blur();
+  await expect
+    .poll(async () => {
+      const channels = (await (await request.get("/api/channels")).json()) as Channel[];
+      return channels.find((candidate) => candidate.id === channel.id)?.methods.theme.blocks[0]
+        ?.name;
+    })
+    .toBe("Entrega theme renomeada");
+  await expect(page.getByText("Operador responsável", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /O que faz Ação e instrução/ })).toHaveCount(0);
+  await expect(
+    page.getByText("Este bloco não precisa de uma entrada específica para começar.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  const output = page.locator("button[aria-expanded]").filter({ hasText: "Resultado theme" });
+  await expect(output).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByPlaceholder("Nome da entrega", { exact: true })).toHaveCount(0);
+  await output.click();
+  await expect(output).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByPlaceholder("Nome da entrega", { exact: true })).toBeVisible();
 });
 
 test("validação resume contextos extensos e permite expandir cada entrega", async ({
@@ -517,7 +635,9 @@ test("rascunho sobrevive ao reload e a produção avança até thumbnail fora da
   const id = projects.find((item) => item.channelId === channel.id)!.id;
   await page.goto(`/project/${id}/theme`);
   await page.getByRole("button", { name: "Executar processo", exact: true }).dblclick();
+  await expect(page.getByTestId("output-character-count")).toHaveText("0");
   await page.getByLabel("Resultado theme").fill("Tema preservado após recarregar");
+  await expect(page.getByTestId("output-character-count")).toHaveText("31");
   await expect
     .poll(async () => {
       const state = await (await request.get("/api/state")).json();
@@ -539,8 +659,16 @@ test("rascunho sobrevive ao reload e a produção avança até thumbnail fora da
     })
     .toBe("awaiting_human");
   await page.goto(`/project/${id}/title`);
+  await expect(page.getByTestId("output-character-count")).toHaveText("0");
   await page.getByLabel("Resultado title").fill("Título concluído");
+  await expect(page.getByTestId("output-character-count")).toHaveText("16");
   await page.getByRole("button", { name: "Concluir ação humana", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const projects = (await (await request.get("/api/projects")).json()) as Project[];
+      return projects.find((item) => item.id === id)?.title;
+    })
+    .toBe("Título concluído");
   await expect(page).toHaveURL(new RegExp(`/project/${id}/thumbnail`));
   await page.locator('input[type="file"]').setInputFiles({
     name: "thumbnail-fixture.png",
@@ -586,9 +714,15 @@ test("rascunho sobrevive ao reload e a produção avança até thumbnail fora da
     intermediateResult.getByText("thumbnail-fixture.png", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Produtos do projeto", { exact: true })).toHaveCount(0);
+  await page.goto(`/project/${id}/theme`);
+  await expect(page.getByTestId("output-character-count").first()).toHaveText("31");
+  await page.goto(`/project/${id}/title`);
+  const titleIntermediateResult = page.locator("details").filter({ hasText: "Entrega title" });
+  await titleIntermediateResult.locator("summary").click();
+  await expect(titleIntermediateResult.getByTestId("output-character-count")).toHaveText("16");
   await page.goto(`/channel/${channel.id}`);
   const projectThumbnail = page.getByRole("img", {
-    name: "Thumbnail do projeto Produção ponta a ponta",
+    name: "Thumbnail do projeto Título concluído",
     exact: true,
   });
   await expect(projectThumbnail).toBeVisible();
@@ -774,9 +908,7 @@ test("salva o Método mesmo saindo imediatamente do editor e preserva o snapshot
   ).json();
   await page.goto(`/channel/${channel.id}/methods?process=theme`);
   await page.getByText("Entrega theme", { exact: true }).click();
-  await page
-    .getByPlaceholder("Ex: Criar referências", { exact: true })
-    .fill("Alteração antes de sair");
+  await page.getByLabel("Nome da ação", { exact: true }).fill("Alteração antes de sair");
   await page.keyboard.press("Escape");
   await page.locator('a[href="/dashboard"]').first().click();
   await expect
@@ -848,6 +980,17 @@ test("interface nova de Métodos e Plugins acompanha inglês e espanhol sem trad
     await expect(page.getByRole("button", { name: "Install plugin", exact: true })).toBeVisible();
     await expect(page.getByPlaceholder("Search plugins by name...", { exact: true })).toBeVisible();
 
+    await page.goto("/dashboard");
+    await page.getByRole("button", { name: "New channel", exact: true }).click();
+    const englishLanguage = page.getByLabel("Language", { exact: true });
+    await expect(englishLanguage).toContainText(/Portuguese.*PT-BR/i);
+    await englishLanguage.click();
+    await expect(page.getByRole("option")).toHaveCount(98);
+    await expect(page.getByRole("option", { name: /English.*EN-US/i })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Spanish.*ES-MX/i })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Close" }).click();
+
     await request.put("/api/preferences", { data: { ...original, language: "es" } });
     await page.goto("/methods");
     await expect(
@@ -865,7 +1008,50 @@ test("interface nova de Métodos e Plugins acompanha inglês e espanhol sem trad
     await expect(
       page.getByPlaceholder("Buscar plugins por nombre...", { exact: true }),
     ).toBeVisible();
+
+    await page.goto("/dashboard");
+    await page.getByRole("button", { name: "Nuevo canal", exact: true }).click();
+    const spanishLanguage = page.getByLabel("Idioma", { exact: true });
+    await expect(spanishLanguage).toContainText(/portugués.*PT-BR/i);
+    await spanishLanguage.click();
+    await expect(page.getByRole("option", { name: /inglés.*EN-AU/i })).toBeVisible();
+    await expect(page.getByRole("option", { name: /español.*ES-ES/i })).toBeVisible();
   } finally {
     await request.put("/api/preferences", { data: original });
   }
+});
+
+test("Free Stock permite conexões parciais, troca de chave e várias chaves do mesmo provedor", async ({
+  page,
+}) => {
+  await page.goto("/plugins");
+  await page
+    .getByRole("button", { name: "Abrir detalhes de Free Stock Media Studio", exact: true })
+    .click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Credenciais e conexões", { exact: true })).toBeVisible();
+  await dialog.getByText("Adicionar conexão", { exact: true }).click();
+  const createForm = dialog.locator("details").filter({ hasText: "Adicionar conexão" });
+  await createForm.getByPlaceholder("Ex.: Pexels principal").fill("Pexels principal");
+  await createForm.locator('input[type="password"]').first().fill("pexels-chave-1");
+  const save = createForm.getByRole("button", { name: "Salvar no cofre local", exact: true });
+  await expect(save).toBeEnabled();
+  await save.click();
+
+  await expect(dialog.getByText("Pexels principal", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("1 de 4 credenciais configuradas", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Editar", exact: true }).click();
+  await dialog
+    .getByPlaceholder("Nova chave (deixe vazio para manter)")
+    .first()
+    .fill("pexels-chave-2");
+  await dialog.getByRole("button", { name: "Salvar alterações", exact: true }).click();
+  await expect(page.getByText("Conexão atualizada", { exact: true })).toBeVisible();
+
+  await createForm.getByPlaceholder("Ex.: Pexels principal").fill("Pexels reserva");
+  await createForm.locator('input[type="password"]').first().fill("pexels-chave-3");
+  await save.click();
+  await expect(dialog.getByText("Pexels reserva", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("2 conexões", { exact: true })).toBeVisible();
 });

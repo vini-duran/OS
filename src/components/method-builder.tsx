@@ -18,7 +18,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Braces,
@@ -34,8 +34,6 @@ import {
   ListChecks,
   LoaderCircle,
   History,
-  FlaskConical,
-  Play,
   Plus,
   Search,
   Share2,
@@ -46,7 +44,6 @@ import {
 import { toast } from "sonner";
 import { ChannelAvatar } from "@/components/channel-avatar";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
-import { RuntimeFieldsForm } from "@/components/runtime-fields-form";
 import { LineListTextarea } from "@/components/line-list-textarea";
 import {
   PRESENTATION_RENDERERS,
@@ -89,6 +86,7 @@ import {
   type BlockFieldDefinition,
   type BlockInputBinding,
   type BlockOperator,
+  type BlockParameter,
   type BlockType,
   type FieldPresentation,
   type HumanFieldType,
@@ -96,8 +94,6 @@ import {
   type ProcessMethod,
   type RecordFieldDefinition,
   type RecordFieldType,
-  type RuntimeValue,
-  type StoredFile,
   type StrategicCollection,
   type UniversalProcess,
   type ValidationMode,
@@ -116,6 +112,8 @@ import {
 } from "@/lib/method-file";
 import { getCompatiblePresentationRenderers, normalizeFieldPresentation } from "@/lib/presentation";
 import { createChannelHistoryRecordFields } from "@/lib/channel-history";
+import { getBlockSourceFields } from "@/lib/method-source-fields";
+import { renderPluginPromptPreview } from "@/lib/plugin-prompt-preview";
 import {
   addInstructionInputVariable,
   instructionInputKey,
@@ -1033,18 +1031,16 @@ function MethodBlockCardContent({
       <span className="w-6 shrink-0 self-start pt-1 font-mono text-[10px] text-muted-foreground">
         {String(index + 1).padStart(2, "0")}
       </span>
-      <span
-        className={cn("grid size-9 shrink-0 place-items-center rounded-md border", meta.className)}
-      >
-        <Icon className="size-4" />
+      <span className="flex w-14 shrink-0 flex-col items-center gap-1.5 self-start">
+        <span className={cn("grid size-9 place-items-center rounded-md border", meta.className)}>
+          <Icon className="size-4 text-brand" />
+        </span>
+        <span className="text-center text-[9px] font-semibold uppercase tracking-[0.08em] text-brand">
+          {meta.label}
+        </span>
       </span>
       <span className="min-w-0 flex-1">
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-sm font-semibold text-foreground">{title}</span>
-          <span className="text-[10px] font-medium uppercase text-muted-foreground">
-            {meta.label}
-          </span>
-        </span>
+        <span className="text-sm font-semibold text-foreground">{title}</span>
         <span className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
           {summary}
         </span>
@@ -1090,33 +1086,6 @@ function MethodBlockPreview({
   );
 }
 
-function MethodEditorSection({
-  eyebrow,
-  title,
-  description,
-  children,
-}: {
-  eyebrow: string;
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="min-w-0 rounded-xl border border-border/80 bg-card/35 p-4 sm:p-5">
-      <div className="mb-4 border-b border-border/60 pb-3">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-          {eyebrow}
-        </p>
-        <h3 className="mt-1 text-sm font-semibold text-foreground">{title}</h3>
-        <p className="mt-1 max-w-2xl text-[11px] leading-relaxed text-muted-foreground">
-          {description}
-        </p>
-      </div>
-      {children}
-    </section>
-  );
-}
-
 function BlockEditor({
   block,
   methodBlocks,
@@ -1142,6 +1111,7 @@ function BlockEditor({
   onChange: (patch: Partial<ActionBlock>) => void;
   onRemove: () => void;
 }) {
+  const [pluginExpanded, setPluginExpanded] = useState(!block.plugin);
   const meta = BLOCK_META[block.type];
   const Icon = meta.icon;
   const compatibleCapabilities = plugins.flatMap((plugin) =>
@@ -1175,19 +1145,25 @@ function BlockEditor({
     ...(generationModeSchema?.enum ?? []),
     ...(generationModeSchema?.oneOf?.map((option) => option.const) ?? []),
   ];
-  const supportsOutlineSequence =
-    generationModeOptions.includes("single") && generationModeOptions.includes("outline_sequence");
+  const sequenceModeValue = generationModeOptions.includes("sequence")
+    ? "sequence"
+    : generationModeOptions.includes("outline_sequence")
+      ? "outline_sequence"
+      : undefined;
+  const supportsItemSequence =
+    generationModeOptions.includes("single") && Boolean(sequenceModeValue);
   const generationMode = block.plugin?.configuration.generationMode;
-  const simpleGenerationMode =
-    generationMode === "single" || generationMode === "outline_sequence"
-      ? generationMode
-      : "advanced";
+  const simpleGenerationMode = generationModeOptions.includes(
+    generationMode as string | number | boolean,
+  )
+    ? String(generationMode)
+    : String(generationModeSchema?.default ?? "single");
   const primaryConfigurationEntries = Object.entries(configProperties).filter(([key]) =>
     ["model", "voice_id"].includes(key),
   );
   const advancedConfigurationEntries = Object.entries(configProperties).filter(
     ([key]) =>
-      !(supportsOutlineSequence && key === "generationMode") &&
+      !(supportsItemSequence && key === "generationMode") &&
       !profileConfigurationKeys.includes(key) &&
       !primaryConfigurationEntries.some(([primaryKey]) => primaryKey === key),
   );
@@ -1202,6 +1178,42 @@ function BlockEditor({
       return [{ processType: candidateProcess, block: candidate }];
     });
   });
+  const inputPortState = (() => {
+    if (!selectedCapability) return [];
+    const used = new Set<string>();
+    return (block.inputs ?? []).map((input) => {
+      const compatible = selectedCapability.inputPorts.filter(
+        (port) => port.acceptedTypes.includes(input.type) && (port.multiple || !used.has(port.key)),
+      );
+      const selected = input.portKey
+        ? compatible.find((port) => port.key === input.portKey)
+        : compatible.length === 1
+          ? compatible[0]
+          : undefined;
+      if (selected && !selected.multiple) used.add(selected.key);
+      return { input, compatible, selected, ambiguous: !input.portKey && compatible.length > 1 };
+    });
+  })();
+  const outputPortState = (block.outputs ?? []).map((field) => {
+    const compatible =
+      selectedCapability?.outputPorts.filter((port) => port.producedTypes.includes(field.type)) ??
+      [];
+    const selected = field.portKey
+      ? compatible.find((port) => port.key === field.portKey)
+      : compatible.length === 1
+        ? compatible[0]
+        : undefined;
+    return { field, compatible, selected, ambiguous: !field.portKey && compatible.length > 1 };
+  });
+  const requiredPortsMissing =
+    selectedCapability?.inputPorts.filter(
+      (port) => port.required && !inputPortState.some((item) => item.selected?.key === port.key),
+    ) ?? [];
+  const contractIssues =
+    [
+      ...inputPortState.filter((item) => !item.selected),
+      ...outputPortState.filter((item) => !item.selected),
+    ].length + requiredPortsMissing.length;
 
   const renderConfigurationField = ([key, schema]: [string, JsonSchema]) => (
     <PluginConfigurationField
@@ -1227,9 +1239,18 @@ function BlockEditor({
           <span className={cn("grid size-10 place-items-center rounded-md border", meta.className)}>
             <Icon className="size-4" />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-xs font-medium uppercase text-muted-foreground">{meta.label}</p>
-            <h2 className="truncate text-xl font-semibold">{block.name?.trim() || meta.label}</h2>
+            <Label htmlFor={`${block.id}-name`} className="sr-only">
+              Nome da ação
+            </Label>
+            <Input
+              id={`${block.id}-name`}
+              value={block.name ?? meta.label}
+              onChange={(event) => onChange({ name: event.target.value })}
+              placeholder={meta.label}
+              className="h-auto border-0 bg-transparent p-0 text-xl font-semibold shadow-none focus-visible:ring-1 focus-visible:ring-brand"
+            />
             <p className="text-[11px] text-muted-foreground">
               Bloco {index + 1} de {total}
             </p>
@@ -1248,37 +1269,20 @@ function BlockEditor({
         </div>
       </div>
 
-      <div className="mt-6 space-y-4">
-        <MethodEditorSection
-          eyebrow="O que faz"
-          title="Ação e instrução"
-          description="Dê um nome claro ao bloco e registre o prompt ou a orientação usada para realizar esta ação."
-        >
-          <div className="space-y-1.5">
-            <Label>Nome da ação</Label>
-            <Input
-              value={block.name ?? meta.label}
-              onChange={(event) => onChange({ name: event.target.value })}
-              placeholder={`Ex: ${meta.label} referências`}
-            />
-          </div>
+      <div className="mt-6 space-y-5 rounded-xl border border-brand/30 bg-card/35 p-4 sm:p-5">
+        <InstructionEditor
+          block={block}
+          capability={selectedCapability}
+          methodBlocks={methodBlocks}
+          blockIndex={index}
+          processType={processType}
+          channelMethods={channelMethods}
+          collections={collections}
+          onChange={onChange}
+        />
 
-          <InstructionEditor
-            block={block}
-            capability={selectedCapability}
-            methodBlocks={methodBlocks}
-            blockIndex={index}
-            processType={processType}
-            channelMethods={channelMethods}
-            onChange={onChange}
-          />
-        </MethodEditorSection>
-
-        <MethodEditorSection
-          eyebrow="Quem executa"
-          title="Operador responsável"
-          description="Escolha se esta ação será realizada por uma pessoa, por IA ou por uma operação de código."
-        >
+        <div className="space-y-1.5 border-t border-border/60 pt-4">
+          <Label>Operador responsável</Label>
           <Select
             value={block.operator}
             onValueChange={(value) =>
@@ -1302,16 +1306,10 @@ function BlockEditor({
               })}
             </SelectContent>
           </Select>
-        </MethodEditorSection>
-      </div>
+        </div>
 
-      {block.type === "ESCOLHER" && (
-        <div className="mt-4 space-y-4">
-          <MethodEditorSection
-            eyebrow="O que precisa"
-            title="Coleção e contexto"
-            description="Indique onde estão as opções que já existem e, se necessário, quais informações ajudam na escolha."
-          >
+        {block.type === "ESCOLHER" && (
+          <div className="space-y-4 border-t border-border/60 pt-4">
             <div className="space-y-1.5">
               <Label>Coleção estratégica</Label>
               {collections.length ? (
@@ -1354,28 +1352,14 @@ function BlockEditor({
               blockIndex={index}
               processType={processType}
               channelMethods={channelMethods}
+              collections={collections}
               onChange={onChange}
             />
-          </MethodEditorSection>
-          <MethodEditorSection
-            eyebrow="O que entrega"
-            title="Item escolhido"
-            description="O item selecionado e os campos definidos na coleção ficam disponíveis para os próximos blocos."
-          >
-            <p className="text-xs text-muted-foreground">
-              A estrutura desta entrega acompanha a coleção estratégica vinculada acima.
-            </p>
-          </MethodEditorSection>
-        </div>
-      )}
+          </div>
+        )}
 
-      {block.type === "VALIDAR" && (
-        <div className="mt-4 space-y-4">
-          <MethodEditorSection
-            eyebrow="O que precisa"
-            title="Resultado que será validado"
-            description="Escolha uma entrega anterior, defina a decisão esperada e o que acontece quando ela é reprovada."
-          >
+        {block.type === "VALIDAR" && (
+          <div className="space-y-4 border-t border-border/60 pt-4">
             <ValidationEditor
               block={block}
               methodBlocks={methodBlocks}
@@ -1388,537 +1372,570 @@ function BlockEditor({
               blockIndex={index}
               processType={processType}
               channelMethods={channelMethods}
+              collections={collections}
               onChange={onChange}
             />
-          </MethodEditorSection>
-          <MethodEditorSection
-            eyebrow="O que entrega"
-            title="Decisão da validação"
-            description="A aprovação, reprovação ou seleção feita aqui fica disponível como resultado deste bloco."
-          >
-            <p className="text-xs text-muted-foreground">
-              O formato da decisão acompanha o modo de validação escolhido acima.
-            </p>
-          </MethodEditorSection>
-        </div>
-      )}
+          </div>
+        )}
 
-      {block.type !== "ESCOLHER" && block.type !== "VALIDAR" && (
-        <DataContractEditor
-          block={block}
-          methodBlocks={methodBlocks}
-          blockIndex={index}
-          processType={processType}
-          channelMethods={channelMethods}
-          onChange={onChange}
-        />
-      )}
+        {block.type !== "ESCOLHER" && block.type !== "VALIDAR" && (
+          <DataContractEditor
+            block={block}
+            methodBlocks={methodBlocks}
+            blockIndex={index}
+            processType={processType}
+            channelMethods={channelMethods}
+            collections={collections}
+            onChange={onChange}
+          />
+        )}
+      </div>
 
       {block.operator !== "Humano" && (
-        <div className="mt-4 space-y-4 rounded-xl border border-brand/30 bg-brand/5 p-4 sm:p-5">
-          <div className="space-y-1.5">
-            <Label>Plugin e capacidade</Label>
-            <p className="text-[11px] text-muted-foreground">
-              Escolha a ferramenta que realizará esta ação com o contrato definido acima.
-            </p>
-            {compatibleCapabilities.length ? (
-              <Select
-                value={block.plugin ? `${block.plugin.pluginId}::${block.plugin.capabilityId}` : ""}
-                onValueChange={(value) => {
-                  const [pluginId, capabilityId] = value.split("::");
-                  const selection = compatibleCapabilities.find(
-                    (item) => item.plugin.id === pluginId && item.capability.id === capabilityId,
-                  );
-                  const properties = selection?.capability.blockConfigSchema.properties ?? {};
-                  const managedProfileKeys = [
-                    selection?.plugin.manifest.profileSetup?.configurationKey,
-                    selection?.plugin.manifest.profileSetup?.fallbackConfigurationKey,
-                  ].filter((key): key is string => Boolean(key));
-                  const configuration = Object.fromEntries(
-                    Object.entries(properties)
-                      .filter(
-                        ([key, schema]) =>
-                          schema.default !== undefined && !managedProfileKeys.includes(key),
-                      )
-                      .map(([key, schema]) => [key, schema.default as string | number | boolean]),
-                  );
-                  const requestedInputs = block.inputs?.map((input) => {
-                    const port = selection?.capability.inputPorts.find((candidate) =>
-                      candidate.acceptedTypes.includes(input.type),
-                    );
-                    const current = normalizeFieldPresentation(input.type, input.presentation);
-                    return {
-                      ...input,
-                      presentation: normalizeFieldPresentation(
-                        input.type,
-                        current.renderer === "auto" ? (port?.presentation ?? current) : current,
-                      ),
-                    };
-                  });
-                  const requestedOutputs = block.outputs?.map((output) => {
-                    const port = selection?.capability.outputPorts.find((candidate) =>
-                      candidate.producedTypes.includes(output.type),
-                    );
-                    const current = normalizeFieldPresentation(output.type, output.presentation);
-                    return {
-                      ...output,
-                      presentation: normalizeFieldPresentation(
-                        output.type,
-                        current.renderer === "auto" ? (port?.presentation ?? current) : current,
-                      ),
-                    };
-                  });
-                  onChange({
-                    plugin: {
-                      pluginId,
-                      pluginVersion: selection?.plugin.manifest.version,
-                      capabilityId,
-                      configuration,
-                      connectionRequired: Boolean(selection?.plugin.manifest.secretKeys?.length),
-                    },
-                    inputs: requestedInputs,
-                    outputs: requestedOutputs,
-                  });
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione um plugin compatível" />
-                </SelectTrigger>
-                <SelectContent>
-                  {compatibleCapabilities.map(({ plugin, capability }) => (
-                    <SelectItem
-                      key={`${plugin.id}::${capability.id}`}
-                      value={`${plugin.id}::${capability.id}`}
-                    >
-                      {plugin.manifest.name} · {capability.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-                Nenhum plugin instalado é compatível com este bloco, processo e contrato de saída.
+        <details
+          className="group mt-4 rounded-xl border border-brand/30 bg-brand/5"
+          open={pluginExpanded}
+          onToggle={(event) => setPluginExpanded(event.currentTarget.open)}
+        >
+          <summary className="flex cursor-pointer list-none items-center gap-3 p-4 sm:p-5 [&::-webkit-details-marker]:hidden">
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">Plugin executor</p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {selectedPlugin && selectedCapability
+                  ? `${selectedPlugin.manifest.name} · ${selectedCapability.id}`
+                  : "Selecione quem executará esta ação"}
               </p>
+            </div>
+            {selectedCapability && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "shrink-0 text-[9px] font-normal",
+                  contractIssues
+                    ? "border-amber-500/50 text-amber-700 dark:text-amber-300"
+                    : "border-emerald-500/50 text-emerald-700 dark:text-emerald-300",
+                )}
+              >
+                {contractIssues ? "Requer ajustes" : "Pronto para executar"}
+              </Badge>
             )}
-          </div>
-
-          {selectedCapability && (
-            <div className="space-y-3">
-              {selectedCapability.instructionUsage !== "not_applicable" && (
-                <p className="rounded-lg border border-brand/20 bg-brand/5 p-3 text-[11px] text-muted-foreground">
-                  A instrução do bloco define o que deve ser feito. Os templates editáveis do plugin
-                  definem como essa instrução e o contexto são montados e enviados ao provedor.
-                </p>
-              )}
-              {selectedPlugin?.manifest.secretKeys?.length && block.plugin && (
-                <PluginConnectionSelector
-                  plugin={selectedPlugin}
-                  value={block.plugin.connectionId}
-                  onChange={(connectionId) =>
+          </summary>
+          <div className="space-y-4 border-t border-brand/20 p-4 sm:p-5">
+            <div className="space-y-1.5">
+              <Label>Plugin e capacidade</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Escolha a ferramenta que realizará esta ação com o contrato definido acima.
+              </p>
+              {compatibleCapabilities.length ? (
+                <Select
+                  value={
+                    block.plugin ? `${block.plugin.pluginId}::${block.plugin.capabilityId}` : ""
+                  }
+                  onValueChange={(value) => {
+                    const [pluginId, capabilityId] = value.split("::");
+                    const selection = compatibleCapabilities.find(
+                      (item) => item.plugin.id === pluginId && item.capability.id === capabilityId,
+                    );
+                    const properties = selection?.capability.blockConfigSchema.properties ?? {};
+                    const managedProfileKeys = [
+                      selection?.plugin.manifest.profileSetup?.configurationKey,
+                      selection?.plugin.manifest.profileSetup?.fallbackConfigurationKey,
+                    ].filter((key): key is string => Boolean(key));
+                    const configuration = Object.fromEntries(
+                      Object.entries(properties)
+                        .filter(
+                          ([key, schema]) =>
+                            schema.default !== undefined && !managedProfileKeys.includes(key),
+                        )
+                        .map(([key, schema]) => [key, schema.default as string | number | boolean]),
+                    );
+                    const requestedInputs = block.inputs?.map((input) => {
+                      const compatiblePorts =
+                        selection?.capability.inputPorts.filter((candidate) =>
+                          candidate.acceptedTypes.includes(input.type),
+                        ) ?? [];
+                      const port = compatiblePorts[0];
+                      const current = normalizeFieldPresentation(input.type, input.presentation);
+                      return {
+                        ...input,
+                        portKey: compatiblePorts.length === 1 ? port?.key : undefined,
+                        presentation: normalizeFieldPresentation(
+                          input.type,
+                          current.renderer === "auto" ? (port?.presentation ?? current) : current,
+                        ),
+                      };
+                    });
+                    const requestedOutputs = block.outputs?.map((output) => {
+                      const compatiblePorts =
+                        selection?.capability.outputPorts.filter((candidate) =>
+                          candidate.producedTypes.includes(output.type),
+                        ) ?? [];
+                      const port = compatiblePorts[0];
+                      const current = normalizeFieldPresentation(output.type, output.presentation);
+                      return {
+                        ...output,
+                        portKey: compatiblePorts.length === 1 ? port?.key : undefined,
+                        presentation: normalizeFieldPresentation(
+                          output.type,
+                          current.renderer === "auto" ? (port?.presentation ?? current) : current,
+                        ),
+                      };
+                    });
                     onChange({
                       plugin: {
-                        ...block.plugin!,
-                        connectionId,
-                        connectionRequired: true,
+                        pluginId,
+                        pluginVersion: selection?.plugin.manifest.version,
+                        capabilityId,
+                        configuration,
+                        connectionRequired: Boolean(selection?.plugin.manifest.secretKeys?.length),
                       },
-                    })
-                  }
-                />
-              )}
-              {profileSetup && block.plugin && (
-                <ManagedProfileSelector
-                  plugin={selectedPlugin}
-                  profileSetup={profileSetup}
-                  configuration={block.plugin.configuration}
-                  onChange={(configuration) =>
-                    onChange({ plugin: { ...block.plugin!, configuration } })
-                  }
-                />
-              )}
-              {selectedPlugin?.manifest.supportsConversationContinuation && block.plugin && (
-                <div className="space-y-1.5">
-                  <Label>Conversa</Label>
-                  <Select
-                    value={
-                      block.plugin.conversation?.mode === "reuse"
-                        ? `${block.plugin.conversation.sourceProcessType}::${block.plugin.conversation.sourceBlockId}`
-                        : "new"
-                    }
-                    onValueChange={(value) => {
-                      const [sourceProcessType, sourceBlockId] = value.split("::");
-                      onChange({
-                        plugin: {
-                          ...block.plugin!,
-                          conversation:
-                            value === "new"
-                              ? { mode: "new" }
-                              : {
-                                  mode: "reuse",
-                                  sourceProcessType: sourceProcessType as UniversalProcess,
-                                  sourceBlockId,
-                                },
-                        },
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="new">Iniciar uma conversa nova</SelectItem>
-                      {conversationSources.map((source) => (
-                        <SelectItem
-                          key={`${source.processType}::${source.block.id}`}
-                          value={`${source.processType}::${source.block.id}`}
-                        >
-                          Continuar: {PROCESS_META[source.processType].label} ·{" "}
-                          {source.block.name ?? source.block.type}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] text-muted-foreground">
-                    Use a mesma conversa para preservar o contexto do provedor. Se o perfil mudar ou
-                    a conversa não abrir, o plugin inicia outra e recebe o contexto do bloco de
-                    origem.
-                  </p>
-                </div>
-              )}
-              {primaryConfigurationEntries.map(renderConfigurationField)}
-              {supportsOutlineSequence && block.plugin && (
-                <div className="space-y-1.5">
-                  <Label>Como executar</Label>
-                  <Select
-                    value={simpleGenerationMode}
-                    onValueChange={(value) => {
-                      if (value !== "single" && value !== "outline_sequence") return;
-                      onChange({
-                        plugin: {
-                          ...block.plugin!,
-                          configuration: {
-                            ...block.plugin!.configuration,
-                            generationMode: value,
-                          },
-                        },
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="single">Uma vez</SelectItem>
-                      <SelectItem value="outline_sequence">
-                        Uma vez para cada item da outline
+                      inputs: requestedInputs,
+                      outputs: requestedOutputs,
+                    });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione um plugin compatível" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {compatibleCapabilities.map(({ plugin, capability }) => (
+                      <SelectItem
+                        key={`${plugin.id}::${capability.id}`}
+                        value={`${plugin.id}::${capability.id}`}
+                      >
+                        {plugin.manifest.name} · {capability.id}
                       </SelectItem>
-                      {simpleGenerationMode === "advanced" && (
-                        <SelectItem value="advanced" disabled>
-                          Modo avançado existente
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] text-muted-foreground">
-                    {simpleGenerationMode === "outline_sequence"
-                      ? "A quantidade de execuções acompanha os itens recebidos da outline, mantendo a mesma conversa."
-                      : simpleGenerationMode === "advanced"
-                        ? "A configuração anterior foi preservada e continua disponível nas opções avançadas."
-                        : "Executa este bloco uma única vez para o vídeo."}
-                  </p>
-                </div>
-              )}
-              {advancedConfigurationEntries.length > 0 && (
-                <details className="rounded-lg border border-border/70 bg-card/60 p-3">
-                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    Configurações avançadas do executor ({advancedConfigurationEntries.length})
-                  </summary>
-                  <div className="mt-3 space-y-3">
-                    {advancedConfigurationEntries.map(renderConfigurationField)}
-                  </div>
-                </details>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                  Nenhum plugin instalado é compatível com este bloco, processo e contrato de saída.
+                </p>
               )}
             </div>
-          )}
-        </div>
-      )}
 
-      <MethodBlockTest
-        block={block}
-        methodBlocks={methodBlocks}
-        channelId={channelId}
-        processType={processType}
-        capability={selectedCapability}
-      />
+            {selectedCapability && (
+              <div className="space-y-3">
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 text-[11px]",
+                    contractIssues
+                      ? "border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-200"
+                      : "border-emerald-500/40 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200",
+                  )}
+                >
+                  <p className="font-medium">
+                    {contractIssues
+                      ? "Revise o contrato antes de executar"
+                      : "O plugin está recebendo tudo o que precisa"}
+                  </p>
+                  <p className="mt-0.5 opacity-80">
+                    {contractIssues
+                      ? "Escolha como as entradas e entregas ambíguas serão usadas pelo plugin."
+                      : "Entradas, entregas e formatos são compatíveis com esta capacidade."}
+                  </p>
+                </div>
+
+                {(inputPortState.length > 0 || outputPortState.length > 0) && (
+                  <details className="rounded-lg border border-border/70 bg-card/60 p-3">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                      Dados usados pelo plugin
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      {inputPortState.map(({ input, compatible, selected, ambiguous }) => (
+                        <div key={input.id} className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground">
+                              Entrada · {instructionInputLabel(input)}
+                            </Label>
+                            {ambiguous && (
+                              <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                                Escolha necessária
+                              </span>
+                            )}
+                          </div>
+                          <Select
+                            value={input.portKey ?? (selected ? selected.key : "")}
+                            onValueChange={(portKey) =>
+                              onChange({
+                                inputs: (block.inputs ?? []).map((item) =>
+                                  item.id === input.id ? { ...item, portKey } : item,
+                                ),
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Como o plugin usará este dado?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {compatible.map((port) => (
+                                <SelectItem key={port.key} value={port.key}>
+                                  {port.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {selected?.description && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {selected.description}
+                            </p>
+                          )}
+                          {!compatible.length && (
+                            <p className="text-[10px] text-destructive">
+                              Nenhuma porta aceita o formato {input.type}.
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {outputPortState.map(({ field, compatible, selected, ambiguous }) => (
+                        <div key={field.id} className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground">
+                              Entrega · {instructionInputLabel(field)}
+                            </Label>
+                            {ambiguous && (
+                              <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                                Escolha necessária
+                              </span>
+                            )}
+                          </div>
+                          <Select
+                            value={field.portKey ?? (selected ? selected.key : "")}
+                            onValueChange={(portKey) =>
+                              onChange({
+                                outputs: (block.outputs ?? []).map((item) =>
+                                  item.id === field.id ? { ...item, portKey } : item,
+                                ),
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="O que o plugin entregará aqui?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {compatible.map((port) => (
+                                <SelectItem key={port.key} value={port.key}>
+                                  {port.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {selected?.description && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {selected.description}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {requiredPortsMissing.map((port) => (
+                        <p key={port.key} className="text-[10px] text-destructive">
+                          Falta uma entrada para: {port.label}.
+                        </p>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                <PluginPromptPreview
+                  block={block}
+                  capability={selectedCapability}
+                  inputs={inputPortState.map(({ input, selected }) => ({
+                    input,
+                    portKey: selected?.key,
+                  }))}
+                />
+                <MethodParametersEditor
+                  block={block}
+                  onChange={(parameters) => onChange({ parameters })}
+                />
+                {selectedCapability.instructionUsage !== "not_applicable" && (
+                  <p className="rounded-lg border border-brand/20 bg-brand/5 p-3 text-[11px] text-muted-foreground">
+                    A instrução do bloco define o que deve ser feito. Os templates editáveis do
+                    plugin definem como essa instrução e o contexto são montados e enviados ao
+                    provedor.
+                  </p>
+                )}
+                {selectedPlugin?.manifest.secretKeys?.length && block.plugin && (
+                  <PluginConnectionSelector
+                    plugin={selectedPlugin}
+                    value={block.plugin.connectionId}
+                    onChange={(connectionId) =>
+                      onChange({
+                        plugin: {
+                          ...block.plugin!,
+                          connectionId,
+                          connectionRequired: true,
+                        },
+                      })
+                    }
+                  />
+                )}
+                {profileSetup && block.plugin && (
+                  <ManagedProfileSelector
+                    plugin={selectedPlugin}
+                    profileSetup={profileSetup}
+                    configuration={block.plugin.configuration}
+                    onChange={(configuration) =>
+                      onChange({ plugin: { ...block.plugin!, configuration } })
+                    }
+                  />
+                )}
+                {selectedPlugin?.manifest.supportsConversationContinuation && block.plugin && (
+                  <div className="space-y-1.5">
+                    <Label>Conversa</Label>
+                    <Select
+                      value={
+                        block.plugin.conversation?.mode === "reuse"
+                          ? `${block.plugin.conversation.sourceProcessType}::${block.plugin.conversation.sourceBlockId}`
+                          : "new"
+                      }
+                      onValueChange={(value) => {
+                        const [sourceProcessType, sourceBlockId] = value.split("::");
+                        onChange({
+                          plugin: {
+                            ...block.plugin!,
+                            conversation:
+                              value === "new"
+                                ? { mode: "new" }
+                                : {
+                                    mode: "reuse",
+                                    sourceProcessType: sourceProcessType as UniversalProcess,
+                                    sourceBlockId,
+                                  },
+                          },
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="new">Iniciar uma conversa nova</SelectItem>
+                        {conversationSources.map((source) => (
+                          <SelectItem
+                            key={`${source.processType}::${source.block.id}`}
+                            value={`${source.processType}::${source.block.id}`}
+                          >
+                            Continuar: {PROCESS_META[source.processType].label} ·{" "}
+                            {source.block.name ?? source.block.type}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground">
+                      Use a mesma conversa para preservar o contexto do provedor. Se o perfil mudar
+                      ou a conversa não abrir, o plugin inicia outra e recebe o contexto do bloco de
+                      origem.
+                    </p>
+                  </div>
+                )}
+                {primaryConfigurationEntries.map(renderConfigurationField)}
+                {supportsItemSequence && block.plugin && (
+                  <div className="space-y-1.5">
+                    <Label>Como executar</Label>
+                    <Select
+                      value={simpleGenerationMode}
+                      onValueChange={(value) => {
+                        if (!generationModeOptions.includes(value)) return;
+                        onChange({
+                          plugin: {
+                            ...block.plugin!,
+                            configuration: {
+                              ...block.plugin!.configuration,
+                              generationMode: value,
+                            },
+                          },
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="single">Uma vez</SelectItem>
+                        {generationModeOptions.includes("auto") && (
+                          <SelectItem value="auto">Automático conforme a entrada</SelectItem>
+                        )}
+                        {sequenceModeValue && (
+                          <SelectItem value={sequenceModeValue}>
+                            Uma vez por item, na mesma conversa
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground">
+                      {simpleGenerationMode === sequenceModeValue
+                        ? "Envia cada item em ordem e mantém todos na mesma conversa do provedor."
+                        : simpleGenerationMode === "auto"
+                          ? "Usa sequência quando a porta de estrutura recebe vários itens; caso contrário, envia uma vez."
+                          : "Executa este bloco uma única vez com todo o contexto recebido."}
+                    </p>
+                  </div>
+                )}
+                {advancedConfigurationEntries.length > 0 && (
+                  <details className="rounded-lg border border-border/70 bg-card/60 p-3">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                      Configurações avançadas do executor ({advancedConfigurationEntries.length})
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      {advancedConfigurationEntries.map(renderConfigurationField)}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
 
-type MethodBlockTestResult = {
-  runId: string;
-  values: Record<string, RuntimeValue>;
-  temporary: true;
-};
-
-function MethodBlockTest({
+function PluginPromptPreview({
   block,
-  methodBlocks,
-  channelId,
-  processType,
   capability,
+  inputs,
 }: {
   block: ActionBlock;
-  methodBlocks: ActionBlock[];
-  channelId: string;
-  processType: UniversalProcess;
-  capability?: PluginCapability;
+  capability: PluginCapability;
+  inputs: Array<{ input: BlockInputBinding; portKey?: string }>;
 }) {
-  const [runId] = useState(() => crypto.randomUUID());
-  const [projectTitle, setProjectTitle] = useState("Projeto de teste");
-  const [projectDeadline, setProjectDeadline] = useState("");
-  const [values, setValues] = useState<Record<string, RuntimeValue>>(() =>
-    Object.fromEntries(
-      (block.inputs ?? []).flatMap((input) =>
-        input.source === "static" && typeof input.staticValue === "string"
-          ? [[input.id, input.staticValue]]
-          : [],
-      ),
-    ),
+  const preview = renderPluginPromptPreview(block, capability, inputs);
+  if (!preview) return null;
+  const declaredByPlugin = Boolean(capability.promptPreview);
+  return (
+    <details className="rounded-lg border border-brand/30 bg-brand/5 p-3" open>
+      <summary className="cursor-pointer text-xs font-medium text-foreground">
+        Prévia do envio à IA
+      </summary>
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+        {declaredByPlugin
+          ? "Este é o formato que o plugin declarou que enviará. As variáveis serão substituídas pelos dados do Projeto na execução."
+          : "Este plugin ainda não declarou seu formato próprio. A prévia mostra a instrução e os dados que o núcleo encaminhará ao executor."}
+      </p>
+      <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border/70 bg-background/70 p-3 font-mono text-[11px] leading-relaxed text-foreground">
+        {preview}
+      </pre>
+    </details>
   );
-  const [result, setResult] = useState<MethodBlockTestResult>();
-  const [testing, setTesting] = useState(false);
-  const [error, setError] = useState<string>();
-  const controllerRef = useRef<AbortController | undefined>(undefined);
+}
 
-  useEffect(
-    () => () => {
-      controllerRef.current?.abort();
-      void fetch(`/api/method-block-tests/${encodeURIComponent(runId)}`, {
-        method: "DELETE",
-        keepalive: true,
-      }).catch(() => undefined);
-    },
-    [runId],
-  );
-
-  const validationTarget =
-    block.type === "VALIDAR" && block.validation?.targetBlockId
-      ? methodBlocks.find((candidate) => candidate.id === block.validation?.targetBlockId)
-      : undefined;
-  const validationOutput =
-    validationTarget?.outputs?.find((output) => output.key === block.validation?.targetOutputKey) ??
-    validationTarget?.outputs?.[0];
-  const inputFields: BlockFieldDefinition[] = [
-    ...(validationOutput
-      ? [
-          {
-            ...validationOutput,
-            id: "__validation_target__",
-            key: "__validation_target__",
-            label: `${validationOutput.label} para teste`,
-            required: true,
-          },
-        ]
-      : []),
-    ...(block.inputs ?? []).map((input) => ({
-      id: input.id,
-      key: input.id,
-      label: `${input.label} para teste`,
-      type: input.type,
-      required: true,
-      recordFields: input.recordFields,
-      presentation: input.presentation,
-      placeholder:
-        input.source === "channel_history"
-          ? "Histórico simulado — nenhum dado real do Canal será consultado"
-          : "Valor temporário usado somente neste teste",
-    })),
-  ];
-  const displayOutputs: BlockFieldDefinition[] =
-    block.type === "ESCOLHER"
-      ? [
-          {
-            id: "method-test-selected-item",
-            key: "selectedItemId",
-            label: "Item escolhido",
-            type: "text",
-            required: true,
-          },
-        ]
-      : (block.outputs ?? []);
-  const hasExternalEffect = Boolean(
-    capability?.sideEffects.some((effect) =>
-      ["external_read", "external_write", "public_publish"].includes(effect),
-    ),
-  );
-
-  async function uploadTemporaryFile(file: File) {
-    const response = await fetch(`/api/method-block-tests/${encodeURIComponent(runId)}/uploads`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "X-File-Name": encodeURIComponent(file.name),
-        "X-File-Type": file.type || "application/octet-stream",
+function MethodParametersEditor({
+  block,
+  onChange,
+}: {
+  block: ActionBlock;
+  onChange: (parameters: BlockParameter[]) => void;
+}) {
+  const parameters = block.parameters ?? [];
+  const addParameter = () =>
+    onChange([
+      ...parameters,
+      {
+        id: uid(`${block.id}-parameter`),
+        label: "Novo parâmetro",
+        key: `parameter_${parameters.length + 1}`,
+        type: "text",
+        value: "",
       },
-      body: file,
-    });
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new Error(payload.error ?? "Não foi possível preparar o arquivo temporário.");
-    }
-    return response.json() as Promise<StoredFile>;
-  }
-
-  async function executeTest() {
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    setTesting(true);
-    setError(undefined);
-    setResult(undefined);
-    try {
-      const response = await fetch("/api/method-block-tests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          runId,
-          channelId,
-          processType,
-          blockId: block.id,
-          blocks: methodBlocks,
-          inputValues: values,
-          projectTitle,
-          projectDeadline,
-        }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as MethodBlockTestResult & {
-        error?: string;
-      };
-      if (!response.ok) throw new Error(payload.error ?? "Não foi possível testar o bloco.");
-      setResult(payload);
-      toast.success("Teste concluído", {
-        description: "O resultado é temporário e não entrou no histórico do Canal.",
-      });
-    } catch (caught) {
-      if (controller.signal.aborted) {
-        setError("Teste cancelado.");
-      } else {
-        setError(caught instanceof Error ? caught.message : "Não foi possível testar o bloco.");
-      }
-    } finally {
-      if (controllerRef.current === controller) controllerRef.current = undefined;
-      setTesting(false);
-    }
-  }
+    ]);
+  const updateParameter = (id: string, patch: Partial<BlockParameter>) =>
+    onChange(
+      parameters.map((parameter) => (parameter.id === id ? { ...parameter, ...patch } : parameter)),
+    );
 
   return (
-    <div className="mt-4 rounded-xl border border-dashed border-brand/40 bg-brand/5 p-4 sm:p-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <FlaskConical className="size-4 text-brand-soft" />
-            Testar somente este bloco
-          </div>
-          <p className="max-w-2xl text-[11px] leading-relaxed text-muted-foreground">
-            Usa a configuração atual, abre o navegador visivelmente quando necessário e descarta o
-            resultado ao fechar o editor. Não cria Projeto, Execução, Entrega nem Histórico do
-            Canal.
-          </p>
-        </div>
-        {testing ? (
-          <Button type="button" variant="outline" onClick={() => controllerRef.current?.abort()}>
-            Cancelar teste
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            disabled={block.operator === "Humano" || !block.plugin || !capability}
-            onClick={() => void executeTest()}
-          >
-            <Play className="size-3.5" />
-            Executar teste
-          </Button>
-        )}
-      </div>
-
-      {block.operator === "Humano" ? (
-        <p className="mt-3 rounded-lg border border-border/70 bg-background/40 p-3 text-xs text-muted-foreground">
-          Este bloco é humano: o formulário acima já representa sua prévia e não há executor
-          automático para chamar.
+    <details className="rounded-lg border border-border/70 bg-card/60 p-3">
+      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+        Parâmetros do prompt ({parameters.length})
+      </summary>
+      <div className="mt-3 space-y-3">
+        <p className="text-[10px] text-muted-foreground">
+          Valores reutilizáveis no prompt como {"{{parameters.chave}}"}. Eles ficam salvos no
+          Método.
         </p>
-      ) : (
-        <div className="mt-4 space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor={`${block.id}-test-project-title`}>Título fictício do Projeto</Label>
-            <Input
-              id={`${block.id}-test-project-title`}
-              value={projectTitle}
-              onChange={(event) => setProjectTitle(event.target.value)}
-              placeholder="Usado para {{project.title}}"
-            />
-          </div>
-          {block.instructions?.includes("{{project.deadline}}") && (
-            <div className="space-y-1.5">
-              <Label htmlFor={`${block.id}-test-project-deadline`}>Prazo fictício do Projeto</Label>
+        {parameters.map((parameter) => (
+          <div key={parameter.id} className="rounded-lg border border-border/60 p-3">
+            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_120px_1fr_auto]">
               <Input
-                id={`${block.id}-test-project-deadline`}
-                type="date"
-                value={projectDeadline}
-                onChange={(event) => setProjectDeadline(event.target.value)}
+                className="h-8 text-xs"
+                value={parameter.label}
+                onChange={(event) => updateParameter(parameter.id, { label: event.target.value })}
+                placeholder="Nome"
               />
+              <Input
+                className="h-8 text-xs"
+                value={parameter.key}
+                onChange={(event) => updateParameter(parameter.id, { key: event.target.value })}
+                placeholder="chave"
+              />
+              <Select
+                value={parameter.type}
+                onValueChange={(type) =>
+                  updateParameter(parameter.id, {
+                    type: type as BlockParameter["type"],
+                    value: type === "number" ? 0 : type === "boolean" ? false : "",
+                  })
+                }
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="text">Texto</SelectItem>
+                  <SelectItem value="textarea">Texto longo</SelectItem>
+                  <SelectItem value="number">Número</SelectItem>
+                  <SelectItem value="boolean">Sim ou não</SelectItem>
+                  <SelectItem value="select">Seleção</SelectItem>
+                </SelectContent>
+              </Select>
+              {parameter.type === "boolean" ? (
+                <Select
+                  value={String(parameter.value)}
+                  onValueChange={(value) =>
+                    updateParameter(parameter.id, { value: value === "true" })
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="true">Sim</SelectItem>
+                    <SelectItem value="false">Não</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : parameter.type === "number" ? (
+                <NumberInput
+                  className="h-8 text-xs"
+                  value={typeof parameter.value === "number" ? parameter.value : undefined}
+                  onValueChange={(value) => updateParameter(parameter.id, { value: value ?? 0 })}
+                />
+              ) : (
+                <Input
+                  className="h-8 text-xs"
+                  value={String(parameter.value ?? "")}
+                  onChange={(event) => updateParameter(parameter.id, { value: event.target.value })}
+                  placeholder="Valor"
+                />
+              )}
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-8 text-muted-foreground hover:text-destructive"
+                onClick={() => onChange(parameters.filter((item) => item.id !== parameter.id))}
+                aria-label={`Remover parâmetro ${parameter.label}`}
+              >
+                <Trash2 className="size-3" />
+              </Button>
             </div>
-          )}
-          {inputFields.length > 0 && (
-            <RuntimeFieldsForm
-              fields={inputFields}
-              values={values}
-              uploadFile={uploadTemporaryFile}
-              onChange={setValues}
-            />
-          )}
-          {hasExternalEffect && (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-100">
-              O resultado é temporário no ContentFlow, mas a chamada ao provedor é real e pode usar
-              cota, criar conversa ou produzir mídia na conta configurada.
-            </p>
-          )}
-        </div>
-      )}
-
-      {testing && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-brand/30 bg-background/50 p-3 text-xs">
-          <LoaderCircle className="size-4 animate-spin text-brand-soft" />
-          Executando o bloco em modo de teste…
-        </div>
-      )}
-      {error && (
-        <p
-          role="alert"
-          className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs"
-        >
-          {error}
-        </p>
-      )}
-      {result && (
-        <div className="mt-4 space-y-3 rounded-lg border border-brand/30 bg-background/60 p-4">
-          <div>
-            <p className="text-xs font-semibold">Resultado temporário</p>
-            <p className="text-[10px] text-muted-foreground">
-              Será descartado ao fechar este editor e nunca alimentará outros blocos.
-            </p>
           </div>
-          {displayOutputs.map((output) => (
-            <div key={output.id} className="space-y-1.5 rounded-md border border-border/70 p-3">
-              <p className="text-[11px] font-medium text-muted-foreground">{output.label}</p>
-              <RuntimeValueViewer
-                type={output.type}
-                value={result.values[output.key]}
-                presentation={output.presentation}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+        ))}
+        <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addParameter}>
+          <Plus className="size-3" /> Adicionar parâmetro
+        </Button>
+      </div>
+    </details>
   );
 }
 
@@ -2011,7 +2028,7 @@ function PluginConnectionSelector({
   const selected = connections.find((connection) => connection.id === value);
   const canCreate =
     Boolean(name.trim()) &&
-    (plugin.manifest.secretKeys ?? []).every((secretKey) => secrets[secretKey]?.trim());
+    (plugin.manifest.secretKeys ?? []).some((secretKey) => secrets[secretKey]?.trim());
 
   return (
     <section className="rounded-lg border border-border/70 bg-card/60 p-3">
@@ -2058,6 +2075,9 @@ function PluginConnectionSelector({
       <details className="mt-3 rounded-md border border-border/70 bg-background/40 p-2.5">
         <summary className="cursor-pointer text-xs font-medium">Criar nova conexão</summary>
         <div className="mt-3 space-y-2">
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            Preencha somente as credenciais necessárias para esta conexão.
+          </p>
           <Input
             value={name}
             placeholder="Ex.: Conta principal do canal"
@@ -2104,6 +2124,7 @@ function InstructionEditor({
   blockIndex,
   processType,
   channelMethods,
+  collections,
   onChange,
 }: {
   block: ActionBlock;
@@ -2112,6 +2133,7 @@ function InstructionEditor({
   blockIndex: number;
   processType: UniversalProcess;
   channelMethods: Record<UniversalProcess, ProcessMethod>;
+  collections: StrategicCollection[];
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2170,7 +2192,7 @@ function InstructionEditor({
     };
   };
   const previousBlockInputs = methodBlocks.slice(0, blockIndex).flatMap((sourceBlock) =>
-    (sourceBlock.outputs ?? [])
+    getBlockSourceFields(sourceBlock, collections)
       .filter((output) => acceptsInputType(output.type))
       .map((output) =>
         toAvailableInput(
@@ -2256,7 +2278,7 @@ function InstructionEditor({
   };
 
   return (
-    <div className="mt-4 space-y-2 border-t border-border/60 pt-4">
+    <div className="space-y-2">
       <div className="space-y-1">
         <Label>{label}</Label>
         <p className="text-[11px] text-muted-foreground">{description}</p>
@@ -2317,7 +2339,6 @@ function InstructionEditor({
                   <DropdownMenuSeparator />
                 </>
               )}
-
               {availableInputs.length > 0 && (
                 <>
                   <DropdownMenuLabel>Entregas anteriores disponíveis</DropdownMenuLabel>
@@ -2980,6 +3001,7 @@ function ContextInputsEditor({
   blockIndex,
   processType,
   channelMethods,
+  collections,
   onChange,
 }: {
   block: ActionBlock;
@@ -2987,6 +3009,7 @@ function ContextInputsEditor({
   blockIndex: number;
   processType: UniversalProcess;
   channelMethods: Record<UniversalProcess, ProcessMethod>;
+  collections: StrategicCollection[];
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const inputs = block.inputs ?? [];
@@ -3036,6 +3059,7 @@ function ContextInputsEditor({
             availableBlocks={methodBlocks.slice(0, blockIndex)}
             processType={processType}
             channelMethods={channelMethods}
+            collections={collections}
             onChange={(patch) => {
               const nextInput = { ...input, ...patch };
               onChange({
@@ -3077,6 +3101,7 @@ function DataContractEditor({
   blockIndex,
   processType,
   channelMethods,
+  collections,
   onChange,
 }: {
   block: ActionBlock;
@@ -3084,6 +3109,7 @@ function DataContractEditor({
   blockIndex: number;
   processType: UniversalProcess;
   channelMethods: Record<UniversalProcess, ProcessMethod>;
+  collections: StrategicCollection[];
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const inputs = block.inputs ?? [];
@@ -3114,23 +3140,27 @@ function DataContractEditor({
     onChange({ outputs: [...outputs, output] });
   };
   return (
-    <div className="mt-4 space-y-4">
-      <MethodEditorSection
-        eyebrow="O que precisa"
-        title={block.type === "BUSCAR" ? "Informações para a busca" : "Informações de entrada"}
-        description="Defina o que precisa estar disponível antes desta ação começar. Cada entrada cria e mantém sua variável correspondente no prompt."
-      >
+    <div className="space-y-5 border-t border-border/60 pt-4">
+      <section>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">
+              {block.type === "BUSCAR" ? "Informações para a busca" : "Informações de entrada"}
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              Defina apenas as entradas adicionais que esta ação precisa.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1" onClick={addInput}>
+            <Plus className="size-3" /> Adicionar entrada
+          </Button>
+        </div>
         {block.type === "CRIAR" && (
           <div className="mb-3">
             <ChannelHistoryToggle block={block} processType={processType} onChange={onChange} />
           </div>
         )}
-        <div className="flex justify-end">
-          <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addInput}>
-            <Plus className="size-3" /> Adicionar entrada
-          </Button>
-        </div>
-        <div className="mt-3 space-y-3">
+        <div className="space-y-3">
           {regularInputs.map((input) => (
             <InputBindingEditor
               key={input.id}
@@ -3138,6 +3168,7 @@ function DataContractEditor({
               availableBlocks={methodBlocks.slice(0, blockIndex)}
               processType={processType}
               channelMethods={channelMethods}
+              collections={collections}
               onChange={(patch) => {
                 const nextInput = { ...input, ...patch };
                 onChange({
@@ -3168,29 +3199,35 @@ function DataContractEditor({
             </div>
           )}
         </div>
-      </MethodEditorSection>
+      </section>
 
-      <MethodEditorSection
-        eyebrow="O que entrega"
-        title={block.type === "BUSCAR" ? "Resultados encontrados" : "Resultado desta ação"}
-        description="Defina o que ficará pronto quando esta ação terminar e poderá ser usado pelos próximos blocos."
-      >
-        <div className="flex flex-wrap justify-end gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-8 px-2 text-[10px]"
-            onClick={() =>
-              onChange({ outputs: createSuggestedHumanFields(processType, block.type) })
-            }
-          >
-            Usar sugestão
-          </Button>
-          <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addOutput}>
-            <Plus className="size-3" /> Adicionar entrega
-          </Button>
+      <section className="border-t border-border/60 pt-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold">
+              {block.type === "BUSCAR" ? "Resultados encontrados" : "Resultado desta ação"}
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              Cada entrega fica disponível para os próximos blocos.
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 px-2 text-[10px]"
+              onClick={() =>
+                onChange({ outputs: createSuggestedHumanFields(processType, block.type) })
+              }
+            >
+              Usar sugestão
+            </Button>
+            <Button size="sm" variant="outline" className="h-8 gap-1" onClick={addOutput}>
+              <Plus className="size-3" /> Adicionar entrega
+            </Button>
+          </div>
         </div>
-        <div className="mt-3 space-y-3">
+        <div className="space-y-3">
           {outputs.map((output) => (
             <OutputFieldEditor
               key={output.id}
@@ -3213,7 +3250,7 @@ function DataContractEditor({
             </div>
           )}
         </div>
-      </MethodEditorSection>
+      </section>
     </div>
   );
 }
@@ -3223,6 +3260,7 @@ function InputBindingEditor({
   availableBlocks,
   processType,
   channelMethods,
+  collections,
   onChange,
   onRemove,
 }: {
@@ -3230,10 +3268,13 @@ function InputBindingEditor({
   availableBlocks: ActionBlock[];
   processType: UniversalProcess;
   channelMethods: Record<UniversalProcess, ProcessMethod>;
+  collections: StrategicCollection[];
   onChange: (patch: Partial<BlockInputBinding>) => void;
   onRemove: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const sourceBlock = availableBlocks.find((block) => block.id === input.blockId);
+  const sourceFields = getBlockSourceFields(sourceBlock, collections);
   const previousProcesses = PROCESS_ORDER.slice(0, PROCESS_ORDER.indexOf(processType));
   const previousDeliverySources = previousProcesses.flatMap((sourceProcessType) => {
     const method = channelMethods[sourceProcessType];
@@ -3269,19 +3310,25 @@ function InputBindingEditor({
       (source) => !input.sourceProcessType && source.output.key === input.sourceKey,
     );
   return (
-    <div className="space-y-3 rounded-xl border border-border/70 bg-card p-3">
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(150px,0.8fr)_32px] items-center gap-2">
-        <Input
-          value={instructionInputLabel(input)}
-          onChange={(event) => onChange({ label: event.target.value })}
-          placeholder="Nome da entrada"
-          className="h-8 text-xs"
-        />
-        <PresentationSelector
-          type={input.type}
-          value={input.presentation}
-          onChange={(presentation) => onChange({ presentation })}
-        />
+    <div className="rounded-xl border border-border/70 bg-card p-3">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+          <span className="truncate text-sm font-medium">{instructionInputLabel(input)}</span>
+          <Badge variant="outline" className="ml-auto shrink-0 text-[9px] font-normal">
+            {FIELD_TYPES.find((type) => type.value === input.type)?.label ?? input.type}
+          </Badge>
+        </button>
         <Button
           size="icon"
           variant="ghost"
@@ -3293,211 +3340,231 @@ function InputBindingEditor({
         </Button>
       </div>
 
-      <div className="space-y-1">
-        <Label className="text-[10px] text-muted-foreground">Formato</Label>
-        <Select
-          value={input.type ?? "text"}
-          onValueChange={(type) => {
-            const nextType = type as HumanFieldType;
-            onChange({
-              type: nextType,
-              presentation: normalizeFieldPresentation(nextType, input.presentation),
-              recordFields:
-                type === "records" ? (input.recordFields ?? [newRecordField(0)]) : undefined,
-            });
-          }}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FIELD_TYPES.map((type) => (
-              <SelectItem key={type.value} value={type.value}>
-                {type.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="grid gap-2 sm:grid-cols-2">
-        <div className="space-y-1">
-          <Label className="text-[10px] text-muted-foreground">Origem</Label>
-          <Select
-            value={input.source}
-            onValueChange={(source) => {
-              if (source === "previous_process") {
-                const selected = previousDeliverySources.at(-1);
-                const output = selected?.output;
-                onChange({
-                  source: "previous_process",
-                  label: output ? instructionInputLabel(output) : input.label,
-                  sourceKey: output?.key,
-                  sourceProcessType: selected?.processType,
-                  blockId: selected?.blockId,
-                  staticValue: undefined,
-                  historyLimit: undefined,
-                  historyEligibility: undefined,
-                  type: output?.type ?? input.type,
-                  presentation: output?.presentation ?? input.presentation,
-                  recordFields: output?.recordFields,
-                });
-                return;
-              }
-              onChange({
-                source: source as BlockInputBinding["source"],
-                sourceKey: source === "project" ? "title" : undefined,
-                sourceProcessType: undefined,
-                blockId: undefined,
-                staticValue: undefined,
-                historyLimit: undefined,
-                historyEligibility: undefined,
-              });
-            }}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="previous_block">Bloco anterior</SelectItem>
-              <SelectItem value="previous_process" disabled={!previousDeliverySources.length}>
-                Entrega anterior
-              </SelectItem>
-              <SelectItem value="project">Dados do projeto</SelectItem>
-              <SelectItem value="static">Valor fixo</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        {input.source === "previous_block" && (
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Bloco</Label>
-            <Select
-              value={input.blockId ?? "automatic"}
-              onValueChange={(blockId) =>
-                onChange({
-                  blockId: blockId === "automatic" ? undefined : blockId,
-                  sourceKey: undefined,
-                })
-              }
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="automatic">Compatível mais recente</SelectItem>
-                {availableBlocks.map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.order + 1}. {candidate.name ?? candidate.type}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+      {expanded && (
+        <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,0.8fr)]">
+            <Input
+              value={instructionInputLabel(input)}
+              onChange={(event) => onChange({ label: event.target.value })}
+              placeholder="Nome da entrada"
+              className="h-8 text-xs"
+            />
+            <PresentationSelector
+              type={input.type}
+              value={input.presentation}
+              onChange={(presentation) => onChange({ presentation })}
+            />
           </div>
-        )}
 
-        {input.source === "previous_process" && (
           <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Processo, bloco e entrega</Label>
+            <Label className="text-[10px] text-muted-foreground">Formato</Label>
             <Select
-              value={selectedPreviousDelivery?.id}
-              onValueChange={(sourceId) => {
-                const selected = previousDeliverySources.find(
-                  (candidate) => candidate.id === sourceId,
-                );
-                const output = selected?.output;
+              value={input.type ?? "text"}
+              onValueChange={(type) => {
+                const nextType = type as HumanFieldType;
                 onChange({
-                  label: output ? instructionInputLabel(output) : input.label,
-                  sourceProcessType: selected?.processType,
-                  blockId: selected?.blockId,
-                  sourceKey: output?.key,
-                  type: output?.type ?? input.type,
-                  presentation: output?.presentation ?? input.presentation,
-                  recordFields: output?.recordFields,
+                  type: nextType,
+                  presentation: normalizeFieldPresentation(nextType, input.presentation),
+                  recordFields:
+                    type === "records" ? (input.recordFields ?? [newRecordField(0)]) : undefined,
                 });
               }}
             >
               <SelectTrigger className="h-8 text-xs">
-                <SelectValue placeholder="Selecione o resultado" />
+                <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {previousDeliverySources.map((source) => (
-                  <SelectItem key={source.id} value={source.id}>
-                    {PROCESS_META[source.processType].label} / {source.blockLabel} /{" "}
-                    {instructionInputLabel(source.output)}
+                {FIELD_TYPES.map((type) => (
+                  <SelectItem key={type.value} value={type.value}>
+                    {type.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-        )}
 
-        {input.source === "project" && (
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Dado</Label>
-            <Select
-              value={input.sourceKey ?? "title"}
-              onValueChange={(sourceKey) => onChange({ sourceKey })}
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="title">Nome do projeto</SelectItem>
-                <SelectItem value="deadline">Prazo</SelectItem>
-              </SelectContent>
-            </Select>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">Origem</Label>
+              <Select
+                value={input.source}
+                onValueChange={(source) => {
+                  if (source === "previous_process") {
+                    const selected = previousDeliverySources.at(-1);
+                    const output = selected?.output;
+                    onChange({
+                      source: "previous_process",
+                      label: output ? instructionInputLabel(output) : input.label,
+                      sourceKey: output?.key,
+                      sourceProcessType: selected?.processType,
+                      blockId: selected?.blockId,
+                      staticValue: undefined,
+                      historyLimit: undefined,
+                      historyEligibility: undefined,
+                      type: output?.type ?? input.type,
+                      presentation: output?.presentation ?? input.presentation,
+                      recordFields: output?.recordFields,
+                    });
+                    return;
+                  }
+                  onChange({
+                    source: source as BlockInputBinding["source"],
+                    sourceKey: source === "project" ? "title" : undefined,
+                    sourceProcessType: undefined,
+                    blockId: undefined,
+                    staticValue: undefined,
+                    historyLimit: undefined,
+                    historyEligibility: undefined,
+                  });
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="previous_block">Bloco anterior</SelectItem>
+                  <SelectItem value="previous_process" disabled={!previousDeliverySources.length}>
+                    Entrega anterior
+                  </SelectItem>
+                  <SelectItem value="project">Dados do projeto</SelectItem>
+                  <SelectItem value="static">Valor fixo</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {input.source === "previous_block" && (
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Bloco</Label>
+                <Select
+                  value={input.blockId ?? "automatic"}
+                  onValueChange={(blockId) =>
+                    onChange({
+                      blockId: blockId === "automatic" ? undefined : blockId,
+                      sourceKey: undefined,
+                    })
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">Compatível mais recente</SelectItem>
+                    {availableBlocks.map((candidate) => (
+                      <SelectItem key={candidate.id} value={candidate.id}>
+                        {candidate.order + 1}. {candidate.name ?? candidate.type}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {input.source === "previous_process" && (
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">
+                  Processo, bloco e entrega
+                </Label>
+                <Select
+                  value={selectedPreviousDelivery?.id}
+                  onValueChange={(sourceId) => {
+                    const selected = previousDeliverySources.find(
+                      (candidate) => candidate.id === sourceId,
+                    );
+                    const output = selected?.output;
+                    onChange({
+                      label: output ? instructionInputLabel(output) : input.label,
+                      sourceProcessType: selected?.processType,
+                      blockId: selected?.blockId,
+                      sourceKey: output?.key,
+                      type: output?.type ?? input.type,
+                      presentation: output?.presentation ?? input.presentation,
+                      recordFields: output?.recordFields,
+                    });
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Selecione o resultado" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {previousDeliverySources.map((source) => (
+                      <SelectItem key={source.id} value={source.id}>
+                        {PROCESS_META[source.processType].label} / {source.blockLabel} /{" "}
+                        {instructionInputLabel(source.output)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {input.source === "project" && (
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Dado</Label>
+                <Select
+                  value={input.sourceKey ?? "title"}
+                  onValueChange={(sourceKey) => onChange({ sourceKey })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="title">Nome do projeto</SelectItem>
+                    <SelectItem value="deadline">Prazo</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {input.source === "static" && (
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Valor</Label>
+                <Input
+                  className="h-8 text-xs"
+                  value={input.staticValue ?? ""}
+                  onChange={(event) => onChange({ staticValue: event.target.value })}
+                  placeholder="Valor usado nesta entrada"
+                />
+              </div>
+            )}
           </div>
-        )}
 
-        {input.source === "static" && (
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Valor</Label>
-            <Input
-              className="h-8 text-xs"
-              value={input.staticValue ?? ""}
-              onChange={(event) => onChange({ staticValue: event.target.value })}
-              placeholder="Valor usado nesta entrada"
+          {input.source === "previous_block" && input.blockId && (
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">Saída do bloco</Label>
+              <Select
+                value={input.sourceKey ?? "automatic"}
+                onValueChange={(sourceKey) => {
+                  const output = sourceFields.find((candidate) => candidate.key === sourceKey);
+                  onChange({
+                    label: output ? instructionInputLabel(output) : input.label,
+                    sourceKey: sourceKey === "automatic" ? undefined : sourceKey,
+                    type: output?.type ?? input.type,
+                    presentation: output?.presentation ?? input.presentation,
+                    recordFields: output?.recordFields,
+                  });
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">Saída compatível</SelectItem>
+                  {sourceFields.map((output) => (
+                    <SelectItem key={output.id} value={output.key}>
+                      {instructionInputLabel(output)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {input.type === "records" && input.source !== "channel_history" && (
+            <RecordFieldsEditor
+              fields={input.recordFields ?? []}
+              onChange={(recordFields) => onChange({ recordFields })}
             />
-          </div>
-        )}
-      </div>
-
-      {input.source === "previous_block" && input.blockId && (
-        <div className="space-y-1">
-          <Label className="text-[10px] text-muted-foreground">Saída do bloco</Label>
-          <Select
-            value={input.sourceKey ?? "automatic"}
-            onValueChange={(sourceKey) => {
-              const output = sourceBlock?.outputs?.find((candidate) => candidate.key === sourceKey);
-              onChange({
-                label: output ? instructionInputLabel(output) : input.label,
-                sourceKey: sourceKey === "automatic" ? undefined : sourceKey,
-                type: output?.type ?? input.type,
-                presentation: output?.presentation ?? input.presentation,
-                recordFields: output?.recordFields,
-              });
-            }}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="automatic">Saída compatível</SelectItem>
-              {(sourceBlock?.outputs ?? []).map((output) => (
-                <SelectItem key={output.id} value={output.key}>
-                  {instructionInputLabel(output)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          )}
         </div>
-      )}
-      {input.type === "records" && input.source !== "channel_history" && (
-        <RecordFieldsEditor
-          fields={input.recordFields ?? []}
-          onChange={(recordFields) => onChange({ recordFields })}
-        />
       )}
     </div>
   );
@@ -3512,76 +3579,101 @@ function OutputFieldEditor({
   onChange: (patch: Partial<BlockFieldDefinition>) => void;
   onRemove: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const usesOptions = field.type === "select" || field.type === "multiselect";
   return (
-    <div className="space-y-3 rounded-xl border border-border/70 bg-card p-3">
-      <div className="grid grid-cols-[minmax(0,1fr)_minmax(150px,0.8fr)_32px] items-center gap-2">
-        <Input
-          value={instructionInputLabel(field)}
-          onChange={(event) => onChange({ label: event.target.value })}
-          placeholder="Nome da entrega"
-          className="h-8 text-xs"
-        />
-        <PresentationSelector
-          type={field.type}
-          value={field.presentation}
-          onChange={(presentation) => onChange({ presentation })}
-        />
+    <div className="rounded-xl border border-border/70 bg-card p-3">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+          <span className="truncate text-sm font-medium">{instructionInputLabel(field)}</span>
+          <Badge variant="outline" className="ml-auto shrink-0 text-[9px] font-normal">
+            {FIELD_TYPES.find((type) => type.value === field.type)?.label ?? field.type}
+          </Badge>
+        </button>
         <Button
           size="icon"
           variant="ghost"
           className="size-7 text-muted-foreground hover:text-destructive"
           onClick={onRemove}
+          aria-label={`Remover entrega ${instructionInputLabel(field)}`}
         >
           <Trash2 className="size-3" />
         </Button>
       </div>
-      <div className="space-y-1">
-        <Label className="text-[10px] text-muted-foreground">Formato</Label>
-        <Select
-          value={field.type}
-          onValueChange={(type) => {
-            const nextType = type as HumanFieldType;
-            onChange({
-              type: nextType,
-              presentation: normalizeFieldPresentation(nextType, field.presentation),
-              recordFields:
-                type === "records" ? (field.recordFields ?? [newRecordField(0)]) : undefined,
-            });
-          }}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FIELD_TYPES.map((type) => (
-              <SelectItem key={type.value} value={type.value}>
-                {type.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      {usesOptions && (
-        <div>
-          <LineListTextarea
-            value={field.options ?? []}
-            onChange={(options) => onChange({ options })}
-            placeholder="Opções fixas, uma por linha (opcional)"
-            rows={3}
-            className="text-xs"
-          />
-          <p className="mt-1.5 text-[10px] text-muted-foreground">
-            Se ficar vazio, o sistema usa automaticamente a lista mais recente produzida pelo
-            método.
-          </p>
+      {expanded && (
+        <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,0.8fr)]">
+            <Input
+              value={instructionInputLabel(field)}
+              onChange={(event) => onChange({ label: event.target.value })}
+              placeholder="Nome da entrega"
+              className="h-8 text-xs"
+            />
+            <PresentationSelector
+              type={field.type}
+              value={field.presentation}
+              onChange={(presentation) => onChange({ presentation })}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[10px] text-muted-foreground">Formato</Label>
+            <Select
+              value={field.type}
+              onValueChange={(type) => {
+                const nextType = type as HumanFieldType;
+                onChange({
+                  type: nextType,
+                  presentation: normalizeFieldPresentation(nextType, field.presentation),
+                  recordFields:
+                    type === "records" ? (field.recordFields ?? [newRecordField(0)]) : undefined,
+                });
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {FIELD_TYPES.map((type) => (
+                  <SelectItem key={type.value} value={type.value}>
+                    {type.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {usesOptions && (
+            <div>
+              <LineListTextarea
+                value={field.options ?? []}
+                onChange={(options) => onChange({ options })}
+                placeholder="Opções fixas, uma por linha (opcional)"
+                rows={3}
+                className="text-xs"
+              />
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
+                Se ficar vazio, o sistema usa automaticamente a lista mais recente produzida pelo
+                método.
+              </p>
+            </div>
+          )}
+          {field.type === "records" && (
+            <RecordFieldsEditor
+              fields={field.recordFields ?? []}
+              onChange={(recordFields) => onChange({ recordFields })}
+            />
+          )}
         </div>
-      )}
-      {field.type === "records" && (
-        <RecordFieldsEditor
-          fields={field.recordFields ?? []}
-          onChange={(recordFields) => onChange({ recordFields })}
-        />
       )}
     </div>
   );
