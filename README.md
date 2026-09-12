@@ -2,15 +2,17 @@
 
 ## Ecossistema vini-duran — entrada pela main
 
-Este é o nosso fork do aplicativo. A `main` reúne a base funcional **0.5.5** e
-as personalizações reconciliadas da main anterior. [Decisões e testes da consolidação](docs/MAIN_055_RECONCILIATION.md).
+Este é o nosso fork do aplicativo. A `main` reúne a integração **0.6.1** e
+as personalizações preservadas do fork. [Estado e evidências](ATUALIZACAO_CORE_061.md).
 
 **Para instalar ou atualizar uma máquina**, use o
 [procedimento e atualizador universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
-A distribuição disponível é [v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
-candidata macOS arm64, fixada em `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`.
-Ela **não contém as adições posteriores de consolidação da main**. Não compile
-nem instale a main sobre produção apenas porque ambas dizem `0.5.5`.
+A distribuição disponível é [v0.6.1-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.6.1-ecossistema.1),
+pré-lançamento macOS arm64, fonte congelada `09da33af2c7f8d58e9eb28078f74ff49989ad8a4`.
+Foi testada em isolamento e instalada/reaberta no aplicativo operacional do
+mantenedor. Assinatura ad hoc, sem notarização; outras plataformas não homologadas.
+Commits posteriores de documentação não mudam o ZIP. Use manifesto e rota exatos,
+sem compilar ou substituir produção apenas pelo número de versão.
 
 | Destino | Responsabilidade |
 | --- | --- |

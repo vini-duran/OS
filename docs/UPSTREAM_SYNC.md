@@ -1,12 +1,19 @@
 # Sincronização segura com o upstream
 
+## Rodada vigente — 0.6.1
+
+Integração, ensaio isolado, atualização operacional e reabertura concluídos;
+distribuição [v0.6.1-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.6.1-ecossistema.1).
+Fonte congelada `09da33a`. [Registro e limites](../ATUALIZACAO_CORE_061.md).
+As seções de 0.5.5 abaixo são históricas, não a versão a instalar.
+
 ## Regra
 
 Nosso ecossistema é independente do autor. A atualização só deve entrar se
 preservar nossas funções, dados e fluxo de trabalho. Siga o
-[procedimento universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZACAO_UNIVERSAL.md).
+[procedimento de integração/publicação](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/PUBLICACAO_ECOSSISTEMA.md).
 Para solicitar a próxima rodada, use o
-[prompt universal de atualização](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/PROMPT_ATUALIZACAO.md).
+[prompt universal de publicação](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/PROMPT_PUBLICACAO_ECOSSISTEMA.md).
 Em caso de incompatibilidade, apresente impacto, opções e recomendação; mantenha
 a instalação que funciona. Main é a entrada do operador, não um depósito de
 branches ainda quebradas.
