@@ -8,10 +8,11 @@ compatível e aplica somente com aplicativo/dados fora de uso e backup/recibo.
 Se a versão ou o snapshot de origem não estiverem cobertos, mantenha o aplicativo
 atual e solicite a validação da rota. Não substitua simplesmente a pasta `.app`.
 
-Release candidata disponível: [v0.5.5-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.5.5-ecossistema.1),
-macOS arm64, fonte `64fc1bfeb93f56a399b498314739fbd55a8b8fbb`.
-A main contém reconciliações posteriores; código em main não muda esse ZIP.
-Veja [escopo da consolidação](MAIN_055_RECONCILIATION.md).
+A versão aprovada, plataformas, origem/fonte, artefato e evidências vêm do
+[manifesto universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/app-distribution.json).
+Leia o [manual local](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/manutencao-local/README.md)
+para resolver instalação limpa e etapas intermediárias. Não copiar números
+correntes para este documento. Assinatura e aceite são específicos do pacote.
 
 ## Quatro camadas, preservadas
 

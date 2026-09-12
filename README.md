@@ -2,17 +2,20 @@
 
 ## Ecossistema vini-duran — entrada pela main
 
-Este é o nosso fork do aplicativo. A `main` reúne a integração **0.6.1** e
-as personalizações preservadas do fork. [Estado e evidências](ATUALIZACAO_CORE_061.md).
+Este fork mantém o aplicativo, runtime e contratos técnicos. A main é fonte
+consolidada, não a identidade de um pacote já publicado.
 
-**Para instalar ou atualizar uma máquina**, use o
-[procedimento e atualizador universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/ATUALIZADOR_APP.md).
-A distribuição disponível é [v0.6.1-ecossistema.1](https://github.com/vini-duran/OS/releases/tag/v0.6.1-ecossistema.1),
-pré-lançamento macOS arm64, fonte congelada `09da33af2c7f8d58e9eb28078f74ff49989ad8a4`.
-Foi testada em isolamento e instalada/reaberta no aplicativo operacional do
-mantenedor. Assinatura ad hoc, sem notarização; outras plataformas não homologadas.
-Commits posteriores de documentação não mudam o ZIP. Use manifesto e rota exatos,
-sem compilar ou substituir produção apenas pelo número de versão.
+- [Entrada e configuração do agente](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/entrada/README.md).
+- [Instalar/atualizar esta máquina](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/manutencao-local/README.md).
+- [Evoluir, validar localmente e publicar nosso fork](docs/UPSTREAM_SYNC.md).
+- [Versão aprovada, plataformas, rotas e evidências](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/README.md):
+  consulte o manifesto na revisão fixada; não escolher a versão pelo histórico.
+- [Históricos de integração](docs/historico/README.md): fatos e limites de
+  rodadas anteriores, sem procedimentos concorrentes na raiz.
+
+O número de versão em `package.json` identifica esta fonte; o manifesto universal
+identifica a distribuição consumível. Commits documentais não mudam o ZIP.
+As escolhas da Proposta Única pertencem ao humano e ao repositório do projeto.
 
 | Destino | Responsabilidade |
 | --- | --- |
