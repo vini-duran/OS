@@ -5,7 +5,7 @@ Esta pasta descreve o produto ContentFlow. A documentação de plugins, do Brows
 ## Leitura recomendada
 
 Para nosso fork no macOS: [atualização e instalação](DESKTOP_MACOS.md),
-[estado da consolidação 0.5.5](MAIN_055_RECONCILIATION.md) e
+[históricos de integração](historico/README.md) e
 [sincronização preservativa](UPSTREAM_SYNC.md). O guia Windows abaixo é herdado;
 não representa homologação do nosso ecossistema nessa plataforma.
 

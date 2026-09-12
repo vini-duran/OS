@@ -3,7 +3,7 @@
 ## Estado
 
 A pesquisa estratégica por canal foi preservada na consolidação da main 0.5.5.
-Veja [funcionamento](CHANNEL_RESEARCH.md) e [decisões/evidências](MAIN_055_RECONCILIATION.md).
+Veja [funcionamento](CHANNEL_RESEARCH.md) e [decisões/evidências](historico/MAIN_055_RECONCILIATION.md).
 Sua presença na fonte não prova que esteja na release instalada.
 
 As pastas `plugins/private/norte-magnata-*` e o template em `docs/templates/`

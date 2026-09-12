@@ -28,7 +28,7 @@ Windows/Linux e migração irrestrita não foram homologados.
 
 Rollback do aplicativo não autoriza restaurar banco sobre produções novas.
 Versões antigas podem ignorar revogações do cofre: veja
-[CREDENTIAL_VAULT_MIGRATION.md](CREDENTIAL_VAULT_MIGRATION.md).
+[CREDENTIAL_VAULT_MIGRATION.md](../CREDENTIAL_VAULT_MIGRATION.md).
 
 ## Preservação
 
