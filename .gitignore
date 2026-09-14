@@ -42,7 +42,7 @@ ecosystem/plugins/reference/google-flow-browser-images/scripts/rpc-analysis.json
 plugins/distributable/
 ecosystem/plugins/reference/*/windows-enterprise-install/artifacts/
 
-# Desktop build intermediates (the distributable V0 lives in compiled/)
+# Desktop build intermediates (distributable artifacts are published in releases)
 desktop-dist/
 desktop-runtime/
 release/

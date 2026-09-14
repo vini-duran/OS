@@ -1,10 +1,14 @@
 # V0 compilada para Windows
 
+Referência técnica herdada do produto Windows. Para instalar ou atualizar nosso
+ecossistema, siga o [manual de manutenção local](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/manutencao-local/README.md)
+e as plataformas/artefatos aprovados no manifesto. Este guia não homologa Windows.
+
 A V0 transforma o ContentFlow em um aplicativo comum do Windows. Ela não exige Node, npm, Git ou terminal para uso normal.
 
 ## Qual arquivo usar
 
-Os binários são publicados na página [Releases do projeto](https://github.com/andremjr/contentflow/releases):
+Os formatos de binário Windows são:
 
 - `ContentFlow-V0-<versão>-x64-Setup.exe`: recomendado. Instala atalhos e abre rapidamente nas próximas vezes.
 - `ContentFlow-V0-<versão>-x64-Portable.exe`: alternativa sem instalação. Pode demorar mais para abrir porque descompacta o aplicativo a cada execução.
@@ -56,11 +60,11 @@ npm run desktop:v0
 
 Os artefatos intermediários são gerados em `release/v0`. Os binários não entram no histórico Git, evitando dependência de Git LFS e mantendo o clone leve.
 
-### Publicação direta com a credencial de sessão
+### Publicação
 
-O ContentFlow não usa GitHub Actions para validar, montar ou publicar releases. O repositório não deve manter workflow acionado por tags, e o envio de uma tag nunca deve iniciar um job. Toda release autorizada é validada e construída localmente no estado exato do commit com `npm run release:verify`; instalador, portátil, blockmap, `latest.yml`, manifesto SHA-256 e pacotes do ecossistema são publicados diretamente na mesma release estável pela API do GitHub.
-
-A autenticação deve reutilizar exclusivamente a credencial de sessão existente no Git Credential Manager. O token nunca deve aparecer na saída, em logs, documentação, scripts versionados, variáveis persistentes ou arquivos temporários. Depois do upload, confirme pela API pública que a tag é a release `latest`, que todos os assets estão no estado `uploaded`, que os tamanhos e hashes correspondem aos arquivos locais, que o catálogo contém as versões esperadas e que `https://andremjr.github.io/contentflow/` aponta para a release correta. Falhas de teste, build, assinatura, integridade ou conteúdo devem ser corrigidas e validadas antes de publicar.
+Siga [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md), que encaminha ao manual único de
+evolução e publicação do nosso fork. Metadados de atualização Windows devem
+corresponder aos mesmos bytes testados; não constituem uma rota aprovada por si só.
 
 Assinatura Authenticode é a política recomendada para distribuição pública da V1. Quando houver certificado, o build local poderá receber `CSC_LINK` e `CSC_KEY_PASSWORD` somente durante o processo seguro de montagem; enquanto ele não estiver configurado, o Windows pode continuar exibindo aviso, embora a verificação HTTPS e SHA-512 do updater permaneça ativa.
 
@@ -74,7 +78,5 @@ Get-FileHash -Algorithm SHA256 `
   ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } |
   Set-Content -Encoding ascii "release/v0/ContentFlow-V0-$releaseVersion-SHA256.txt"
 ```
-
-Antes de enviar a tag estável, atualize `package.json`, valide localmente, prepare as notas da versão e confirme que não existe workflow acionado pela tag. Depois do push, crie ou atualize a release diretamente pela API do GitHub com a credencial segura da sessão. Não reutilize uma versão ou tag já publicada. Builds beta devem usar outra política futura e não entram no canal `latest` da V1.
 
 O empacotamento inclui o runtime Node 26 privado em `resources/runtime/node.exe`. A API inicia em uma porta local aleatória e a janela Electron encaminha `/api` internamente, evitando portas fixas e conflitos com uma cópia de desenvolvimento.

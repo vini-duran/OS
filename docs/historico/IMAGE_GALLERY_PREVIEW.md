@@ -1,5 +1,9 @@
 # Image gallery review — 0.4.17 restoration checkpoint
 
+Historical evidence only. Current installation and recovery follow
+[DESKTOP_MACOS.md](../DESKTOP_MACOS.md); this checkpoint does not authorize
+replacing files inside an installed application.
+
 The 0.4.14 implementation from commit `97b8485` was restored on the official
 0.4.17 base. Current local script item-orchestration and authorized Dracula
 changes are preserved. This branch is a source checkpoint/contribution candidate,
@@ -39,7 +43,6 @@ Does not alter selection quantity validation or fix unrelated Method schemas.
 ```sh
 node node_modules/tsx/dist/cli.mjs --test src/components/image-gallery.test.tsx
 npm run test:presentation
-npm run test:project-cleanup
 node node_modules/typescript/bin/tsc --noEmit
 npm run build
 ```
@@ -50,18 +53,11 @@ Native UI check: open preview, next (1→2), previous (2→1→30), close, focus
 Live production remained awaiting_human with 30 images and zero chosen images.
 Selection and completion were deliberately not executed on the real production.
 
-## Deployment / rollback
-
-Replace only `Contents/Resources/app/dist` of the existing macOS app after a build;
-keep desktop runtime, backend, data directory, plugins and settings untouched.
-Stop/reopen the desktop only when jobs are terminal and unsaved work is absent.
-Keep the previous dist until native verification; restore it if startup fails.
-Re-sign the local ad-hoc app after a bundle update. Do not copy a second app.
+## Historical compatibility finding
 
 Critical: build dependencies must match packaged runtime dependencies. An initial
 build with router-core 1.171.27 failed against installed 1.171.15 (`_getRenderedMatches`
 missing). It was rolled back immediately; rebuilding with 1.171.15,
 react-router 1.170.18, react-start 1.168.34, React 19.2.8 and Vite 8.2.0 passed.
-Before swapping, validate candidate SSR with the installed Node/runtime modules
-(HTTP 200), consume the response body and explicitly terminate the test process.
-Never solve this mismatch by silently updating the installed backend dependencies.
+This dependency mismatch is preserved as evidence; it is not a procedure for
+swapping bundle contents or changing installed runtime dependencies.

@@ -8,6 +8,80 @@ import {
   type StrategicCollection,
 } from "../../src/lib/domain";
 
+test("recursos do ecossistema e ausência de catálogo nos três idiomas", async ({
+  page,
+  request,
+}) => {
+  const original = await (await request.get("/api/preferences")).json();
+  const universal = "https://github.com/vini-duran/ContentFlow_Universal_Integrations";
+  try {
+    for (const [language, plugins, bridge, pluginSkill, methodSkill, check, unavailable] of [
+      [
+        "pt-BR",
+        "Consultar plugins",
+        "Configurar Browser Bridge",
+        "Consultar skill de plugins",
+        "Consultar skill de Métodos",
+        "Verificar atualizações",
+        "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.",
+      ],
+      [
+        "en",
+        "Browse plugins",
+        "Set up Browser Bridge",
+        "Consult plugin skill",
+        "Consult Methods skill",
+        "Check for updates",
+        "Catalog updates are unavailable. You can update from a folder.",
+      ],
+      [
+        "es",
+        "Consultar plugins",
+        "Configurar Browser Bridge",
+        "Consultar skill de plugins",
+        "Consultar skill de Métodos",
+        "Buscar actualizaciones",
+        "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
+      ],
+    ]) {
+      await request.put("/api/preferences", { data: { ...original, language } });
+      const initialUpdateCheck = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/plugins/updates",
+      );
+      await page.goto("/plugins");
+      expect((await initialUpdateCheck).status()).toBe(503);
+      await expect(page.getByRole("link", { name: new RegExp(`^${plugins}`) })).toHaveAttribute(
+        "href",
+        `${universal}/tree/main/plugins`,
+      );
+      await expect(page.getByRole("link", { name: new RegExp(`^${bridge}`) })).toHaveAttribute(
+        "href",
+        "https://github.com/vini-duran/OS/blob/main/ecosystem/browser-bridge/INSTALAR.md",
+      );
+      await expect(page.getByRole("link", { name: new RegExp(`^${pluginSkill}`) })).toHaveAttribute(
+        "href",
+        `${universal}/tree/main/team-bootstrap/skills/contentflow-plugin-development`,
+      );
+      const manualUpdateCheck = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/plugins/updates" &&
+          new URL(response.url()).searchParams.get("refresh") === "true",
+      );
+      await page.getByRole("button", { name: check, exact: true }).click();
+      expect((await manualUpdateCheck).status()).toBe(503);
+      await expect(page.getByText(unavailable, { exact: true })).toBeVisible();
+      await expect(page.locator('[data-sonner-toast][data-type="success"]')).toHaveCount(0);
+      await page.goto("/methods");
+      await expect(page.getByRole("link", { name: new RegExp(`^${methodSkill}`) })).toHaveAttribute(
+        "href",
+        `${universal}/tree/main/team-bootstrap/skills/contentflow-method-development`,
+      );
+    }
+  } finally {
+    await request.put("/api/preferences", { data: original });
+  }
+});
+
 async function seed(request: APIRequestContext) {
   const id = randomUUID();
   const methods = createEmptyMethods();

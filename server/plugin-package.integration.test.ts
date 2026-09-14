@@ -122,6 +122,8 @@ test(
         CONTENTFLOW_API_PORT: String(port),
         CONTENTFLOW_APP_ROOT: repositoryRoot,
         CONTENTFLOW_DATA_DIR: dataDirectory,
+        CONTENTFLOW_INSTALLED_PLUGINS_DIR: path.join(dataDirectory, "plugins", "installed"),
+        CONTENTFLOW_DEVELOPMENT_LINKS_DIR: path.join(dataDirectory, "plugins", "development"),
         CONTENTFLOW_PLUGIN_CATALOG_URL: `http://127.0.0.1:${catalogAddress.port}/ContentFlow-Plugin-Catalog.json`,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -188,3 +190,74 @@ test(
     }
   },
 );
+
+test("sem catálogo não consulta a rede e preserva instalação e atualização por pasta", async () => {
+  const testRoot = await mkdtemp(path.join(os.tmpdir(), "contentflow-no-catalog-"));
+  const dataDirectory = path.join(testRoot, "data");
+  const sourceDirectory = path.join(testRoot, "plugin");
+  await cp(
+    path.join(repositoryRoot, "ecosystem", "plugins", "examples", "community-reference"),
+    sourceDirectory,
+    { recursive: true },
+  );
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CONTENTFLOW_API_PORT: String(port),
+    CONTENTFLOW_APP_ROOT: repositoryRoot,
+    CONTENTFLOW_DATA_DIR: dataDirectory,
+    CONTENTFLOW_INSTALLED_PLUGINS_DIR: path.join(dataDirectory, "plugins", "installed"),
+    CONTENTFLOW_DEVELOPMENT_LINKS_DIR: path.join(dataDirectory, "plugins", "development"),
+  };
+  delete env.CONTENTFLOW_PLUGIN_CATALOG_URL;
+  const server = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      'globalThis.fetch = async () => { throw new Error("UNEXPECTED_CATALOG_REQUEST"); }; await import("./server/index.ts");',
+    ],
+    { cwd: repositoryRoot, env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const output: string[] = [];
+  server.stdout.on("data", (chunk) => output.push(String(chunk)));
+  server.stderr.on("data", (chunk) => output.push(String(chunk)));
+  try {
+    await waitForServer();
+    const updates = await request("/api/plugins/updates?refresh=true");
+    assert.equal(updates.response.status, 503, JSON.stringify(updates.result));
+    assert.equal(updates.result.updates, undefined);
+    assert.equal(
+      updates.result.error,
+      "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.",
+    );
+    const installed = await request("/api/plugins/install-from-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: sourceDirectory }),
+    });
+    assert.equal(installed.response.status, 201, JSON.stringify(installed.result));
+    const route = "/api/plugins/com.contentflow.reference-community";
+    const unavailable = await request(`${route}/update-from-catalog`, { method: "PUT" });
+    assert.equal(unavailable.response.status, 503);
+    assert.deepEqual(unavailable.result, updates.result);
+
+    const manifestPath = path.join(sourceDirectory, "contentflow.plugin.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.version = "1.1.0";
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const updated = await request(`${route}/update-from-folder`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: sourceDirectory }),
+    });
+    assert.equal(updated.response.status, 200, JSON.stringify(updated.result));
+    assert.equal(updated.result.version, "1.1.0");
+    assert.doesNotMatch(output.join(""), /UNEXPECTED_CATALOG_REQUEST/);
+  } finally {
+    server.kill();
+    await new Promise<void>((resolve) => server.once("exit", () => resolve()));
+    await rm(testRoot, { recursive: true, force: true });
+  }
+});

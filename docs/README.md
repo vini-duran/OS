@@ -10,9 +10,8 @@ Para nosso fork no macOS: [atualização e instalação](DESKTOP_MACOS.md),
 não representa homologação do nosso ecossistema nessa plataforma.
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — visão normativa, domínio e fronteiras do produto.
-2. [`V1_ROADMAP.md`](V1_ROADMAP.md) — estado atual e próximos marcos.
-3. [`DESKTOP_V0.md`](DESKTOP_V0.md) — distribuição Windows e atualização.
-4. [`LEGAL_AND_LICENSING.md`](LEGAL_AND_LICENSING.md) — mapa jurídico e licenciamento.
+2. [`DESKTOP_V0.md`](DESKTOP_V0.md) — referência técnica Windows herdada.
+3. [`LEGAL_AND_LICENSING.md`](LEGAL_AND_LICENSING.md) — mapa jurídico e licenciamento.
 
 ## Planos futuros
 

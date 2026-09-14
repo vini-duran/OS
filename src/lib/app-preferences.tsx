@@ -927,13 +927,13 @@ const PHRASES: Record<string, Translation> = {
     "Buscar por nombre, Canal, proceso o acción...",
   ],
   "Recursos para criar Métodos": ["Resources for creating Methods", "Recursos para crear Métodos"],
-  "Use o agente guiado ou baixe a skill atualizada para trabalhar com seu agente de IA.": [
-    "Use the guided agent or download the updated skill to work with your AI agent.",
-    "Usa el agente guiado o descarga la skill actualizada para trabajar con tu agente de IA.",
+  "Use o agente guiado ou consulte a skill para trabalhar com seu agente de IA.": [
+    "Use the guided agent or consult the skill to work with your AI agent.",
+    "Usa el agente guiado o consulta la skill para trabajar con tu agente de IA.",
   ],
   "Abrir agente de Métodos": ["Open Methods agent", "Abrir agente de Métodos"],
   "Criação guiada no ChatGPT": ["Guided creation in ChatGPT", "Creación guiada en ChatGPT"],
-  "Baixar skill de Métodos": ["Download Methods skill", "Descargar skill de Métodos"],
+  "Consultar skill de Métodos": ["Consult Methods skill", "Consultar skill de Métodos"],
   "Contrato e referências atualizados": [
     "Updated contract and references",
     "Contrato y referencias actualizados",
@@ -943,20 +943,28 @@ const PHRASES: Record<string, Translation> = {
   Reutilizar: ["Reuse", "Reutilizar"],
   "Instalar plugin": ["Install plugin", "Instalar plugin"],
   "Verificar atualizações": ["Check for updates", "Buscar actualizaciones"],
+  "Não foi possível verificar atualizações": [
+    "Could not check for updates",
+    "No se pudieron buscar actualizaciones",
+  ],
   "Componentes externos": ["External components", "Componentes externos"],
-  "O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.":
+  "Consulte os componentes e suas instruções. Instale somente os plugins que você precisa pela opção Instalar plugin.":
     [
-      "ContentFlow is installed without plugins. Download the package, extract it once, and install all plugins from the root folder—or select a single plugin folder.",
-      "ContentFlow se instala sin plugins. Descarga el paquete, extráelo una vez e instala todos desde la carpeta raíz, o selecciona la carpeta de un solo plugin.",
+      "Consult the components and their instructions. Install only the plugins you need using Install plugin.",
+      "Consulta los componentes y sus instrucciones. Instala solo los plugins que necesitas con la opción Instalar plugin.",
     ],
-  "Baixar plugins": ["Download plugins", "Descargar plugins"],
+  "Consultar plugins": ["Browse plugins", "Consultar plugins"],
   "Mesmo fluxo para qualquer autor": [
     "Same flow for every author",
     "El mismo flujo para cualquier autor",
   ],
-  "Baixar Browser Bridge": ["Download Browser Bridge", "Descargar Browser Bridge"],
+  "Configurar Browser Bridge": ["Set up Browser Bridge", "Configurar Browser Bridge"],
   "Somente para automação web": ["For web automation only", "Solo para automatización web"],
-  "Baixar skill de plugins": ["Download plugin skill", "Descargar skill de plugins"],
+  "Consultar skill de plugins": ["Consult plugin skill", "Consultar skill de plugins"],
+  "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.": [
+    "Catalog updates are unavailable. You can update from a folder.",
+    "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
+  ],
   "Para criar com um agente de IA": [
     "For building with an AI agent",
     "Para crear con un agente de IA",

@@ -1,6 +1,6 @@
-import { Download, ExternalLink, Sparkles } from "lucide-react";
+import { ExternalLink, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ECOSYSTEM_DOWNLOADS } from "@/lib/ecosystem-downloads";
+import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
 import { cn } from "@/lib/utils";
 
 const METHOD_AGENT_URL =
@@ -13,7 +13,7 @@ export function MethodAgentCta({ className }: { className?: string }) {
         <div className="max-w-xl">
           <h2 className="text-sm font-semibold">Recursos para criar Métodos</h2>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Use o agente guiado ou baixe a skill atualizada para trabalhar com seu agente de IA.
+            Use o agente guiado ou consulte a skill para trabalhar com seu agente de IA.
           </p>
         </div>
         <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[34rem]">
@@ -35,15 +35,15 @@ export function MethodAgentCta({ className }: { className?: string }) {
             </a>
           </Button>
           <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-            <a href={ECOSYSTEM_DOWNLOADS.methodDevelopmentSkill} target="_blank" rel="noreferrer">
+            <a href={ECOSYSTEM_RESOURCES.methodDevelopmentSkill} target="_blank" rel="noreferrer">
               <Sparkles className="size-4 shrink-0 text-brand-soft" />
               <span className="min-w-0 text-left">
-                <span className="block text-xs font-semibold">Baixar skill de Métodos</span>
+                <span className="block text-xs font-semibold">Consultar skill de Métodos</span>
                 <span className="block text-[10px] font-normal text-muted-foreground">
                   Contrato e referências atualizados
                 </span>
               </span>
-              <Download className="ml-auto size-3.5 shrink-0" />
+              <ExternalLink className="ml-auto size-3.5 shrink-0" />
             </a>
           </Button>
         </div>
