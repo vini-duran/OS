@@ -50,7 +50,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
-import { ECOSYSTEM_DOWNLOADS } from "@/lib/ecosystem-downloads";
+import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
 import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
 
 export const Route = createFileRoute("/plugins")({
@@ -205,6 +205,7 @@ function PluginsPage() {
         );
       }
     } catch (error) {
+      setUpdates({});
       if (notify)
         toast.error("Não foi possível verificar atualizações", {
           description: error instanceof Error ? error.message : undefined,
@@ -290,49 +291,49 @@ function PluginsPage() {
             <div className="max-w-md">
               <h2 className="text-sm font-semibold">Componentes externos</h2>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale
-                todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.
+                Consulte os componentes e suas instruções. Instale somente os plugins que você
+                precisa pela opção Instalar plugin.
               </p>
             </div>
             <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[44rem]">
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-                <a href={ECOSYSTEM_DOWNLOADS.plugins} target="_blank" rel="noreferrer">
+                <a href={ECOSYSTEM_RESOURCES.plugins} target="_blank" rel="noreferrer">
                   <Boxes className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar plugins</span>
+                    <span className="block text-xs font-semibold">Consultar plugins</span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
                       Mesmo fluxo para qualquer autor
                     </span>
                   </span>
-                  <Download className="ml-auto size-3.5 shrink-0" />
+                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-                <a href={ECOSYSTEM_DOWNLOADS.browserBridge} target="_blank" rel="noreferrer">
+                <a href={ECOSYSTEM_RESOURCES.browserBridge} target="_blank" rel="noreferrer">
                   <SquareArrowOutUpRight className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar Browser Bridge</span>
+                    <span className="block text-xs font-semibold">Configurar Browser Bridge</span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
                       Somente para automação web
                     </span>
                   </span>
-                  <Download className="ml-auto size-3.5 shrink-0" />
+                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
                 <a
-                  href={ECOSYSTEM_DOWNLOADS.pluginDevelopmentSkill}
+                  href={ECOSYSTEM_RESOURCES.pluginDevelopmentSkill}
                   target="_blank"
                   rel="noreferrer"
                 >
                   <Sparkles className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar skill de plugins</span>
+                    <span className="block text-xs font-semibold">Consultar skill de plugins</span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
                       Para criar com um agente de IA
                     </span>
                   </span>
-                  <Download className="ml-auto size-3.5 shrink-0" />
+                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
             </div>

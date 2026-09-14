@@ -27,7 +27,14 @@ await cp(
   path.join(localPluginsDirectory, "free-stock-media-studio"),
   { recursive: true },
 );
-const env = { ...process.env, CONTENTFLOW_DATA_DIR: directory, CONTENTFLOW_API_PORT: "8895" };
+const env = {
+  ...process.env,
+  CONTENTFLOW_DATA_DIR: directory,
+  CONTENTFLOW_API_PORT: "8895",
+  CONTENTFLOW_INSTALLED_PLUGINS_DIR: path.join(directory, "plugins", "installed"),
+  CONTENTFLOW_DEVELOPMENT_LINKS_DIR: path.join(directory, "plugins", "development"),
+  CONTENTFLOW_PLUGIN_CATALOG_URL: "",
+};
 const children = [
   spawn(process.execPath, ["--import", "tsx", "server/index.ts"], {
     env,

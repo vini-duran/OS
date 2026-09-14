@@ -1,20 +1,13 @@
-# Roadmap de finalização da V1.0.0
+# Histórico do roadmap de finalização da V1.0.0
 
-Este documento é o guia operacional para levar o ContentFlow da versão atual `0.4.2` até a primeira versão estável `1.0.0`. Ele registra a ordem de desenvolvimento, as decisões já tomadas, as dependências entre frentes e os critérios mínimos para considerar cada fase concluída.
+Este registro partiu da versão `0.4.2` e preserva o planejamento upstream para
+a V1. Seus estados e critérios são históricos, não a tarefa atual nem uma
+autorização de implementação/publicação. O procedimento vigente do fork está em
+[UPSTREAM_SYNC.md](../UPSTREAM_SYNC.md).
 
-O roadmap complementa [`ARCHITECTURE.md`](ARCHITECTURE.md). A arquitetura continua sendo a fonte normativa do produto; quando uma decisão aprovada neste roadmap alterar o comportamento normativo, a arquitetura e os documentos técnicos afetados devem ser atualizados antes ou junto da implementação.
+O contrato vigente do produto está em [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-## Como usar este documento
-
-- Trabalhar nas fases na ordem definida abaixo, salvo decisão explícita posterior do titular.
-- Antes de iniciar uma fase, confirmar suas dependências e atualizar o campo **Estado**.
-- Durante a implementação, registrar decisões relevantes na seção **Registro de decisões**.
-- Marcar critérios de aceite somente depois de código, testes e validação visual/operacional.
-- Não considerar uma fase concluída enquanto houver migração, documentação ou teste obrigatório pendente.
-- Preservar os 8 Processos Universais, 4 Blocos Essenciais, 3 Operadores e 3 interfaces do produto.
-- Tratar Métodos como processos de um vídeo individual. Coordenação de vários Projetos pertence ao Orquestrador.
-- Nunca serializar chaves, tokens, cookies ou outros secrets em Métodos, SQLite, logs ou arquivos exportados.
-- Preservar a separação absoluta entre núcleo e plugins: o ContentFlow deve permanecer útil com zero plugins, e nenhuma integração, API de fornecedor, FFmpeg ou automação de navegador pode ser incorporada ao núcleo.
+## Convenções do registro
 
 Estados usados neste documento:
 
@@ -74,7 +67,7 @@ Estados usados neste documento:
 - Integrar um updater compatível com o instalador NSIS no processo principal do Electron.
 - Criar uma ponte mínima e segura entre renderer e processo principal para consultar estado, iniciar download e instalar.
 - Adicionar ao dashboard os estados: versão atual, verificando, disponível, baixando, pronta, atualizada e erro recuperável.
-- Criar workflow de release que publique instalador e metadados de atualização gerados no mesmo build.
+- Publicar instalador e metadados de atualização gerados no mesmo build; o antigo procedimento por workflow foi substituído pelo manual de publicação do fork.
 - Definir política de assinatura de código e canal de release.
 - Registrar logs locais seguros, sem dados de usuário ou credenciais.
 
@@ -210,7 +203,7 @@ O núcleo continuará armazenando fora do Método:
 
 - Esta fase só pode iniciar após comando explícito do titular para preparar e publicar a `v0.4.3`.
 - Até esse comando, não alterar a versão para `0.4.3`, não criar tag e não publicar nem modificar releases no GitHub.
-- A publicação deve usar a API oficial ou o workflow autenticado do repositório; automação pelo navegador não faz parte desse processo.
+- O procedimento de publicação desta fase foi substituído pelo manual de publicação do fork.
 
 ### Gate arquitetural incorporado em 2026-08-27
 
@@ -228,7 +221,7 @@ Antes de publicar, a `v0.4.3` deve consolidar a separação absoluta entre núcl
 - Consolidar as Fases 1, 2 e 3 num commit candidato e atualizar a versão para `0.4.3`.
 - Executar a suíte completa, o empacotamento NSIS e as verificações de migração.
 - Publicar `v0.4.3` como release estável normal, não como draft ou pré-release.
-- Gerar instalador, versão portátil, `latest.yml`, `.blockmap` e manifesto SHA-256 no mesmo workflow.
+- Gerar instalador, versão portátil, `latest.yml`, `.blockmap` e manifesto SHA-256 no mesmo build local, conforme o manual de publicação do fork.
 - Usar a instalação `0.4.2` já preparada para verificar, baixar e instalar a `0.4.3` pelo dashboard.
 - Registrar resultado, logs seguros, tempo aproximado, comportamento de recuperação e preservação dos dados locais.
 

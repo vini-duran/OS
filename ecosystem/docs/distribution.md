@@ -83,7 +83,7 @@ Informações materiais não podem ficar apenas em link externo ou texto genéri
 
 ## 6. Publicação opcional em catálogo
 
-Submeter um plugin a um catálogo futuro é opcional. Serve para descoberta pública e para solicitar sinais como `verified`; não é requisito para compartilhar uma pasta ou executar localmente. A versão atual não inclui publicação, download ou atualização por catálogo.
+Submeter um plugin a um catálogo é opcional. Serve para descoberta pública e para solicitar sinais como `verified`; não é requisito para compartilhar uma pasta ou executar localmente.
 
 1. O autor reserva ou comprova o namespace.
 2. Envia pacote imutável, manifesto, licença, README, changelog e informações de suporte/segurança.
@@ -131,6 +131,12 @@ Downloads e avaliações não substituem segurança. Métricas suspeitas podem s
 ## 9. Atualizações e consentimento
 
 O card de cada plugin instalado mostra um indicador azul quando o catálogo configurado publica uma versão superior. O botão de atualização é individual; ele não instala plugins ausentes nem substitui pastas de desenvolvimento. Catálogo e pacotes são artefatos externos ao núcleo e usam o mesmo protocolo e as mesmas validações das instalações manuais.
+
+Neste fork, o mantenedor configura `CONTENTFLOW_PLUGIN_CATALOG_URL` somente
+quando houver um catálogo aprovado com `schemaVersion`, `generatedAt` e `plugins`
+contendo pacote, tamanho e SHA-256. O `CATALOG.json` universal é um índice de
+componentes e não tem esse contrato. Sem catálogo configurado, a consulta informa
+indisponibilidade; instalação e atualização por pasta continuam funcionando.
 
 Atualizações automáticas só são elegíveis quando:
 

@@ -162,9 +162,9 @@ const developmentLinksDirectory = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ??
     path.join(dataDirectory, "plugins", "development"),
 );
-const pluginCatalogUrl =
-  process.env.CONTENTFLOW_PLUGIN_CATALOG_URL ??
-  "https://github.com/andremjr/contentflow/releases/latest/download/ContentFlow-Plugin-Catalog.json";
+const pluginCatalogUrl = process.env.CONTENTFLOW_PLUGIN_CATALOG_URL?.trim() ?? "";
+const unavailablePluginCatalogMessage =
+  "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.";
 await migrateSiblingDataDirectory(dataDirectory, process.env.APPDATA);
 const nodeMajorVersion = Number(
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
@@ -2809,6 +2809,10 @@ async function currentPluginCatalog(force = false) {
 }
 
 app.get("/api/plugins/updates", async (request, response) => {
+  if (!pluginCatalogUrl) {
+    response.status(503).json({ error: unavailablePluginCatalogMessage });
+    return;
+  }
   try {
     const catalog = await currentPluginCatalog(request.query.refresh === "true");
     const registry = initializePluginRunner();
@@ -2931,6 +2935,10 @@ app.put("/api/plugins/:pluginId/update-from-folder", (request, response) => {
 });
 
 app.put("/api/plugins/:pluginId/update-from-catalog", async (request, response) => {
+  if (!pluginCatalogUrl) {
+    response.status(503).json({ error: unavailablePluginCatalogMessage });
+    return;
+  }
   initializePluginRunner();
   const plugin = getRegisteredPlugin(request.params.pluginId);
   if (!plugin) {

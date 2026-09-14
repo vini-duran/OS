@@ -10,6 +10,8 @@ não no nome ou na data de um relatório.
 - [Reconciliação da main anterior](MAIN_055_RECONCILIATION.md).
 - [Pendências e decisões da rodada anterior](UPDATE_055_REMAINING.md).
 - [Histórico acumulado de sincronização](UPSTREAM_SYNC_ATE_2026_09_12.md).
+- [Planejamento upstream da V1](V1_ROADMAP.md).
+- [Recuperação da galeria na base 0.4.17](IMAGE_GALLERY_PREVIEW.md).
 
 Relatórios preservam fases intermediárias e limitações. Consultar apenas a
 evidência encaminhada pelo manifesto/rota ou necessária à decisão atual.

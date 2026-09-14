@@ -109,7 +109,6 @@ npm run plugin:kit -- check ./meu-plugin
 ## Documentação essencial
 
 - [Arquitetura e visão de produto](docs/ARCHITECTURE.md)
-- [Roadmap do produto](docs/V1_ROADMAP.md)
 - [Plugin API v1](ecosystem/docs/protocol.md)
 - [Segurança de plugins](ecosystem/docs/security.md)
 - [Automação de navegador](ecosystem/docs/browser-automation.md)

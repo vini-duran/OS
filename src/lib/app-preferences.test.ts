@@ -3,6 +3,34 @@ import test from "node:test";
 
 import { translate } from "./app-preferences";
 
+test("component resources and unavailable catalog messages support all application languages", () => {
+  for (const [phrase, english, spanish] of [
+    ["Consultar plugins", "Browse plugins", "Consultar plugins"],
+    ["Configurar Browser Bridge", "Set up Browser Bridge", "Configurar Browser Bridge"],
+    ["Consultar skill de plugins", "Consult plugin skill", "Consultar skill de plugins"],
+    ["Consultar skill de Métodos", "Consult Methods skill", "Consultar skill de Métodos"],
+    [
+      "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.",
+      "Catalog updates are unavailable. You can update from a folder.",
+      "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
+    ],
+    [
+      "Consulte os componentes e suas instruções. Instale somente os plugins que você precisa pela opção Instalar plugin.",
+      "Consult the components and their instructions. Install only the plugins you need using Install plugin.",
+      "Consulta los componentes y sus instrucciones. Instala solo los plugins que necesitas con la opción Instalar plugin.",
+    ],
+    [
+      "Use o agente guiado ou consulte a skill para trabalhar com seu agente de IA.",
+      "Use the guided agent or consult the skill to work with your AI agent.",
+      "Usa el agente guiado o consulta la skill para trabajar con tu agente de IA.",
+    ],
+  ]) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.equal(translate(phrase, "en"), english);
+    assert.equal(translate(phrase, "es"), spanish);
+  }
+});
+
 test("restored research UI supports all application languages", () => {
   const phrases = [
     "Pesquisa estratégica",

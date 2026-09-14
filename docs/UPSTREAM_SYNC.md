@@ -20,8 +20,7 @@ Nosso número pode diferir do autor. Nem toda novidade precisa ser incorporada.
 
 Upstream é somente consulta/fetch, nunca destino de push/PR/tag/release.
 Mudança documental não exige reempacotar nem substituir o app instalado.
-Não usar Actions para build, validação ou release. O workflow existente de
-observação do upstream não é autorização de integração nem distribuição.
+Não usar Actions para build, validação ou release.
 
 Registros anteriores: [histórico](historico/README.md).
 Dados, cofre, sessões, recibos completos e mídia ficam privados. Nunca
