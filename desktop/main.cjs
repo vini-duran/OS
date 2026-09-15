@@ -97,12 +97,15 @@ try {
   process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selectedDataLocation.userData;
   process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selectedDataLocation.dataDir;
 } catch (dataSelectionError) {
-  dialog.showErrorBox(
-    "ContentFlow — Inicialização Suspensa",
-    dataSelectionError instanceof Error
-      ? dataSelectionError.message
-      : String(dataSelectionError),
-  );
+  console.error("ContentFlow — Inicialização Suspensa:", dataSelectionError);
+  if (!process.env.CONTENTFLOW_NON_INTERACTIVE && process.env.NODE_ENV !== "test") {
+    dialog.showErrorBox(
+      "ContentFlow — Inicialização Suspensa",
+      dataSelectionError instanceof Error
+        ? dataSelectionError.message
+        : String(dataSelectionError),
+    );
+  }
   app.quit();
   process.exit(1);
 }
