@@ -6,6 +6,8 @@ import {
   type ActionBlock,
   type Channel,
   type ChannelLibraryItem,
+  type PluginRecoveryAuthorization,
+  type PluginRecoveryAuthorizationTarget,
   type ProcessExecution,
   type ProcessId,
   type ProcessMethod,
@@ -13,6 +15,7 @@ import {
   type RuntimeValue,
   type StrategicCollection,
 } from "../src/lib/domain";
+import { CoreKeyStore } from "./security/core-keystore";
 import {
   createProcessOutputFields,
   getMethodConfigurationIssue,
@@ -33,13 +36,16 @@ import {
 } from "../src/lib/deliveries";
 
 /** Synchronous domain transitions. The caller owns the SQLite transaction. */
-export function executionCommands(db: {
-  channels: Channel[];
-  projects: Project[];
-  executions: ProcessExecution[];
-  libraryItems: ChannelLibraryItem[];
-  libraryCollections: StrategicCollection[];
-}) {
+export function executionCommands(
+  db: {
+    channels: Channel[];
+    projects: Project[];
+    executions: ProcessExecution[];
+    libraryItems: ChannelLibraryItem[];
+    libraryCollections: StrategicCollection[];
+  },
+  keyStore?: CoreKeyStore,
+) {
   const touchExecution = (execution: ProcessExecution) => {
     execution.updatedAt = new Date().toISOString();
   };
@@ -301,6 +307,8 @@ export function executionCommands(db: {
       blockExecution.retryMode = undefined;
       blockExecution.retryConversationContext = undefined;
       blockExecution.retryConversationAttachments = undefined;
+      blockExecution.recoveryAuthorization = undefined;
+      blockExecution.recoverySnapshot = undefined;
       if (!preserveConversation) blockExecution.pluginConversation = undefined;
       if (index === targetIndex) {
         blockExecution.startedAt = now;
@@ -457,15 +465,67 @@ export function executionCommands(db: {
     return { ok: true };
   }
 
-  function retryBlockExecution(executionId: string, blockId: string) {
+  function retryBlockExecution(
+    executionId: string,
+    blockId: string,
+    options?: { confirmSnapshotRevision?: string } | string,
+  ) {
+    const confirmSnapshotRevision =
+      typeof options === "string" ? options.trim() : options?.confirmSnapshotRevision?.trim();
     const execution = db.executions.find((item) => item.id === executionId);
     const blockExecution = execution?.blocks.find((item) => item.blockId === blockId);
     const block = execution?.methodSnapshot.blocks.find((item) => item.id === blockId);
     if (!execution || !blockExecution || !block || blockExecution.status !== "failed") return false;
-    blockExecution.attempt = (blockExecution.attempt ?? 1) + 1;
+
+    // 1. Se há snapshot pendente, exige confirmação correspondente ANTES de qualquer mutação
+    if (blockExecution.recoverySnapshot) {
+      if (
+        !confirmSnapshotRevision ||
+        blockExecution.recoverySnapshot.snapshotRevision !== confirmSnapshotRevision
+      ) {
+        return false;
+      }
+    } else if (confirmSnapshotRevision) {
+      return false;
+    }
+
+    const nextAttempt = (blockExecution.attempt ?? 1) + 1;
+    blockExecution.attempt = nextAttempt;
     invalidateBlockDeliveries(execution, [blockId]);
     blockExecution.error = undefined;
     blockExecution.pluginConversation = undefined;
+
+    // Emite autorização de recuperação assinada somente quando a confirmação do snapshot é válida
+    if (confirmSnapshotRevision && blockExecution.recoverySnapshot) {
+      const snapshot = blockExecution.recoverySnapshot;
+      const target: PluginRecoveryAuthorizationTarget = {
+        executionId: execution.id,
+        blockId: block.id,
+        attempt: nextAttempt,
+        externalTarget: {
+          system: snapshot.system,
+          runId: snapshot.runId,
+          targetId: snapshot.targetId,
+          cycle: snapshot.cycle,
+          snapshotRevision: snapshot.snapshotRevision,
+        },
+      };
+      const signer = keyStore ?? new CoreKeyStore();
+      const recoveryAuth = signer.signRecoveryAuthorization({ target });
+
+      blockExecution.recoveryAuthorization = recoveryAuth;
+      blockExecution.recoveryHistory = [
+        ...(blockExecution.recoveryHistory ?? []),
+        recoveryAuth,
+      ];
+      // O snapshot foi consumido na emissão desta autorização
+      blockExecution.recoverySnapshot = undefined;
+    } else {
+      // Retry comum sem snapshot ou sem confirmação: NÃO emite autorização externa
+      blockExecution.recoveryAuthorization = undefined;
+      blockExecution.recoverySnapshot = undefined;
+    }
+
     blockExecution.status =
       block.operator === "Humano" && !block.plugin ? "awaiting_human" : "blocked_executor";
     execution.error = undefined;

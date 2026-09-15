@@ -44,7 +44,9 @@ import type {
   StoredFile,
   StrategicCollection,
   UniversalProcess,
+  PluginExternalRecoverySnapshot,
 } from "../src/lib/domain";
+import { CoreKeyStore } from "./security/core-keystore";
 import { PROCESS_META, PROCESS_ORDER } from "../src/lib/domain";
 import {
   createProcessOutputFields,
@@ -63,11 +65,12 @@ import {
   getCompatiblePresentationRenderers,
   getPresentationRestrictionIssue,
 } from "../src/lib/presentation";
-import type {
-  PluginExecutionRequest,
-  PluginExecutionResponse,
-  PluginFieldContract,
-  PluginProfileSetup,
+import {
+  validateExternalRecoverySnapshot,
+  type PluginExecutionRequest,
+  type PluginExecutionResponse,
+  type PluginFieldContract,
+  type PluginProfileSetup,
 } from "../src/lib/plugin-contract";
 import { resolveInstructionTemplate } from "../src/lib/instruction-template";
 import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
@@ -238,6 +241,9 @@ writeFileSync(
   ),
   { encoding: "utf8", mode: 0o600 },
 );
+
+const securityDirectory = path.join(dataDirectory, "security");
+const coreKeyStore = new CoreKeyStore({ securityDirectory });
 
 const databasePath = path.join(dataDirectory, "contentflow.sqlite");
 const legacyDataDirectory = path.join(applicationRoot, "data");
@@ -1214,6 +1220,7 @@ function markPluginJobFailed(
   project: Project | undefined,
   message: string,
   status: "failed" | "abandoned" = "failed",
+  recoverySnapshot?: PluginExternalRecoverySnapshot,
 ) {
   return pluginJobs.save(
     claim,
@@ -1231,6 +1238,7 @@ function markPluginJobFailed(
         blockExecution.status = "failed";
         blockExecution.error = message;
         blockExecution.progressMessage = message;
+        blockExecution.recoverySnapshot = recoverySnapshot;
         execution.status = "failed";
         execution.error = message;
         persistPluginExecution(execution, project);
@@ -1603,7 +1611,15 @@ async function processPluginJob(
         persistPluginExecution(execution, project);
         return saved;
       }
-      return markPluginJobFailed(claim, execution, project, pluginResponse.message);
+      const validatedSnapshot = validateExternalRecoverySnapshot(pluginResponse.recoverySnapshot);
+      return markPluginJobFailed(
+        claim,
+        execution,
+        project,
+        pluginResponse.message,
+        "failed",
+        validatedSnapshot,
+      );
     }
 
     const values = {
@@ -4004,12 +4020,20 @@ app.post("/api/execute-block", async (request, response) => {
     });
     return;
   }
+  const recoveryAuthorization =
+    blockExecution.recoveryAuthorization &&
+    blockExecution.recoveryAuthorization.target.executionId === execution.id &&
+    blockExecution.recoveryAuthorization.target.blockId === block.id &&
+    blockExecution.recoveryAuthorization.target.attempt === (blockExecution.attempt ?? 1)
+      ? blockExecution.recoveryAuthorization
+      : undefined;
   const pluginRequest: PluginExecutionRequest = {
     executionId: execution.id,
     traceId: randomUUID(),
     blockId: block.id,
     capabilityId: capability.id,
     attempt: blockExecution.attempt ?? 1,
+    recoveryAuthorization,
     invocation: { mode: "start" },
     configuration: {
       ...block.plugin.configuration,
@@ -4547,6 +4571,7 @@ const commandSchema = z.object({
   itemId: z.string().optional(),
   attempt: z.number().int().positive().optional(),
   values: z.record(z.string(), z.unknown()).optional(),
+  confirmSnapshotRevision: z.string().trim().min(1).optional(),
 });
 
 app.post("/api/commands", (request, response) => {
@@ -4575,7 +4600,7 @@ app.post("/api/commands", (request, response) => {
         if (!block || command.attempt !== (block.attempt ?? 1))
           throw new Error("Esta etapa mudou. Atualize a tela antes de continuar.");
       }
-      const engine = executionCommands(state);
+      const engine = executionCommands(state, coreKeyStore);
       let result: unknown;
       let updated = execution;
       const values = (command.values ?? {}) as Record<string, RuntimeValue>;
@@ -4616,9 +4641,32 @@ app.post("/api/commands", (request, response) => {
           };
           result = true;
           break;
-        case "retry":
-          result = engine.retryBlockExecution(execution!.id, command.blockId ?? "");
+        case "retry": {
+          const block = execution?.blocks.find((item) => item.blockId === command.blockId);
+          if (block?.recoverySnapshot) {
+            if (
+              !command.confirmSnapshotRevision ||
+              block.recoverySnapshot.snapshotRevision !== command.confirmSnapshotRevision
+            ) {
+              throw new Error(
+                "A revisão de recuperação divergiu ou está pendente de confirmação. Atualize a tela antes de continuar.",
+              );
+            }
+          } else if (command.confirmSnapshotRevision) {
+            throw new Error(
+              "Esta etapa não possui recuperação pendente aguardando confirmação. Atualize a tela antes de continuar.",
+            );
+          }
+          result = engine.retryBlockExecution(
+            execution!.id,
+            command.blockId ?? "",
+            command.confirmSnapshotRevision,
+          );
+          if (!result) {
+            throw new Error("Esta etapa não pôde ser reiniciada.");
+          }
           break;
+        }
         case "reset": {
           if (!command.processType) throw new Error("Processo não informado.");
           const prior = state.executions.find(

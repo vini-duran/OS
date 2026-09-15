@@ -5,12 +5,23 @@ import type {
   BlockValidationConfig,
   HumanFieldType,
   FieldPresentation,
+  PluginExternalRecoverySnapshot,
+  PluginExternalRecoveryTarget,
+  PluginRecoveryAuthorization,
+  PluginRecoveryAuthorizationTarget,
   ProcessOutput,
   ProjectDelivery,
   RuntimeValue,
   StoredFile,
   UniversalProcess,
 } from "@/lib/domain";
+
+export type {
+  PluginExternalRecoverySnapshot,
+  PluginExternalRecoveryTarget,
+  PluginRecoveryAuthorization,
+  PluginRecoveryAuthorizationTarget,
+};
 
 export const CONTENTFLOW_PLUGIN_API_VERSION = "1" as const;
 
@@ -257,6 +268,8 @@ export type PluginExecutionRequest = {
   blockId: string;
   capabilityId: string;
   attempt: number;
+  /** Autorização explícita emitida unicamente por ação humana para recuperar lote/execução bloqueada. */
+  recoveryAuthorization?: PluginRecoveryAuthorization;
   invocation: PluginInvocation;
   configuration: Record<string, unknown>;
   settings: Record<string, unknown>;
@@ -341,6 +354,8 @@ export type PluginExecutionResponse =
       storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
+      /** Snapshot de estado confiável do executor externo para autorização de recuperação. */
+      recoverySnapshot?: PluginExternalRecoverySnapshot;
     };
 
 export type PluginExecutionServices = {
@@ -357,3 +372,32 @@ export type PluginEntrypoint = {
     services: PluginExecutionServices,
   ) => Promise<PluginExecutionResponse>;
 };
+
+export function validateExternalRecoverySnapshot(
+  value: unknown,
+): PluginExternalRecoverySnapshot | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.format !== "contentflow-external-recovery-snapshot-v1") return undefined;
+  if (typeof raw.system !== "string" || !raw.system.trim()) return undefined;
+  if (typeof raw.runId !== "string" || !raw.runId.trim()) return undefined;
+  if (typeof raw.targetId !== "string" || !raw.targetId.trim()) return undefined;
+  if (typeof raw.cycle !== "number" || !Number.isInteger(raw.cycle) || raw.cycle < 0) return undefined;
+  if (typeof raw.snapshotRevision !== "string" || !raw.snapshotRevision.trim()) return undefined;
+  if (typeof raw.recordedAt !== "string" || Number.isNaN(Date.parse(raw.recordedAt))) return undefined;
+  const metadata =
+    raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
+      ? (raw.metadata as Record<string, unknown>)
+      : undefined;
+  return {
+    format: "contentflow-external-recovery-snapshot-v1",
+    system: raw.system.trim(),
+    runId: raw.runId.trim(),
+    targetId: raw.targetId.trim(),
+    cycle: raw.cycle,
+    snapshotRevision: raw.snapshotRevision.trim(),
+    recordedAt: raw.recordedAt,
+    reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : undefined,
+    ...(metadata ? { metadata } : {}),
+  };
+}

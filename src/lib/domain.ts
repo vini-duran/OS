@@ -400,6 +400,50 @@ export type BlockExecution = {
   retryConversationContext?: string;
   /** Imagens da tentativa reprovada, anexadas somente se o plugin abrir outra conversa. */
   retryConversationAttachments?: StoredFile[];
+  /** Snapshot de recuperação reportado pelo executor externo em caso de falha. */
+  recoverySnapshot?: PluginExternalRecoverySnapshot;
+  /** Autorização explícita vigente emitida por ação humana para recuperar este bloco. */
+  recoveryAuthorization?: PluginRecoveryAuthorization;
+  /** Histórico cumulativo de autorizações concedidas a este bloco. */
+  recoveryHistory?: PluginRecoveryAuthorization[];
+};
+
+export type PluginExternalRecoveryTarget = {
+  system: string;
+  runId: string;
+  targetId: string;
+  cycle: number;
+  snapshotRevision: string;
+};
+
+export type PluginExternalRecoverySnapshot = {
+  format: "contentflow-external-recovery-snapshot-v1";
+  system: string;
+  runId: string;
+  targetId: string;
+  cycle: number;
+  snapshotRevision: string;
+  recordedAt: string;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type PluginRecoveryAuthorizationTarget = {
+  executionId: string;
+  blockId: string;
+  attempt: number;
+  externalTarget?: PluginExternalRecoveryTarget;
+};
+
+export type PluginRecoveryAuthorization = {
+  version: "1";
+  token: string;
+  authorizedAt: string;
+  origin: "user_action";
+  keyId: string;
+  algorithm: "ed25519";
+  target: PluginRecoveryAuthorizationTarget;
+  signature: string;
 };
 
 export type ProcessExecutionStatus =
