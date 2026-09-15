@@ -15,6 +15,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
 const { assertWritableDataOutsideApp } = require("./desktop-paths.cjs");
+const { resolveDataLocation } = require("./data-selection.cjs");
 
 let mainWindow;
 let webServer;
@@ -31,6 +32,51 @@ const HUMAN_TASK_ROUTE =
 
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
+
+// Seleção persistente do diretório de dados: preserva a escolha do operador
+// entre atualizações e aberturas pelo Finder. Falhas de seleção (config
+// inválida, banco desaparecido, symlink inválido, ambiguidade sem escolha)
+// suspendem a inicialização em vez de criar um banco vazio silenciosamente.
+let selectedDataLocation = null;
+try {
+  selectedDataLocation = resolveDataLocation({
+    appDataDir: app.getPath("appData"),
+    appRoot: app.getAppPath(),
+    env: process.env,
+    promptCallback: (candidates) => {
+      const options = candidates.map((candidate) => candidate.label);
+      options.push("Cancelar e Sair");
+      const choice = dialog.showMessageBoxSync({
+        type: "warning",
+        title: "ContentFlow — Seleção de Diretório de Dados",
+        message: "Foram encontrados bancos de dados em mais de um local.",
+        detail:
+          "Para proteger seu cofre e produções existentes, escolha qual banco utilizar:\n\n" +
+          candidates.map((candidate, index) => `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`).join("\n\n"),
+        buttons: options,
+        defaultId: 0,
+        cancelId: options.length - 1,
+        noLink: true,
+      });
+      if (choice >= 0 && choice < candidates.length) {
+        return candidates[choice];
+      }
+      return null;
+    },
+  });
+  app.setPath("userData", selectedDataLocation.userData);
+  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selectedDataLocation.userData;
+  process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selectedDataLocation.dataDir;
+} catch (dataSelectionError) {
+  dialog.showErrorBox(
+    "ContentFlow — Inicialização Suspensa",
+    dataSelectionError instanceof Error
+      ? dataSelectionError.message
+      : String(dataSelectionError),
+  );
+  app.quit();
+  process.exit(1);
+}
 assertWritableDataOutsideApp(
   app.getAppPath(),
   process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR || app.getPath("userData"),
