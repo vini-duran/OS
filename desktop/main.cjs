@@ -33,23 +33,43 @@ const HUMAN_TASK_ROUTE =
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
 
+function findUserDataSwitch(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith("--user-data-dir=")) {
+      return arg.slice("--user-data-dir=".length);
+    }
+    if (arg === "--user-data-dir" && i + 1 < argv.length) {
+      return argv[i + 1];
+    }
+  }
+  return null;
+}
+
 // Seleção persistente do diretório de dados: preserva a escolha do operador
 // entre atualizações e aberturas pelo Finder. Falhas de seleção (config
 // inválida, banco desaparecido, symlink inválido, ambiguidade sem escolha)
 // suspendem a inicialização em vez de criar um banco vazio silenciosamente.
 let selectedDataLocation = null;
 try {
-  if (process.env.CONTENTFLOW_APPDATA_DIR) {
-    const customAppData = path.resolve(process.env.CONTENTFLOW_APPDATA_DIR);
+  let customAppData = process.env.CONTENTFLOW_APPDATA_DIR
+    ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
+    : null;
+  if (!customAppData) {
+    const explicitUserData =
+      findUserDataSwitch(process.argv) || process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR;
+    if (explicitUserData) {
+      customAppData = path.dirname(path.resolve(explicitUserData));
+    }
+  }
+  if (customAppData) {
     if (!existsSync(customAppData)) {
       mkdirSync(customAppData, { recursive: true });
     }
     app.setPath("appData", customAppData);
   }
   selectedDataLocation = resolveDataLocation({
-    appDataDir: process.env.CONTENTFLOW_APPDATA_DIR
-      ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
-      : app.getPath("appData"),
+    appDataDir: customAppData || app.getPath("appData"),
     appRoot: app.getAppPath(),
     env: process.env,
     promptCallback: (candidates) => {
