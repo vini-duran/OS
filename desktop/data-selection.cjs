@@ -62,6 +62,9 @@ function getCandidatePaths(appDataDir) {
 }
 
 function defaultAppDataDir(env) {
+  if (env && env.CONTENTFLOW_APPDATA_DIR) {
+    return path.resolve(env.CONTENTFLOW_APPDATA_DIR);
+  }
   if (process.platform === "darwin") {
     return path.join(env.HOME || "", "Library", "Application Support");
   }

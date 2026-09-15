@@ -49,12 +49,25 @@ export function invocationRequestForJob(job: PersistentPluginJob, invocation: Pl
       item.outputPort)
     : undefined;
   const completedItems = itemOutputKey ? job.partialValues[itemOutputKey] : undefined;
+  const currentAttempt = job.request.attempt + job.retryCount;
+  const target = job.request.recoveryAuthorization?.target;
+  const isAuthorized =
+    invocation.mode === "start" &&
+    job.retryCount === 0 &&
+    Boolean(
+      target &&
+        target.executionId === job.request.executionId &&
+        target.blockId === job.request.blockId &&
+        target.attempt === currentAttempt,
+    );
+  const recoveryAuthorization = isAuthorized ? job.request.recoveryAuthorization : undefined;
   return {
     ...job.request,
     // A retry explícita é uma nova tentativa lógica. Avançar o número impede
     // que bridges idempotentes reproduzam do cache os comandos da tentativa
     // anterior (por exemplo, "preencher" e "enviar" em uma nova aba vazia).
-    attempt: job.request.attempt + job.retryCount,
+    attempt: currentAttempt,
+    recoveryAuthorization,
     invocation,
     configuration,
     conversation,

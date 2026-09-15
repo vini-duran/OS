@@ -39,8 +39,17 @@ app.setAppUserModelId("com.contentflow.app");
 // suspendem a inicialização em vez de criar um banco vazio silenciosamente.
 let selectedDataLocation = null;
 try {
+  if (process.env.CONTENTFLOW_APPDATA_DIR) {
+    const customAppData = path.resolve(process.env.CONTENTFLOW_APPDATA_DIR);
+    if (!existsSync(customAppData)) {
+      mkdirSync(customAppData, { recursive: true });
+    }
+    app.setPath("appData", customAppData);
+  }
   selectedDataLocation = resolveDataLocation({
-    appDataDir: app.getPath("appData"),
+    appDataDir: process.env.CONTENTFLOW_APPDATA_DIR
+      ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
+      : app.getPath("appData"),
     appRoot: app.getAppPath(),
     env: process.env,
     promptCallback: (candidates) => {

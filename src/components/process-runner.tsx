@@ -19,6 +19,7 @@ import { ImageGallery } from "@/components/image-gallery";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -28,6 +29,7 @@ import {
   type BlockExecution,
   type ChannelLibraryItem,
   type HumanFieldType,
+  type PluginExternalRecoverySnapshot,
   type ProcessExecution,
   type ProcessId,
   type Project,
@@ -210,7 +212,13 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
     }
   }
 
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [isSubmittingRecovery, setIsSubmittingRecovery] = useState(false);
+  const [recoveryRevisionError, setRecoveryRevisionError] = useState<string | undefined>(undefined);
+
   async function retry() {
+    if (isRetrying) return;
+    setIsRetrying(true);
     try {
       if (
         !execution ||
@@ -221,6 +229,33 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
       toast.success("Bloco preparado para uma nova tentativa.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível repetir.");
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
+  async function handleConfirmRecovery(revision: string) {
+    if (isSubmittingRecovery) return;
+    setIsSubmittingRecovery(true);
+    setRecoveryRevisionError(undefined);
+    try {
+      if (!execution || !activeExecution) return;
+      const ok = await retryBlockExecution(execution.id, activeExecution.blockId, revision);
+      if (!ok) return;
+      toast.success("Recuperação autorizada. Bloco preparado para nova tentativa.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Não foi possível autorizar a recuperação.";
+      if (/409|revisão|snapshot|vigente|expirou/i.test(message)) {
+        setRecoveryRevisionError(
+          "A revisão do snapshot foi alterada ou expirou. Atualize o estado e confirme novamente.",
+        );
+      } else {
+        setRecoveryRevisionError(message);
+      }
+      toast.error(message);
+    } finally {
+      setIsSubmittingRecovery(false);
     }
   }
 
@@ -319,11 +354,25 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
               <MissingPluginGate block={activeBlock} />
             )
           ) : execution.status === "failed" && activeBlock && activeExecution ? (
-            <FailedExecutionGate
-              block={activeBlock}
-              error={activeExecution.error ?? execution.error}
-              onRetry={retry}
-            />
+            activeExecution.recoverySnapshot ? (
+              <ExternalRecoveryGate
+                key={`${execution.id}:${activeExecution.blockId}:${activeExecution.recoverySnapshot.snapshotRevision}`}
+                block={activeBlock}
+                blockExecution={activeExecution}
+                snapshot={activeExecution.recoverySnapshot}
+                onConfirm={(revision) => void handleConfirmRecovery(revision)}
+                isSubmitting={isSubmittingRecovery}
+                revisionError={recoveryRevisionError}
+                onClearError={() => setRecoveryRevisionError(undefined)}
+              />
+            ) : (
+              <FailedExecutionGate
+                block={activeBlock}
+                error={activeExecution.error ?? execution.error}
+                onRetry={retry}
+                isRetrying={isRetrying}
+              />
+            )
           ) : execution.status === "cancelled" ? (
             <ExecutionCancelled />
           ) : completed ? (
@@ -1476,14 +1525,16 @@ function ExecutionCancelled() {
   );
 }
 
-function FailedExecutionGate({
+export function FailedExecutionGate({
   block,
   error,
   onRetry,
+  isRetrying,
 }: {
   block: ActionBlock;
   error?: string;
   onRetry: () => void;
+  isRetrying?: boolean;
 }) {
   return (
     <section className="rounded-xl border border-destructive/40 bg-destructive/5 p-8 text-center">
@@ -1492,9 +1543,159 @@ function FailedExecutionGate({
       <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">
         {error ?? "A execução não pôde ser concluída."}
       </p>
-      <Button className="mt-5" variant="destructive" onClick={onRetry}>
+      <Button
+        className="mt-5"
+        variant="destructive"
+        disabled={isRetrying}
+        onClick={onRetry}
+      >
         <RotateCcw className="mr-1.5 size-4" /> Tentar novamente
       </Button>
+    </section>
+  );
+}
+
+export function ExternalRecoveryGate({
+  block,
+  blockExecution,
+  snapshot,
+  onConfirm,
+  isSubmitting,
+  revisionError,
+  onClearError,
+}: {
+  block: ActionBlock;
+  blockExecution: BlockExecution;
+  snapshot: PluginExternalRecoverySnapshot;
+  onConfirm: (revision: string) => void;
+  isSubmitting: boolean;
+  revisionError?: string;
+  onClearError?: () => void;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+
+  useEffect(() => {
+    setConfirmed(false);
+  }, [snapshot.snapshotRevision, revisionError]);
+
+  const reason = snapshot.reason ?? blockExecution.error ?? "Tentativas automáticas esgotadas no serviço externo.";
+  const targetLabel = snapshot.targetId;
+  const cycleLabel = snapshot.cycle;
+  const revisionLabel = snapshot.snapshotRevision;
+  const systemLabel = snapshot.system;
+
+  return (
+    <section
+      data-testid="external-recovery-gate"
+      className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-6 text-left space-y-4"
+    >
+      <div className="flex items-start gap-3">
+        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-500">
+          <AlertTriangle className="size-5" />
+        </div>
+        <div className="space-y-1">
+          <h3 className="text-base font-semibold text-foreground">
+            Recuperação Externa Necessária: “{block.name ?? block.type}”
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            A execução externa foi esgotada ou bloqueada. Para retomar, é necessária verificação e
+            autorização explícita.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 rounded-lg border border-border/60 bg-background/50 p-4 text-xs sm:grid-cols-2">
+        <div>
+          <span className="font-medium text-muted-foreground">Alvo / Layout:</span>
+          <p className="font-semibold text-foreground" data-testid="recovery-target">
+            {targetLabel} {systemLabel ? `(${systemLabel})` : ""}
+          </p>
+        </div>
+        <div>
+          <span className="font-medium text-muted-foreground">Ciclo:</span>
+          <p className="font-semibold text-foreground" data-testid="recovery-cycle">
+            {cycleLabel}
+          </p>
+        </div>
+        <div className="sm:col-span-2">
+          <span className="font-medium text-muted-foreground">Revisão do Snapshot:</span>
+          <p className="font-mono text-xs text-foreground break-all" data-testid="recovery-revision">
+            {revisionLabel}
+          </p>
+        </div>
+        <div className="sm:col-span-2">
+          <span className="font-medium text-muted-foreground">Motivo:</span>
+          <p className="text-destructive font-medium" data-testid="recovery-reason">
+            {reason}
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
+        <span className="font-semibold text-foreground">Consequência da Retomada:</span>
+        <p data-testid="recovery-consequence">
+          A confirmação emitirá uma autorização de uso único vinculada à revisão vigente deste alvo. Um
+          novo ciclo de tentativas será liberado no serviço externo. Qualquer efeito externo incerto anterior
+          bloqueará a recuperação.
+        </p>
+      </div>
+
+      {revisionError && (
+        <div
+          data-testid="recovery-revision-error"
+          className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive space-y-1"
+        >
+          <div className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span>Revisão alterada ou expirada</span>
+          </div>
+          <p>{revisionError}</p>
+        </div>
+      )}
+
+      <div className="pt-2 space-y-3">
+        <label className="flex items-start gap-2.5 text-xs text-foreground cursor-pointer select-none">
+          <Checkbox
+            id="confirm-recovery-consent"
+            data-testid="recovery-confirm-checkbox"
+            checked={confirmed}
+            disabled={isSubmitting}
+            onCheckedChange={(checked) => {
+              if (onClearError) onClearError();
+              setConfirmed(Boolean(checked));
+            }}
+          />
+          <span className="leading-tight pt-0.5">
+            Confirmo que inspecionei o alvo <strong>{targetLabel}</strong> e autorizo expressamente a
+            retomada da recuperação para o ciclo <strong>{cycleLabel}</strong> com a revisão exibida.
+          </span>
+        </label>
+
+        <div className="flex items-center gap-3">
+          <Button
+            data-testid="recovery-confirm-button"
+            variant="default"
+            className="bg-amber-600 hover:bg-amber-700 text-white"
+            disabled={!confirmed || isSubmitting}
+            onClick={() => {
+              if (!confirmed || isSubmitting) return;
+              onConfirm(revisionLabel);
+            }}
+          >
+            {isSubmitting ? (
+              <>
+                <LoaderCircle className="mr-1.5 size-4 animate-spin" />
+                Autorizando recuperação...
+              </>
+            ) : (
+              <>
+                <RotateCcw className="mr-1.5 size-4" />
+                Confirmar e Retomar Recuperação
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }

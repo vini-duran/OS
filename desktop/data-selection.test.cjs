@@ -257,8 +257,6 @@ test("ambiguidade sem escolha bloqueia; escolha do operador persiste", () => {
 test("ciclo: instalação nova → banco criado → reabertura → remoção bloqueia", () => {
   const { root, appData } = makeAppData();
   try {
-    const { DatabaseSync } = require("node:sqlite");
-
     // 1. Instalação nova: sem config e sem bancos; nada é persistido ainda.
     const fresh = resolveDataLocation({ appDataDir: appData, env: {} });
     assert.equal(fresh.source, "fresh_install_default");
@@ -270,18 +268,14 @@ test("ciclo: instalação nova → banco criado → reabertura → remoção blo
 
     // 2. Banco sintético criado pela API no local resolvido.
     fs.mkdirSync(fresh.dataDir, { recursive: true });
-    const created = new DatabaseSync(fresh.sqliteFile);
-    created.exec("CREATE TABLE probe (v TEXT); INSERT INTO probe VALUES ('sintetico');");
-    created.close();
+    fs.writeFileSync(fresh.sqliteFile, "SQLite format 3\0-- synthetic --");
 
     // 3. Reabertura: banco único existente é adotado e persistido; mesmo arquivo.
     const reopened = resolveDataLocation({ appDataDir: appData, env: {} });
     assert.equal(reopened.source, "auto_detected_unique");
     assert.equal(reopened.dataDir, fresh.dataDir);
     assert.equal(readPrimaryConfig(appData).selection_reason, "auto_detected_single_existing");
-    const check = new DatabaseSync(reopened.sqliteFile);
-    assert.equal(check.prepare("SELECT v FROM probe").get().v, "sintetico");
-    check.close();
+    assert.equal(fs.readFileSync(reopened.sqliteFile, "utf8"), "SQLite format 3\0-- synthetic --");
     const configBeforeRemoval = fs.readFileSync(
       path.join(appData, "ContentFlow", CONFIG_FILENAME),
       "utf8",
@@ -301,9 +295,7 @@ test("ciclo: instalação nova → banco criado → reabertura → remoção blo
 
     // 4b. Banco desconectado (diretório movido): também bloqueia.
     fs.mkdirSync(reopened.dataDir, { recursive: true });
-    const restored = new DatabaseSync(reopened.sqliteFile);
-    restored.exec("CREATE TABLE probe (v TEXT); INSERT INTO probe VALUES ('sintetico');");
-    restored.close();
+    fs.writeFileSync(reopened.sqliteFile, "SQLite format 3\0-- synthetic --");
     const movedAway = `${reopened.dataDir}-desconectado`;
     fs.renameSync(reopened.dataDir, movedAway);
     try {

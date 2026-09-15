@@ -667,8 +667,16 @@ export function completeProcessOutput(executionId: string, values: Record<string
     values,
   });
 }
-export function retryBlockExecution(executionId: string, blockId: string) {
-  return command<boolean>("retry", { executionId, blockId });
+export function retryBlockExecution(
+  executionId: string,
+  blockId: string,
+  confirmSnapshotRevision?: string,
+) {
+  return command<boolean>("retry", {
+    executionId,
+    blockId,
+    ...(confirmSnapshotRevision ? { confirmSnapshotRevision } : {}),
+  });
 }
 export function resetStage(projectId: string, stage: ProcessId) {
   return command<boolean>("reset", { projectId, processType: stage });
