@@ -46,29 +46,24 @@ function findUserDataSwitch(argv) {
   return null;
 }
 
-// Seleção persistente do diretório de dados: preserva a escolha do operador
-// entre atualizações e aberturas pelo Finder. Falhas de seleção (config
-// inválida, banco desaparecido, symlink inválido, ambiguidade sem escolha)
-// suspendem a inicialização em vez de criar um banco vazio silenciosamente.
-let selectedDataLocation = null;
-try {
-  let customAppData = process.env.CONTENTFLOW_APPDATA_DIR
-    ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
-    : null;
-  if (!customAppData) {
-    const explicitUserData =
-      findUserDataSwitch(process.argv) || process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR;
-    if (explicitUserData) {
-      customAppData = path.dirname(path.resolve(explicitUserData));
-    }
-  }
-  if (customAppData) {
-    if (!existsSync(customAppData)) {
-      mkdirSync(customAppData, { recursive: true });
-    }
-    app.setPath("appData", customAppData);
-  }
-  selectedDataLocation = resolveDataLocation({
+// appData precisa ser definido antes do runtime. A seleção que pode abrir um
+// diálogo, porém, só ocorre depois de app.whenReady(): chamar dialog antes
+// disso falha justamente no cenário em que existem dois bancos a preservar.
+let customAppData = process.env.CONTENTFLOW_APPDATA_DIR
+  ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
+  : null;
+if (!customAppData) {
+  const explicitUserData =
+    findUserDataSwitch(process.argv) || process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR;
+  if (explicitUserData) customAppData = path.dirname(path.resolve(explicitUserData));
+}
+if (customAppData) {
+  if (!existsSync(customAppData)) mkdirSync(customAppData, { recursive: true });
+  app.setPath("appData", customAppData);
+}
+
+function configureDataLocation() {
+  const selected = resolveDataLocation({
     appDataDir: customAppData || app.getPath("appData"),
     appRoot: app.getAppPath(),
     env: process.env,
@@ -87,38 +82,13 @@ try {
         cancelId: options.length - 1,
         noLink: true,
       });
-      if (choice >= 0 && choice < candidates.length) {
-        return candidates[choice];
-      }
-      return null;
+      return choice >= 0 && choice < candidates.length ? candidates[choice] : null;
     },
   });
-  app.setPath("userData", selectedDataLocation.userData);
-  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selectedDataLocation.userData;
-  process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selectedDataLocation.dataDir;
-} catch (dataSelectionError) {
-  console.error("ContentFlow — Inicialização Suspensa:", dataSelectionError);
-  if (!process.env.CONTENTFLOW_NON_INTERACTIVE && process.env.NODE_ENV !== "test") {
-    dialog.showErrorBox(
-      "ContentFlow — Inicialização Suspensa",
-      dataSelectionError instanceof Error
-        ? dataSelectionError.message
-        : String(dataSelectionError),
-    );
-  }
-  app.quit();
-  process.exit(1);
-}
-assertWritableDataOutsideApp(
-  app.getAppPath(),
-  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR || app.getPath("userData"),
-);
-if (process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR) {
-  const customUserData = path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR);
-  if (!existsSync(customUserData)) {
-    mkdirSync(customUserData, { recursive: true });
-  }
-  app.setPath("userData", customUserData);
+  app.setPath("userData", selected.userData);
+  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selected.userData;
+  process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selected.dataDir;
+  assertWritableDataOutsideApp(app.getAppPath(), selected.userData);
 }
 
 const singleInstance = app.requestSingleInstanceLock();
@@ -133,7 +103,10 @@ if (!singleInstance) {
 
   app
     .whenReady()
-    .then(startDesktop)
+    .then(() => {
+      configureDataLocation();
+      return startDesktop();
+    })
     .catch((error) => {
       dialog.showErrorBox(
         "O ContentFlow não conseguiu iniciar",
