@@ -11,11 +11,11 @@ const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package.j
 const desktopMain = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const desktopPreload = readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
 
-test("proteção de dados integra pacote e precede API", () => {
+test("proteção de dados integra pacote e precede criação de userData e API", () => {
   assert.ok(packageJson.build.files.includes("desktop/desktop-paths.cjs"));
   assert.ok(
     desktopMain.indexOf("assertWritableDataOutsideApp(app.getAppPath(), selected.userData)") <
-      desktopMain.indexOf("async function startDesktop"),
+      desktopMain.indexOf("mkdirSync(selected.userData"),
   );
   assert.ok(
     desktopMain.indexOf("assertWritableDataOutsideApp(appRoot, dataRoot)") <

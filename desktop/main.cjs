@@ -62,70 +62,95 @@ if (customAppData) {
   app.setPath("appData", customAppData);
 }
 
+let userCancelledSelection = false;
+
 function configureDataLocation() {
   const selected = resolveDataLocation({
     appDataDir: customAppData || app.getPath("appData"),
     appRoot: app.getAppPath(),
     env: process.env,
     promptCallback: (candidates) => {
+      if (process.env.CONTENTFLOW_NON_INTERACTIVE) {
+        return null;
+      }
       const options = candidates.map((candidate) => candidate.label);
       options.push("Cancelar e Sair");
-      const choice = dialog.showMessageBoxSync({
-        type: "warning",
-        title: "ContentFlow — Seleção de Diretório de Dados",
-        message: "Foram encontrados bancos de dados em mais de um local.",
-        detail:
-          "Para proteger seu cofre e produções existentes, escolha qual banco utilizar:\n\n" +
-          candidates.map((candidate, index) => `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`).join("\n\n"),
-        buttons: options,
-        defaultId: 0,
-        cancelId: options.length - 1,
-        noLink: true,
-      });
-      return choice >= 0 && choice < candidates.length ? candidates[choice] : null;
+      const choice =
+        process.env.CONTENTFLOW_TEST_PROMPT_CHOICE !== undefined
+          ? (process.env.CONTENTFLOW_TEST_PROMPT_CHOICE === "cancel"
+              ? options.length - 1
+              : Number(process.env.CONTENTFLOW_TEST_PROMPT_CHOICE))
+          : dialog.showMessageBoxSync({
+              type: "warning",
+              title: "ContentFlow — Seleção de Diretório de Dados",
+              message: "Foram encontrados bancos de dados em mais de um local.",
+              detail:
+                "Para proteger seu cofre e produções existentes, escolha qual banco utilizar:\n\n" +
+                candidates.map((candidate, index) => `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`).join("\n\n"),
+              buttons: options,
+              defaultId: 0,
+              cancelId: options.length - 1,
+              noLink: true,
+            });
+      if (choice < 0 || choice >= candidates.length) {
+        userCancelledSelection = true;
+        return null;
+      }
+      return candidates[choice];
     },
   });
+  assertWritableDataOutsideApp(app.getAppPath(), selected.userData);
+  if (!existsSync(selected.userData)) {
+    mkdirSync(selected.userData, { recursive: true });
+  }
   app.setPath("userData", selected.userData);
   process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selected.userData;
   process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selected.dataDir;
-  assertWritableDataOutsideApp(app.getAppPath(), selected.userData);
+  return selected;
 }
 
-const singleInstance = app.requestSingleInstanceLock();
-if (!singleInstance) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  });
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
 
-  app
-    .whenReady()
-    .then(() => {
-      configureDataLocation();
-      return startDesktop();
-    })
-    .catch((error) => {
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  quitting = true;
+  webServer?.close();
+  webServer?.closeAllConnections?.();
+  apiProcess?.kill();
+});
+
+app
+  .whenReady()
+  .then(() => {
+    configureDataLocation();
+    const singleInstance = app.requestSingleInstanceLock();
+    if (!singleInstance) {
+      app.exit(0);
+      return;
+    }
+    return startDesktop();
+  })
+  .catch((error) => {
+    if (userCancelledSelection) {
+      app.exit(0);
+      return;
+    }
+    console.error("ContentFlow — Inicialização Suspensa:", error);
+    if (!process.env.CONTENTFLOW_NON_INTERACTIVE && process.env.NODE_ENV !== "test") {
       dialog.showErrorBox(
-        "O ContentFlow não conseguiu iniciar",
-        error instanceof Error ? (error.stack ?? error.message) : String(error),
+        "ContentFlow — Inicialização Suspensa",
+        error instanceof Error ? error.message : String(error),
       );
-      app.quit();
-    });
-
-  app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    }
+    app.exit(1);
   });
-
-  app.on("before-quit", () => {
-    quitting = true;
-    webServer?.close();
-    webServer?.closeAllConnections?.();
-    apiProcess?.kill();
-  });
-}
 
 async function startDesktop() {
   const appRoot = app.getAppPath();
