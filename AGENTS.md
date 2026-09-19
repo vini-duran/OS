@@ -4,6 +4,10 @@
   `vini-duran/ContentFlow_Universal_Integrations` e `docs/UPSTREAM_SYNC.md`.
   Main é a entrada; a versão instalável é a indicada no manifesto aprovado.
   Não promova branch com falhas nem substitua instalação/dados para passar testes.
+- Para publicar, obter ou instalar plugin/ferramenta da equipe, siga o manual
+  `team-bootstrap/skills/contentflow-universal-integration-governance/references/publicacao-e-adocao.md`
+  na `main` universal. Este fork implementa a instalação; não duplica a
+  governança nem a configuração das Propostas Únicas.
 - Nunca envie push, PR, tag ou release para o upstream `andremjr/contentflow`.
   Confira URL e proprietário antes de publicar no fork `vini-duran/OS`.
 - Antes de qualquer alteração, leia `LICENSE` e `AI_USAGE_POLICY.md`. O código é source-available proprietário, não open source.

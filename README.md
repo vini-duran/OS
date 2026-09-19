@@ -7,6 +7,7 @@ consolidada, não a identidade de um pacote já publicado.
 
 - [Entrada e configuração do agente](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/entrada/README.md).
 - [Instalar/atualizar esta máquina](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/manutencao-local/README.md).
+- [Publicar ou adotar plugins e ferramentas da equipe](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/team-bootstrap/skills/contentflow-universal-integration-governance/references/publicacao-e-adocao.md).
 - [Evoluir, validar localmente e publicar nosso fork](docs/UPSTREAM_SYNC.md).
 - [Versão aprovada, plataformas, rotas e evidências](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/README.md):
   consulte o manifesto na revisão fixada; não escolher a versão pelo histórico.
