@@ -32,9 +32,7 @@ function makeDb(appData, appName) {
 }
 
 function readPrimaryConfig(appData) {
-  return JSON.parse(
-    fs.readFileSync(path.join(appData, "ContentFlow", CONFIG_FILENAME), "utf8"),
-  );
+  return JSON.parse(fs.readFileSync(path.join(appData, "ContentFlow", CONFIG_FILENAME), "utf8"));
 }
 
 test("env explícito tem precedência e não grava config", () => {
@@ -49,10 +47,7 @@ test("env explícito tem precedência e não grava config", () => {
     assert.equal(result.source, "env_explicit");
     assert.equal(result.dataDir, path.resolve(custom));
     assert.equal(result.userData, path.resolve(path.dirname(custom)));
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -192,10 +187,7 @@ test("symlink quebrado no destino explícito bloqueia antes de qualquer gravaç�
         }),
       /CONTENTFLOW_SYMLINK_INVALID/,
     );
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -231,8 +223,7 @@ test("ambiguidade sem escolha bloqueia; escolha do operador persiste", () => {
       /CONTENTFLOW_AMBIGUOUS_DATABASES/,
     );
     assert.throws(
-      () =>
-        resolveDataLocation({ appDataDir: appData, env: {}, promptCallback: () => null }),
+      () => resolveDataLocation({ appDataDir: appData, env: {}, promptCallback: () => null }),
       /CONTENTFLOW_AMBIGUOUS_DATABASES/,
     );
     let invoked = false;
@@ -261,10 +252,7 @@ test("ciclo: instalação nova → banco criado → reabertura → remoção blo
     const fresh = resolveDataLocation({ appDataDir: appData, env: {} });
     assert.equal(fresh.source, "fresh_install_default");
     assert.equal(fresh.dataDir, path.join(appData, "ContentFlow", "data"));
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
 
     // 2. Banco sintético criado pela API no local resolvido.
     fs.mkdirSync(fresh.dataDir, { recursive: true });
@@ -363,10 +351,7 @@ test("destino dentro do bundle é recusado antes de qualquer gravação", () => 
         }),
       /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
     );
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -381,10 +366,7 @@ test("sqlite existente como diretório bloqueia a descoberta (nunca fresh)", () 
       () => resolveDataLocation({ appDataDir: appData, env: {} }),
       /CONTENTFLOW_DATABASE_INVALID/,
     );
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -395,18 +377,12 @@ test("sqlite como symlink quebrado bloqueia a descoberta (nunca fresh)", () => {
   try {
     const dataDir = path.join(appData, "ContentFlow", "data");
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.symlinkSync(
-      path.join(root, "alvo-inexistente"),
-      path.join(dataDir, "contentflow.sqlite"),
-    );
+    fs.symlinkSync(path.join(root, "alvo-inexistente"), path.join(dataDir, "contentflow.sqlite"));
     assert.throws(
       () => resolveDataLocation({ appDataDir: appData, env: {} }),
       /CONTENTFLOW_SYMLINK_INVALID/,
     );
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -446,10 +422,7 @@ test("CONTENTFLOW_ELECTRON_USER_DATA_DIR sozinha é respeitada", () => {
     assert.equal(result.source, "env_explicit");
     assert.equal(result.userData, path.resolve(user));
     assert.equal(result.dataDir, path.join(path.resolve(user), "data"));
-    assert.equal(
-      fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)),
-      false,
-    );
+    assert.equal(fs.existsSync(path.join(appData, "ContentFlow", CONFIG_FILENAME)), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

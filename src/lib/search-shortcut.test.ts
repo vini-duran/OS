@@ -28,13 +28,25 @@ function createMockKeyboardEvent(overrides: Partial<KeyboardEvent> = {}): Keyboa
   return event as unknown as KeyboardEvent;
 }
 
+type MockElement = {
+  tagName: string;
+  isContentEditable: boolean;
+  parentElement: MockElement | null;
+  getAttribute(name: string): string | null;
+  closest(selector: string): MockElement | null;
+  focusCalled: boolean;
+  selectCalled: boolean;
+  focus(): void;
+  select(): void;
+};
+
 function createMockElement(
   tagName: string,
   attrs: Record<string, string> = {},
   isContentEditable = false,
-  parent: any = null,
-) {
-  const element: any = {
+  parent: MockElement | null = null,
+): MockElement {
+  const element: MockElement = {
     tagName: tagName.toUpperCase(),
     isContentEditable,
     parentElement: parent,
@@ -42,9 +54,12 @@ function createMockElement(
       return attrs[name] ?? null;
     },
     closest(selector: string) {
-      let current: any = element;
+      let current: MockElement | null = element;
       while (current) {
-        if (selector.includes("contenteditable") && (current.isContentEditable || current.getAttribute("contenteditable") !== null)) {
+        if (
+          selector.includes("contenteditable") &&
+          (current.isContentEditable || current.getAttribute("contenteditable") !== null)
+        ) {
           return current;
         }
         current = current.parentElement;
@@ -74,7 +89,9 @@ test("isKeyboardShortcutForSearch detecta Meta+F e Ctrl+F", () => {
     true,
   );
   assert.equal(
-    isKeyboardShortcutForSearch(createMockKeyboardEvent({ metaKey: true, key: "Unidentified", code: "KeyF" })),
+    isKeyboardShortcutForSearch(
+      createMockKeyboardEvent({ metaKey: true, key: "Unidentified", code: "KeyF" }),
+    ),
     true,
   );
 
@@ -90,7 +107,9 @@ test("isKeyboardShortcutForSearch detecta Meta+F e Ctrl+F", () => {
 
   // Rejeições
   assert.equal(
-    isKeyboardShortcutForSearch(createMockKeyboardEvent({ metaKey: false, ctrlKey: false, key: "f" })),
+    isKeyboardShortcutForSearch(
+      createMockKeyboardEvent({ metaKey: false, ctrlKey: false, key: "f" }),
+    ),
     false,
   );
   assert.equal(
@@ -102,7 +121,9 @@ test("isKeyboardShortcutForSearch detecta Meta+F e Ctrl+F", () => {
     false,
   );
   assert.equal(
-    isKeyboardShortcutForSearch(createMockKeyboardEvent({ metaKey: true, shiftKey: true, key: "f" })),
+    isKeyboardShortcutForSearch(
+      createMockKeyboardEvent({ metaKey: true, shiftKey: true, key: "f" }),
+    ),
     false,
   );
   assert.equal(
@@ -110,7 +131,9 @@ test("isKeyboardShortcutForSearch detecta Meta+F e Ctrl+F", () => {
     false,
   );
   assert.equal(
-    isKeyboardShortcutForSearch(createMockKeyboardEvent({ ctrlKey: true, shiftKey: true, key: "f" })),
+    isKeyboardShortcutForSearch(
+      createMockKeyboardEvent({ ctrlKey: true, shiftKey: true, key: "f" }),
+    ),
     false,
   );
 });
@@ -162,10 +185,12 @@ test("shouldInterceptSearchShortcut preserva comportamento normal quando foco es
   const eventOnInput = createMockKeyboardEvent({
     metaKey: true,
     key: "f",
-    target: createMockElement("input"),
-  } as any);
+    target: createMockElement("input") as unknown as EventTarget,
+  });
   assert.equal(
-    shouldInterceptSearchShortcut(eventOnInput, { activeElement: createMockElement("body") } as unknown as Document),
+    shouldInterceptSearchShortcut(eventOnInput, {
+      activeElement: createMockElement("body"),
+    } as unknown as Document),
     false,
   );
 
@@ -181,10 +206,10 @@ test("handleSearchShortcutKeyDown intercepta atalho, previne default e despacha 
   const metaF = createMockKeyboardEvent({ metaKey: true, key: "f" });
   const doc = { activeElement: createMockElement("body") } as unknown as Document;
 
-  let dispatchedEvent: any = null;
+  const dispatchedEvents: Event[] = [];
   const mockTarget = {
-    dispatchEvent(event: any) {
-      dispatchedEvent = event;
+    dispatchEvent(event: Event) {
+      dispatchedEvents.push(event);
       return true;
     },
   } as unknown as EventTarget;
@@ -193,7 +218,8 @@ test("handleSearchShortcutKeyDown intercepta atalho, previne default e despacha 
 
   assert.equal(result, true);
   assert.equal(metaF.defaultPrevented, true, "preventDefault deve ser chamado ao interceptar");
-  assert.ok(dispatchedEvent, "Evento centralizado deve ter sido despachado");
+  assert.equal(dispatchedEvents.length, 1, "Evento centralizado deve ter sido despachado");
+  const dispatchedEvent = dispatchedEvents[0] as CustomEvent<{ source: string }>;
   assert.equal(dispatchedEvent.type, FOCUS_SEARCH_EVENT);
   assert.equal(dispatchedEvent.detail?.source, "global-shortcut");
 });
@@ -202,9 +228,9 @@ test("handleSearchShortcutKeyDown NÃO previne default nem despacha evento se fo
   const metaF = createMockKeyboardEvent({ metaKey: true, key: "f" });
   const doc = { activeElement: createMockElement("input") } as unknown as Document;
 
-  let dispatchedEvent: any = null;
+  let dispatchedEvent: Event | null = null;
   const mockTarget = {
-    dispatchEvent(event: any) {
+    dispatchEvent(event: Event) {
       dispatchedEvent = event;
       return true;
     },
@@ -219,7 +245,7 @@ test("handleSearchShortcutKeyDown NÃO previne default nem despacha evento se fo
 
 test("dispatchFocusSearch funciona sem erros onde não há receptor", () => {
   const mockTargetWithoutListeners = {
-    dispatchEvent(_event: any) {
+    dispatchEvent(_event: Event) {
       return true;
     },
   } as unknown as EventTarget;

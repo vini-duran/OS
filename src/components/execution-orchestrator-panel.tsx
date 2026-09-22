@@ -1,30 +1,17 @@
 import { useMemo, useState } from "react";
-import {
-  AlertCircle,
-  Layers3,
-  Play,
-  RotateCcw,
-  Route,
-  Sparkles,
-  Square,
-  Workflow,
-} from "lucide-react";
+import { AlertCircle, RotateCcw, Sparkles, Square, Workflow } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { NumberInput } from "@/components/ui/number-input";
-import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { PROCESS_META } from "@/lib/domain";
+import { useAppPreferences } from "@/lib/app-preferences";
 import {
-  ACTIVE_ORCHESTRATOR_STATUSES,
+  executionOrchestratorIsActive,
   STOPPABLE_ORCHESTRATOR_STATUSES,
   orchestratorProgress,
-  type ExecutionOrchestratorMode,
 } from "@/lib/execution-orchestrator";
 import {
-  startExecutionOrchestrator,
   resumeExecutionOrchestrator,
   stopExecutionOrchestrator,
   useChannelExecutionOrchestrator,
@@ -41,49 +28,19 @@ const STATUS_LABELS = {
   cancelled: "Cancelado",
 } as const;
 
-export function ExecutionOrchestratorPanel({
-  channelId,
-  channelName,
-}: {
-  channelId: string;
-  channelName: string;
-}) {
+export function ExecutionOrchestratorPanel({ channelId }: { channelId: string }) {
+  const { t } = useAppPreferences();
   const orchestrator = useChannelExecutionOrchestrator(channelId);
   const projects = useProjects(channelId);
-  const [mode, setMode] = useState<ExecutionOrchestratorMode>("end_to_end");
-  const [quantity, setQuantity] = useState(10);
-  const [projectPrefix, setProjectPrefix] = useState("Produção");
-  const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
-  const isActive = !!orchestrator && ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status);
+  const isActive = !!orchestrator && executionOrchestratorIsActive(orchestrator);
   const canStop = !!orchestrator && STOPPABLE_ORCHESTRATOR_STATUSES.has(orchestrator.status);
   const canResume = orchestrator?.status === "failed";
   const currentProject = useMemo(
     () => projects.find((project) => project.id === orchestrator?.currentProjectId),
     [orchestrator?.currentProjectId, projects],
   );
-
-  async function start() {
-    setIsStarting(true);
-    try {
-      await startExecutionOrchestrator({
-        channelId,
-        mode,
-        quantity,
-        projectPrefix,
-      });
-      toast.success("Orquestração iniciada", {
-        description: `${quantity} ${quantity === 1 ? "projeto criado" : "projetos criados"} em execução sequencial.`,
-      });
-    } catch (error) {
-      toast.error("Não foi possível iniciar a orquestração", {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    } finally {
-      setIsStarting(false);
-    }
-  }
 
   async function stop() {
     if (!orchestrator) return;
@@ -151,8 +108,9 @@ export function ExecutionOrchestratorPanel({
                 )}
               </div>
               <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-                Crie vários projetos e conecte seus processos sem cliques intermediários. A fila
-                pausa sempre que um bloco exigir validação ou entrega humana.
+                {t(
+                  "Acompanhe, interrompa ou retome a fila deste canal. Novas filas são criadas na produção global acima, com um ou vários canais selecionados.",
+                )}
               </p>
             </div>
           </div>
@@ -191,9 +149,7 @@ export function ExecutionOrchestratorPanel({
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
             <div>
               <p className="font-medium">
-                {orchestrator.mode === "end_to_end"
-                  ? "Projetos ponta a ponta"
-                  : "Lote por processo"}
+                {orchestrator.mode === "end_to_end" ? "Projetos ponta a ponta" : t("Lote híbrido")}
               </p>
               <p className="mt-0.5 text-muted-foreground">
                 {orchestrator.quantity} {orchestrator.quantity === 1 ? "projeto" : "projetos"} ·{" "}
@@ -234,7 +190,7 @@ export function ExecutionOrchestratorPanel({
           </div>
         </div>
       ) : (
-        <div className="space-y-5 p-4 sm:p-5">
+        <div className="space-y-3 p-4 sm:p-5">
           {orchestrator?.status === "completed" && (
             <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5 text-xs text-emerald-300">
               A última orquestração foi concluída: {orchestrator.quantity} projetos processados.
@@ -245,99 +201,13 @@ export function ExecutionOrchestratorPanel({
               A última fila foi interrompida. Os projetos criados continuam disponíveis na lista.
             </div>
           )}
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <ModeButton
-              active={mode === "end_to_end"}
-              icon={Route}
-              title="Ponta a ponta"
-              description="Conclui os 8 processos de um projeto antes de iniciar o próximo."
-              onClick={() => setMode("end_to_end")}
-            />
-            <ModeButton
-              active={mode === "batch"}
-              icon={Layers3}
-              title="Em lote por processo"
-              description="Executa todos os temas, depois todos os títulos, thumbnails e demais processos."
-              onClick={() => setMode("batch")}
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
-            <div className="space-y-1.5">
-              <Label htmlFor="orchestrator-prefix">Nome base dos projetos</Label>
-              <Input
-                id="orchestrator-prefix"
-                value={projectPrefix}
-                onChange={(event) => setProjectPrefix(event.target.value)}
-                placeholder={`${channelName} · Produção`}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="orchestrator-quantity">
-                {mode === "batch" ? "Temas / projetos" : "Projetos"}
-              </Label>
-              <NumberInput
-                id="orchestrator-quantity"
-                min={1}
-                max={50}
-                integer
-                value={quantity}
-                onValueChange={(nextQuantity) => setQuantity(nextQuantity ?? quantity)}
-              />
-            </div>
-            <Button
-              type="button"
-              onClick={start}
-              disabled={isStarting || !projectPrefix.trim()}
-              className="gap-1.5 text-white"
-            >
-              <Play className="size-4" />
-              {isStarting ? "Iniciando…" : "Iniciar fila"}
-            </Button>
-          </div>
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            O orquestrador nunca executa dois itens desta fila ao mesmo tempo. Notificações humanas
-            continuam aparecendo na central global e precisam ser resolvidas no projeto indicado.
+            {orchestrator
+              ? t("Esta fila não está ativa no momento.")
+              : t("Este canal ainda não possui histórico de orquestração.")}
           </p>
         </div>
       )}
     </section>
-  );
-}
-
-function ModeButton({
-  active,
-  icon: Icon,
-  title,
-  description,
-  onClick,
-}: {
-  active: boolean;
-  icon: typeof Route;
-  title: string;
-  description: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "flex items-start gap-3 rounded-xl border p-3 text-left transition",
-        active
-          ? "border-brand/45 bg-brand/10"
-          : "border-border/60 bg-background/30 hover:border-border hover:bg-background/50",
-      )}
-    >
-      <Icon className={cn("mt-0.5 size-4 shrink-0", active && "text-brand-soft")} />
-      <span>
-        <span className="block text-xs font-semibold">{title}</span>
-        <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
-          {description}
-        </span>
-      </span>
-    </button>
   );
 }

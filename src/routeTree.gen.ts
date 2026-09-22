@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as MethodsRouteImport } from './routes/methods'
 import { Route as MetodosRouteImport } from './routes/metodos'
+import { Route as OrchestratorRouteImport } from './routes/orchestrator'
 import { Route as PluginsRouteImport } from './routes/plugins'
 import { Route as ChannelChannelIdRouteImport } from './routes/channel.$channelId'
 import { Route as ProjectProjectIdRouteImport } from './routes/project.$projectId'
@@ -48,6 +49,11 @@ const MethodsRoute = MethodsRouteImport.update({
 const MetodosRoute = MetodosRouteImport.update({
   id: '/metodos',
   path: '/metodos',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrchestratorRoute = OrchestratorRouteImport.update({
+  id: '/orchestrator',
+  path: '/orchestrator',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PluginsRoute = PluginsRouteImport.update({
@@ -139,6 +145,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRoute
   '/methods': typeof MethodsRoute
   '/metodos': typeof MetodosRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/plugins': typeof PluginsRoute
   '/channel/$channelId': typeof ChannelChannelIdRouteWithChildren
   '/project/$projectId': typeof ProjectProjectIdRouteWithChildren
@@ -161,6 +168,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof DashboardRoute
   '/methods': typeof MethodsRoute
   '/metodos': typeof MetodosRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/plugins': typeof PluginsRoute
   '/channel/$channelId/library': typeof ChannelChannelIdLibraryRoute
   '/channel/$channelId/methods': typeof ChannelChannelIdMethodsRoute
@@ -182,6 +190,7 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRoute
   '/methods': typeof MethodsRoute
   '/metodos': typeof MetodosRoute
+  '/orchestrator': typeof OrchestratorRoute
   '/plugins': typeof PluginsRoute
   '/channel/$channelId': typeof ChannelChannelIdRouteWithChildren
   '/project/$projectId': typeof ProjectProjectIdRouteWithChildren
@@ -206,6 +215,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/methods'
     | '/metodos'
+    | '/orchestrator'
     | '/plugins'
     | '/channel/$channelId'
     | '/project/$projectId'
@@ -228,6 +238,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/methods'
     | '/metodos'
+    | '/orchestrator'
     | '/plugins'
     | '/channel/$channelId/library'
     | '/channel/$channelId/methods'
@@ -248,6 +259,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/methods'
     | '/metodos'
+    | '/orchestrator'
     | '/plugins'
     | '/channel/$channelId'
     | '/project/$projectId'
@@ -271,6 +283,7 @@ export interface RootRouteChildren {
   DashboardRoute: typeof DashboardRoute
   MethodsRoute: typeof MethodsRoute
   MetodosRoute: typeof MetodosRoute
+  OrchestratorRoute: typeof OrchestratorRoute
   PluginsRoute: typeof PluginsRoute
   ChannelChannelIdRoute: typeof ChannelChannelIdRouteWithChildren
   ProjectProjectIdRoute: typeof ProjectProjectIdRouteWithChildren
@@ -304,6 +317,13 @@ declare module '@tanstack/react-router' {
       path: '/metodos'
       fullPath: '/metodos'
       preLoaderRoute: typeof MetodosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/orchestrator': {
+      id: '/orchestrator'
+      path: '/orchestrator'
+      fullPath: '/orchestrator'
+      preLoaderRoute: typeof OrchestratorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/plugins': {
@@ -470,6 +490,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRoute: DashboardRoute,
   MethodsRoute: MethodsRoute,
   MetodosRoute: MetodosRoute,
+  OrchestratorRoute: OrchestratorRoute,
   PluginsRoute: PluginsRoute,
   ChannelChannelIdRoute: ChannelChannelIdRouteWithChildren,
   ProjectProjectIdRoute: ProjectProjectIdRouteWithChildren,

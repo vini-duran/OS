@@ -77,16 +77,21 @@ function configureDataLocation() {
       options.push("Cancelar e Sair");
       const choice =
         process.env.CONTENTFLOW_TEST_PROMPT_CHOICE !== undefined
-          ? (process.env.CONTENTFLOW_TEST_PROMPT_CHOICE === "cancel"
-              ? options.length - 1
-              : Number(process.env.CONTENTFLOW_TEST_PROMPT_CHOICE))
+          ? process.env.CONTENTFLOW_TEST_PROMPT_CHOICE === "cancel"
+            ? options.length - 1
+            : Number(process.env.CONTENTFLOW_TEST_PROMPT_CHOICE)
           : dialog.showMessageBoxSync({
               type: "warning",
               title: "ContentFlow — Seleção de Diretório de Dados",
               message: "Foram encontrados bancos de dados em mais de um local.",
               detail:
                 "Para proteger seu cofre e produções existentes, escolha qual banco utilizar:\n\n" +
-                candidates.map((candidate, index) => `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`).join("\n\n"),
+                candidates
+                  .map(
+                    (candidate, index) =>
+                      `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`,
+                  )
+                  .join("\n\n"),
               buttons: options,
               defaultId: 0,
               cancelId: options.length - 1,

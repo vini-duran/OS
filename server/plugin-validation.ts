@@ -110,6 +110,8 @@ const promptPreviewSchema = z
 const capabilitySchema = z
   .object({
     id: z.string().min(1).max(100).regex(identifier),
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
     operator: z.enum(["Humano", "IA", "Código"]),
     instructionUsage: z.enum(["required", "optional", "not_applicable"]).optional(),
     promptPreview: promptPreviewSchema.optional(),
@@ -154,8 +156,9 @@ const capabilitySchema = z
           .object({
             inputPort: z.string().min(1).max(100).regex(identifier),
             outputPort: z.string().min(1).max(100).regex(identifier),
-            combinedOutputPort: z.string().min(1).max(100).regex(identifier).optional(),
             mode: z.literal("sequential"),
+            combinedOutputPort: z.string().min(1).max(100).regex(identifier).optional(),
+            separator: z.string().max(20).optional(),
           })
           .strict()
           .optional(),
@@ -357,16 +360,12 @@ export const pluginManifestSchema = z
       }
       if (
         orchestration.combinedOutputPort &&
-        !capability.outputPorts.some(
-          (port) =>
-            port.key === orchestration.combinedOutputPort &&
-            port.producedTypes.some((type) => type === "text" || type === "textarea"),
-        )
+        !capability.outputPorts.some((port) => port.key === orchestration.combinedOutputPort)
       ) {
         context.addIssue({
           code: "custom",
           path: ["capabilities", index, "execution", "itemOrchestration", "combinedOutputPort"],
-          message: "precisa referenciar uma porta textual de saída existente",
+          message: "precisa referenciar uma porta de saída existente",
         });
       }
     }

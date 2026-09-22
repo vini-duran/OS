@@ -8,7 +8,7 @@ import { testExtensionBridge } from "../../../browser-bridge/test.mjs";
 const manifest = JSON.parse(
   await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
 );
-assert.equal(manifest.version, "1.3.4");
+assert.equal(manifest.version, "1.3.7");
 assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
 assert.equal(manifest.id, "local.contentflow.google-flow-batch-images");
 assert.ok(manifest.permissions.includes("filesystem:read"));
@@ -41,12 +41,55 @@ assert.deepEqual(
   ["flow_current", "landscape", "landscape_4_3", "portrait", "portrait_3_4", "square"],
 );
 assert.equal(cap.blockConfigSchema.properties.maxPrompts, undefined);
-assert.equal(cap.execution.itemOrchestration, undefined);
+assert.deepEqual(cap.execution.itemOrchestration, {
+  mode: "sequential",
+  inputPort: "prompts",
+  outputPort: "images",
+});
 assert.equal(cap.blockConfigSchema.properties.maxConcurrentGenerations.default, 1);
 assert.equal(cap.blockConfigSchema.properties.delayBetweenPromptsMs.default, 6000);
 assert.equal(cap.blockConfigSchema.properties.rateLimitRetryAttempts.default, 8);
 assert.equal(cap.blockConfigSchema.properties.maxReferenceImages.maximum, 10);
 assert.equal(cap.blockConfigSchema.properties.maxImagesPerPrompt.maximum, 4);
+
+const productionCap = manifest.capabilities.find(
+  (item) => item.id === "produce-visual-assets-in-browser",
+);
+assert.ok(productionCap);
+assert.deepEqual(
+  productionCap.inputPorts.map((port) => port.key),
+  ["prompts", "character_prompts", "animation_prompts", "reference_images", "project_url"],
+);
+assert.deepEqual(
+  productionCap.outputPorts.map((port) => port.key),
+  ["images", "character_references", "videos", "project_url"],
+);
+assert.equal(productionCap.blockConfigSchema.properties.productionMode.default, "images_only");
+assert.deepEqual(
+  productionCap.blockConfigSchema.properties.productionMode.oneOf.map((item) => item.const),
+  ["images_only", "text_to_video", "images_then_selected_videos", "images_to_video_all"],
+);
+assert.equal(productionCap.blockConfigSchema.properties.maxVideosToAnimate.default, 3);
+assert.equal(productionCap.blockConfigSchema.properties.maxCharacterReferences.default, 1);
+assert.equal(productionCap.blockConfigSchema.properties.saveCharacterReferences.default, true);
+assert.equal(productionCap.blockConfigSchema.properties.enableCharacterConsistency.default, false);
+assert.deepEqual(productionCap.blockConfigSchema.properties.characterPrompts.visibleWhen, {
+  property: "enableCharacterConsistency",
+  values: [true],
+});
+assert.deepEqual(
+  productionCap.blockConfigSchema.properties.animationSelection.oneOf.map((item) => item.const),
+  ["first", "last", "evenly_spaced", "manual_indexes"],
+);
+assert.deepEqual(__test.selectAnimationIndexes(10, { maxVideosToAnimate: 3 }), [0, 1, 2]);
+assert.deepEqual(
+  __test.selectAnimationIndexes(10, {
+    maxVideosToAnimate: 3,
+    animationSelection: "manual_indexes",
+    animationIndexes: "1, 5-6, 9",
+  }),
+  [0, 4, 5],
+);
 
 const closeCalls = [];
 await __test.maybeCloseBrowser(
@@ -500,6 +543,7 @@ await __test.clearCaptchaRetryNavigation(failedRequest, retryServices);
 const checkpointRequest = {
   executionId: "execution-checkpoint",
   blockId: "flow-images",
+  capabilityId: "generate-images-in-browser",
 };
 const checkpointPrompts = ["primeiro", "segundo", "terceiro"];
 await __test.saveGenerationCheckpoint(checkpointRequest, retryServices, checkpointPrompts, {
@@ -527,6 +571,184 @@ assert.equal(
 await __test.clearGenerationCheckpoint(checkpointRequest, retryServices);
 assert.equal(
   await __test.readGenerationCheckpoint(checkpointRequest, retryServices, checkpointPrompts),
+  undefined,
+);
+
+const videoCheckpointRequest = {
+  executionId: "execution-video-checkpoint",
+  blockId: "flow-videos",
+  capabilityId: "generate-video-in-browser",
+};
+await __test.saveGenerationCheckpoint(videoCheckpointRequest, retryServices, checkpointPrompts, {
+  completedPromptIndexes: [0, 2],
+  files: [
+    { id: "video-1", name: "001.mp4", mimeType: "video/mp4", url: "artifact://video-1" },
+    { id: "video-3", name: "003.mp4", mimeType: "video/mp4", url: "artifact://video-3" },
+  ],
+});
+const savedVideoCheckpoint = await __test.readGenerationCheckpoint(
+  videoCheckpointRequest,
+  retryServices,
+  checkpointPrompts,
+);
+assert.deepEqual(savedVideoCheckpoint.completedPromptIndexes, [0, 2]);
+assert.equal(savedVideoCheckpoint.files.length, 2);
+assert.equal(
+  await __test.readGenerationCheckpoint(
+    { ...videoCheckpointRequest, capabilityId: "generate-images-in-browser" },
+    retryServices,
+    checkpointPrompts,
+  ),
+  undefined,
+);
+await __test.clearGenerationCheckpoint(videoCheckpointRequest, retryServices);
+
+const durableResumeRequest = {
+  outputContract: [{ portKey: "images", key: "assets", type: "files" }],
+  resume: {
+    values: {
+      assets: [
+        {
+          id: "google-flow-image-001-v01",
+          name: "001_v01_primeira.jpg",
+          mimeType: "image/jpeg",
+          url: "/api/files/primeira.jpg",
+        },
+        {
+          id: "google-flow-image-002-v01",
+          name: "002_v01_segunda.jpg",
+          mimeType: "image/jpeg",
+          url: "/api/files/segunda.jpg",
+        },
+      ],
+    },
+    artifacts: [
+      {
+        id: "google-flow-image-001-v01",
+        name: "001_v01_primeira.jpg",
+        mimeType: "image/jpeg",
+        url: "/api/files/primeira.jpg",
+      },
+      {
+        id: "google-flow-image-002-v01",
+        name: "002_v01_segunda.jpg",
+        mimeType: "image/jpeg",
+        url: "/api/files/segunda.jpg",
+      },
+    ],
+  },
+};
+assert.deepEqual(
+  __test.durableResumeOutputFiles(durableResumeRequest, "images", "image").map((file) => file.id),
+  ["google-flow-image-001-v01", "google-flow-image-002-v01"],
+);
+assert.equal(
+  __test.promptIndexFromGeneratedFile(durableResumeRequest.resume.artifacts[0], "image"),
+  0,
+);
+assert.equal(
+  __test.promptIndexFromGeneratedFile(durableResumeRequest.resume.artifacts[1], "image"),
+  1,
+);
+
+const productionCheckpointRequest = {
+  executionId: "execution-production-checkpoint",
+  blockId: "flow-production",
+};
+const productionDescriptor = {
+  prompts: ["imagem 1", "imagem 2"],
+  characterPrompts: ["personagem"],
+  animationPrompts: ["animar 1", "animar 2"],
+  configuration: {
+    productionMode: "images_to_video_all",
+    animationSelection: "first",
+    maxVideosToAnimate: 2,
+    imageRetention: "keep_all",
+    maxCharacterReferences: 1,
+    saveCharacterReferences: true,
+    enableCharacterConsistency: true,
+  },
+};
+await __test.saveVisualProductionCheckpoint(
+  productionCheckpointRequest,
+  retryServices,
+  productionDescriptor,
+  {
+    characterReferences: [{ id: "character-1", url: "artifact://character-1" }],
+    images: [
+      { id: "image-1", url: "artifact://image-1" },
+      { id: "image-2", url: "artifact://image-2" },
+    ],
+    animationResults: [{ imageIndex: 0, videos: [{ id: "video-1", url: "artifact://video-1" }] }],
+    projectUrl: "https://flow.google.com/project/production-checkpoint",
+  },
+);
+const savedProductionCheckpoint = await __test.readVisualProductionCheckpoint(
+  productionCheckpointRequest,
+  retryServices,
+  productionDescriptor,
+);
+assert.equal(savedProductionCheckpoint.images.length, 2);
+assert.equal(savedProductionCheckpoint.characterReferences.length, 1);
+assert.deepEqual(
+  savedProductionCheckpoint.animationResults.map((entry) => entry.imageIndex),
+  [0],
+);
+assert.equal(savedProductionCheckpoint.animationResults[0].videos.length, 1);
+assert.equal(savedProductionCheckpoint.accountProfile, "default");
+assert.equal(
+  __test.checkpointProjectUrlForProfile(savedProductionCheckpoint, "default"),
+  "https://flow.google.com/project/production-checkpoint",
+);
+assert.equal(
+  __test.checkpointProjectUrlForProfile(savedProductionCheckpoint, "conta-b"),
+  undefined,
+);
+assert.equal(
+  __test.visualProductionProjectUrlForProfile(
+    savedProductionCheckpoint,
+    "default",
+    "https://flow.google.com/project/input-project",
+  ),
+  "https://flow.google.com/project/production-checkpoint",
+);
+assert.equal(
+  __test.visualProductionProjectUrlForProfile(
+    savedProductionCheckpoint,
+    "conta-b",
+    "https://flow.google.com/project/input-project",
+  ),
+  undefined,
+);
+assert.equal(
+  __test.visualProductionProjectUrlForProfile(
+    undefined,
+    "default",
+    "https://flow.google.com/project/input-project",
+  ),
+  "https://flow.google.com/project/input-project",
+);
+assert.equal(
+  __test.checkpointProjectUrlForProfile(
+    { projectUrl: "https://flow.google.com/project/legacy-without-profile" },
+    "default",
+  ),
+  undefined,
+);
+assert.equal(
+  await __test.readVisualProductionCheckpoint(productionCheckpointRequest, retryServices, {
+    ...productionDescriptor,
+    prompts: ["lista alterada"],
+  }),
+  undefined,
+);
+await __test.clearVisualProductionCheckpoint(productionCheckpointRequest, retryServices);
+assert.equal(
+  await __test.readVisualProductionCheckpoint(
+    productionCheckpointRequest,
+    retryServices,
+    productionDescriptor,
+  ),
   undefined,
 );
 await rm(retryDirectory, { recursive: true, force: true });
@@ -565,12 +787,27 @@ assert.equal(automatic.requestedModelKey, "flow_auto");
 assert.equal(automatic.modelKey, "nano_banana_pro");
 assert.equal(automatic.imageModelName, "GEM_PIX_2");
 assert.equal(automatic.imageAspectRatio, null);
+assert.equal(automatic.fallbackOnModelLimit, true);
+assert.equal(
+  __test.resolveGenerationPreferences({
+    imageModel: "flow_auto",
+    fallbackOnModelLimit: false,
+  }).fallbackOnModelLimit,
+  true,
+);
 const explicit = __test.resolveGenerationPreferences({
   imageModel: "nano_banana_pro",
   aspectRatio: "landscape",
 });
 assert.equal(explicit.imageModelName, "GEM_PIX_2");
 assert.equal(explicit.imageAspectRatio, "IMAGE_ASPECT_RATIO_LANDSCAPE");
+assert.equal(
+  __test.resolveGenerationPreferences({
+    imageModel: "nano_banana_pro",
+    fallbackOnModelLimit: false,
+  }).fallbackOnModelLimit,
+  false,
+);
 assert.equal(
   __test.resolveGenerationPreferences({ imageModel: "nano_banana_2" }).imageModelName,
   "NARWHAL",
@@ -1013,11 +1250,13 @@ assert.ok(source.includes("DOM.setFileInputFiles"));
 assert.ok(source.includes("limite do modelo atingido"));
 assert.ok(source.includes("Nano Banana 2 Lite"));
 assert.ok(source.includes("Quantidade por prompt confirmada"));
+assert.ok(source.includes("produce-visual-assets-in-browser"));
+assert.ok(source.includes("Produção visual:"));
 assert.ok(!source.includes("createFallbackArtifact"));
 assert.ok(!source.includes("FALLBACK_IMAGE_BASE64"));
 await assert.rejects(readFile(new URL("./fallback-data.mjs", import.meta.url)), /ENOENT/);
 await testExtensionBridge(extensionWorker);
 
 console.log(
-  "OK: v1.3.4 validado (fila interna sem teto local, retomada sem duplicar concluídos, entrega image/video e ponte testada com estresse de 300 comandos).",
+  "OK: v1.3.7 validado (modos de produção visual, fila interna sem teto local, retomada sem duplicar concluídos, entrega image/video e ponte testada com estresse de 300 comandos).",
 );

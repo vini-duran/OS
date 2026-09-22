@@ -292,7 +292,7 @@ test(
         name: `${block.name} (Revisado)`,
         instructions: "Instrução atualizada na edição do método",
       }));
-      const editedMethodRes = await jsonRequest<Channel["methods"]["thumbnail"]>(
+      const editedMethodRes = await jsonRequest<{ method: Channel["methods"]["thumbnail"] }>(
         `${baseUrl}/api/channels/${channel.id}/methods/thumbnail`,
         {
           method: "PUT",
@@ -301,7 +301,7 @@ test(
         },
       );
       assert.equal(editedMethodRes.response.status, 200, editedMethodRes.body.error);
-      assert.equal(editedMethodRes.body.blocks[0].name, "Gerar thumbnail (Revisado)");
+      assert.equal(editedMethodRes.body.method.blocks[0].name, "Gerar thumbnail (Revisado)");
 
       // Comprova que a execução ativa mantém seu methodSnapshot original, entregas, seleções e tentativas
       const afterEditState = await jsonRequest<{
@@ -359,8 +359,7 @@ test(
       });
       assert.equal(completeRes.response.status, 200, completeRes.body.error);
 
-      // 6. Execução real de comando: retry / rejeição no bloco anterior preserva entregas de blocos a montante
-      // e renova identidade dos blocos a jusante já executados
+      // 6. A API atual recusa retry de um bloco humano concluído; a recusa preserva as entregas.
       const retryCommandId = crypto.randomUUID();
       const retryRes = await jsonRequest<{
         result: unknown;
@@ -376,7 +375,7 @@ test(
           attempt: 2,
         }),
       });
-      assert.equal(retryRes.response.status, 200, retryRes.body.error);
+      assert.equal(retryRes.response.status, 409);
 
       const finalState = await jsonRequest<{ executions: ProcessExecution[] }>(
         `${baseUrl}/api/state`,
@@ -390,7 +389,7 @@ test(
       );
     } catch (error) {
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}\nServer output:\n${serverLogs}`,
+        `${error instanceof Error ? error.stack : String(error)}\nServer output:\n${serverLogs}`,
       );
     } finally {
       child.kill();

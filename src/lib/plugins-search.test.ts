@@ -11,13 +11,13 @@ test("página Plugins possui input de busca com aria-keyshortcuts e placeholder 
   // Verifica se o campo de busca de plugins tem aria-keyshortcuts="Meta+F Control+F"
   assert.ok(
     content.includes('aria-keyshortcuts="Meta+F Control+F"'),
-    "Página Plugins deve conter aria-keyshortcuts=\"Meta+F Control+F\"",
+    'Página Plugins deve conter aria-keyshortcuts="Meta+F Control+F"',
   );
 
   // Verifica se o placeholder exato "Pesquisar plugins por nome..." está presente
   assert.ok(
     content.includes('placeholder="Pesquisar plugins por nome..."'),
-    "Página Plugins deve conter placeholder=\"Pesquisar plugins por nome...\"",
+    'Página Plugins deve conter placeholder="Pesquisar plugins por nome..."',
   );
 
   // Verifica se o ref do input está associado ao hook do atalho
@@ -69,13 +69,14 @@ test("contrato de foco real: ao receber o evento de busca, input alvo recebe foc
   };
 
   // Simulação do comportamento de useFocusSearchShortcut
-  const listeners: Record<string, Function[]> = {};
+  type MockListener = (event: { type: string }) => void;
+  const listeners: Record<string, MockListener[]> = {};
   const mockWindow = {
-    addEventListener(type: string, fn: Function) {
+    addEventListener(type: string, fn: MockListener) {
       listeners[type] = listeners[type] || [];
       listeners[type].push(fn);
     },
-    removeEventListener(type: string, fn: Function) {
+    removeEventListener(type: string, fn: MockListener) {
       listeners[type] = (listeners[type] || []).filter((item) => item !== fn);
     },
     dispatchEvent(event: { type: string }) {
