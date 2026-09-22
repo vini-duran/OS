@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import {
@@ -18,6 +18,7 @@ import {
   EyeOff,
   FileText,
   FolderPlus,
+  GripVertical,
   Image,
   KeyRound,
   LoaderCircle,
@@ -33,6 +34,23 @@ import {
   Trash2,
   Video,
 } from "lucide-react";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
@@ -65,6 +83,7 @@ import {
 import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
 import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
 import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/plugins")({
   head: () => ({
@@ -2137,6 +2156,42 @@ function exportManifest(plugin: DiscoveredPlugin) {
   });
 }
 
+function SortablePluginRow({ id, children }: { id: string; children: ReactNode }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(
+        "relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2.5 pl-8 first:pt-0 last:pb-0",
+        isDragging && "z-10 rounded-lg bg-muted/80 opacity-80 shadow-lg",
+      )}
+    >
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        className="absolute left-0 top-1/2 -translate-y-1/2 touch-none rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+        aria-label="Arrastar para reorganizar"
+        title="Arrastar para reorganizar"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="size-4" aria-hidden="true" />
+      </button>
+      {children}
+    </div>
+  );
+}
+
 function PluginLibraryManagementDialog({
   open,
   onOpenChange,
@@ -2152,9 +2207,36 @@ function PluginLibraryManagementDialog({
     setPluginSection,
     movePluginInSection,
     setPluginHidden,
+    setPluginOrganization,
   } = useAppPreferences();
 
   const pluginMap = useMemo(() => new Map(plugins.map((p) => [p.id, p])), [plugins]);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const reorderSection = useCallback(
+    (section: PluginSection, orderedPlugins: DiscoveredPlugin[], event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = orderedPlugins.findIndex((plugin) => plugin.id === active.id);
+      const newIndex = orderedPlugins.findIndex((plugin) => plugin.id === over.id);
+      if (oldIndex < 0 || newIndex < 0) return;
+      setPluginOrganization((current) => ({
+        ...current,
+        sectionOrder: {
+          ...current.sectionOrder,
+          [section]: arrayMove(
+            orderedPlugins.map((plugin) => plugin.id),
+            oldIndex,
+            newIndex,
+          ),
+        },
+      }));
+    },
+    [setPluginOrganization],
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2166,6 +2248,11 @@ function PluginLibraryManagementDialog({
             afetar os Métodos ou a execução.
           </DialogDescription>
         </DialogHeader>
+
+        <p className="rounded-lg border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-muted-foreground">
+          Arraste pelo ícone <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" /> para
+          reorganizar a ordem dentro da seção. Os botões de seta continuam disponíveis.
+        </p>
 
         <div className="space-y-6 pt-2">
           {PLUGIN_SECTIONS.map((sectionKey) => {
@@ -2202,7 +2289,16 @@ function PluginLibraryManagementDialog({
                     Nenhum plugin nesta seção.
                   </p>
                 ) : (
-                  <div className="divide-y divide-border/60">
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={(event) => reorderSection(sectionKey, sectionPlugins, event)}
+                  >
+                    <SortableContext
+                      items={sectionPlugins.map((plugin) => plugin.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                    <div className="divide-y divide-border/60">
                     {sectionPlugins.map((plugin, index) => {
                       const pref = pluginOrganization.items[plugin.id] ?? {
                         section: "none",
@@ -2213,9 +2309,9 @@ function PluginLibraryManagementDialog({
                       const isLast = index === sectionPlugins.length - 1;
 
                       return (
-                        <div
+                        <SortablePluginRow
                           key={plugin.id}
-                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
+                          id={plugin.id}
                         >
                           <div className="flex items-center gap-3 min-w-0 flex-1">
                             <button
@@ -2331,10 +2427,12 @@ function PluginLibraryManagementDialog({
                               </span>
                             </Button>
                           </div>
-                        </div>
+                        </SortablePluginRow>
                       );
                     })}
                   </div>
+                    </SortableContext>
+                  </DndContext>
                 )}
               </div>
             );
