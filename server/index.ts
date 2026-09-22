@@ -368,6 +368,7 @@ database.exec(`
     notification_sound INTEGER NOT NULL DEFAULT 0,
     system_notifications INTEGER NOT NULL DEFAULT 0,
     methods_library_view TEXT NOT NULL DEFAULT 'channels',
+    plugin_organization TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS channel_preferences (
@@ -434,6 +435,11 @@ if (!appPreferenceColumns.some((column) => column.name === "methods_library_view
     "ALTER TABLE app_preferences ADD COLUMN methods_library_view TEXT NOT NULL DEFAULT 'channels'",
   );
 }
+if (!appPreferenceColumns.some((column) => column.name === "plugin_organization")) {
+  database.exec(
+    "ALTER TABLE app_preferences ADD COLUMN plugin_organization TEXT NOT NULL DEFAULT '{}'",
+  );
+}
 
 const pluginConsentColumns = database.prepare("PRAGMA table_info(plugin_consents)").all() as Array<{
   name: string;
@@ -467,12 +473,37 @@ database.exec(
   "CREATE TABLE IF NOT EXISTS execution_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
 );
 
+type PluginSection = "generation" | "editing" | "publishing" | "utilities" | "none";
+
+type PluginItemPreference = {
+  section: PluginSection;
+  favorite: boolean;
+  hidden: boolean;
+};
+
+type PluginLibraryOrganization = {
+  items: Record<string, PluginItemPreference>;
+  sectionOrder: Record<PluginSection, string[]>;
+};
+
 type AppPreferences = {
   theme: "light" | "dark";
   language: "pt-BR" | "en" | "es";
   notificationSound: boolean;
   systemNotifications: boolean;
   methodsLibraryView: "methods" | "channels";
+  pluginOrganization: PluginLibraryOrganization;
+};
+
+const defaultPluginOrganization: PluginLibraryOrganization = {
+  items: {},
+  sectionOrder: {
+    generation: [],
+    editing: [],
+    publishing: [],
+    utilities: [],
+    none: [],
+  },
 };
 
 const defaultPreferences: AppPreferences = {
@@ -481,14 +512,118 @@ const defaultPreferences: AppPreferences = {
   notificationSound: false,
   systemNotifications: false,
   methodsLibraryView: "channels",
+  pluginOrganization: defaultPluginOrganization,
 };
+
+function normalizeServerPluginOrganization(raw: unknown): PluginLibraryOrganization {
+  const sections: PluginSection[] = ["generation", "editing", "publishing", "utilities", "none"];
+  const items: Record<string, PluginItemPreference> = {};
+  const sectionOrder: Record<PluginSection, string[]> = {
+    generation: [],
+    editing: [],
+    publishing: [],
+    utilities: [],
+    none: [],
+  };
+
+  if (!raw || typeof raw !== "object") {
+    return { items, sectionOrder };
+  }
+
+  const record = raw as Record<string, unknown>;
+
+  if (record.items && typeof record.items === "object") {
+    for (const [id, value] of Object.entries(record.items as Record<string, unknown>)) {
+      const cleanId = typeof id === "string" ? id.trim() : "";
+      if (!cleanId) continue;
+      const pref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const section = sections.includes(pref.section as PluginSection)
+        ? (pref.section as PluginSection)
+        : "none";
+      const favorite = Boolean(pref.favorite);
+      const hidden = Boolean(pref.hidden);
+      items[cleanId] = { section, favorite, hidden };
+    }
+  }
+
+  if (Array.isArray(record.favorites)) {
+    for (const fav of record.favorites) {
+      const cleanId = typeof fav === "string" ? fav.trim() : "";
+      if (!cleanId) continue;
+      items[cleanId] = {
+        section: items[cleanId]?.section ?? "none",
+        favorite: true,
+        hidden: Boolean(items[cleanId]?.hidden),
+      };
+    }
+  }
+
+  if (Array.isArray(record.hidden)) {
+    for (const hid of record.hidden) {
+      const cleanId = typeof hid === "string" ? hid.trim() : "";
+      if (!cleanId) continue;
+      items[cleanId] = {
+        section: items[cleanId]?.section ?? "none",
+        favorite: Boolean(items[cleanId]?.favorite),
+        hidden: true,
+      };
+    }
+  }
+
+  if (record.sections && typeof record.sections === "object") {
+    const sectionsObj = record.sections as Record<string, unknown>;
+    for (const s of sections) {
+      const secArray: unknown = sectionsObj[s];
+      if (Array.isArray(secArray)) {
+        for (const entry of secArray) {
+          const cleanId = typeof entry === "string" ? entry.trim() : "";
+          if (!cleanId) continue;
+          items[cleanId] = {
+            section: s,
+            favorite: Boolean(items[cleanId]?.favorite),
+            hidden: Boolean(items[cleanId]?.hidden),
+          };
+        }
+      }
+    }
+  }
+
+  const rawOrder = (record.sectionOrder && typeof record.sectionOrder === "object"
+    ? record.sectionOrder
+    : record.sections && typeof record.sections === "object"
+      ? record.sections
+      : {}) as Record<string, unknown>;
+
+  for (const s of sections) {
+    const list = Array.isArray(rawOrder[s]) ? rawOrder[s] : [];
+    for (const id of list) {
+      const cleanId = typeof id === "string" ? id.trim() : "";
+      if (!cleanId) continue;
+      if (!items[cleanId]) {
+        items[cleanId] = { section: s, favorite: false, hidden: false };
+      }
+      if (items[cleanId].section === s && !sectionOrder[s].includes(cleanId)) {
+        sectionOrder[s].push(cleanId);
+      }
+    }
+  }
+
+  for (const [id, item] of Object.entries(items)) {
+    if (!sectionOrder[item.section].includes(id)) {
+      sectionOrder[item.section].push(id);
+    }
+  }
+
+  return { items, sectionOrder };
+}
 
 function readPreferences(): AppPreferences {
   const row = database
     .prepare(
       `SELECT theme, language, notification_sound AS notificationSound,
               system_notifications AS systemNotifications,
-              methods_library_view AS methodsLibraryView
+              methods_library_view AS methodsLibraryView,
+              plugin_organization AS pluginOrganization
        FROM app_preferences WHERE id = 'global'`,
     )
     .get() as
@@ -498,17 +633,26 @@ function readPreferences(): AppPreferences {
         notificationSound: number;
         systemNotifications: number;
         methodsLibraryView: AppPreferences["methodsLibraryView"];
+        pluginOrganization?: string;
       }
     | undefined;
-  return row
-    ? {
-        theme: row.theme,
-        language: row.language,
-        notificationSound: Boolean(row.notificationSound),
-        systemNotifications: Boolean(row.systemNotifications),
-        methodsLibraryView: row.methodsLibraryView === "methods" ? "methods" : "channels",
-      }
-    : defaultPreferences;
+  if (!row) return defaultPreferences;
+  let parsedOrg: unknown = undefined;
+  if (row.pluginOrganization) {
+    try {
+      parsedOrg = JSON.parse(row.pluginOrganization);
+    } catch {
+      parsedOrg = undefined;
+    }
+  }
+  return {
+    theme: row.theme,
+    language: row.language,
+    notificationSound: Boolean(row.notificationSound),
+    systemNotifications: Boolean(row.systemNotifications),
+    methodsLibraryView: row.methodsLibraryView === "methods" ? "methods" : "channels",
+    pluginOrganization: normalizeServerPluginOrganization(parsedOrg),
+  };
 }
 
 type StoredPayload = {
@@ -2363,6 +2507,10 @@ app.put("/api/preferences", (request, response) => {
   const notificationSound = request.body?.notificationSound;
   const systemNotifications = request.body?.systemNotifications;
   const methodsLibraryView = request.body?.methodsLibraryView ?? current.methodsLibraryView;
+  const pluginOrganization =
+    request.body?.pluginOrganization !== undefined
+      ? normalizeServerPluginOrganization(request.body.pluginOrganization)
+      : current.pluginOrganization;
   if (
     !(["light", "dark"] as const).includes(theme) ||
     !(["pt-BR", "en", "es"] as const).includes(language) ||
@@ -2377,15 +2525,16 @@ app.put("/api/preferences", (request, response) => {
     .prepare(
       `INSERT INTO app_preferences (
           id, theme, language, notification_sound, system_notifications, methods_library_view,
-          updated_at
+          plugin_organization, updated_at
         )
-        VALUES ('global', ?, ?, ?, ?, ?, ?)
+        VALUES ('global', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           theme = excluded.theme,
           language = excluded.language,
           notification_sound = excluded.notification_sound,
           system_notifications = excluded.system_notifications,
           methods_library_view = excluded.methods_library_view,
+          plugin_organization = excluded.plugin_organization,
           updated_at = excluded.updated_at`,
     )
     .run(
@@ -2394,6 +2543,7 @@ app.put("/api/preferences", (request, response) => {
       Number(notificationSound),
       Number(systemNotifications),
       methodsLibraryView,
+      JSON.stringify(pluginOrganization),
       new Date().toISOString(),
     );
   response.json(readPreferences());
@@ -2401,8 +2551,13 @@ app.put("/api/preferences", (request, response) => {
 
 app.get("/api/plugins", (_request, response) => {
   const registry = initializePluginRunner();
+  const channelRows = database.prepare("SELECT payload FROM channels").all() as {
+    payload: string;
+  }[];
+  const allChannels = parseRows(channelRows);
   const plugins = registry.plugins.map((plugin) => {
     const enabled = pluginConsentIsCurrent(plugin);
+    const methodDependencyCount = findPluginMethodDependencies(allChannels, plugin.id).length;
     return {
       id: plugin.id,
       source: plugin.source,
@@ -2413,6 +2568,7 @@ app.get("/api/plugins", (_request, response) => {
       sandboxed: true,
       networkIsolation: communitySandboxAvailable,
       profileCount: plugin.manifest.profileSetup ? profileInventory(plugin).length : undefined,
+      methodDependencyCount,
     };
   });
   response.json({

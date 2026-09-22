@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   AudioLines,
   Bot,
   Boxes,
@@ -11,6 +13,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   FolderPlus,
   Image,
@@ -24,6 +28,7 @@ import {
   SlidersHorizontal,
   ShieldCheck,
   SquareArrowOutUpRight,
+  Star,
   Trash2,
   Video,
 } from "lucide-react";
@@ -49,6 +54,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  PLUGIN_SECTIONS,
+  PLUGIN_SECTION_META,
+  organizePluginList,
+  useAppPreferences,
+  type PluginSection,
+} from "@/lib/app-preferences";
 import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
 import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
 import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
@@ -76,6 +88,7 @@ type DiscoveredPlugin = {
   sandboxed: boolean;
   networkIsolation: boolean;
   profileCount?: number;
+  methodDependencyCount?: number;
 };
 
 type PluginIssue = { directory: string; message: string };
@@ -171,6 +184,11 @@ function PluginsPage() {
   const [deliveryFilter, setDeliveryFilter] = useState<"all" | PluginDeliveryType>("all");
   const [blockFilter, setBlockFilter] = useState<"all" | BlockType>("all");
   const [processFilter, setProcessFilter] = useState<"all" | UniversalProcess>("all");
+  const [sectionFilter, setSectionFilter] = useState<"all" | "favorites" | PluginSection>("all");
+  const [showHidden, setShowHidden] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+
+  const { pluginOrganization } = useAppPreferences();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -243,17 +261,39 @@ function PluginsPage() {
       capabilities.some((capability) => capability.processTypes?.includes(processFilter));
     return matchesSearch && matchesDelivery && matchesBlock && matchesProcess;
   });
+
+  const organized = useMemo(
+    () =>
+      organizePluginList(filteredPlugins, pluginOrganization, {
+        showHidden,
+        sectionFilter,
+      }),
+    [filteredPlugins, pluginOrganization, showHidden, sectionFilter],
+  );
+
   const filtersActive =
     Boolean(normalizedSearch) ||
     deliveryFilter !== "all" ||
     blockFilter !== "all" ||
-    processFilter !== "all";
+    processFilter !== "all" ||
+    sectionFilter !== "all" ||
+    showHidden;
+
+  const hasAnyPlugins =
+    sectionFilter === "favorites"
+      ? organized.favorites.length > 0
+      : sectionFilter !== "all"
+        ? (organized.sections[sectionFilter]?.length ?? 0) > 0
+        : organized.favorites.length > 0 ||
+          PLUGIN_SECTIONS.some((s) => (organized.sections[s]?.length ?? 0) > 0);
 
   function clearFilters() {
     setSearch("");
     setDeliveryFilter("all");
     setBlockFilter("all");
     setProcessFilter("all");
+    setSectionFilter("all");
+    setShowHidden(false);
   }
 
   return (
@@ -266,6 +306,15 @@ function PluginsPage() {
         actions={
           <div className="flex items-center gap-2">
             <InstallPluginDialog onInstalled={refresh} />
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => setManageOpen(true)}
+            >
+              <SlidersHorizontal className="size-4" />
+              Organizar biblioteca
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -340,16 +389,54 @@ function PluginsPage() {
           </div>
         </section>
 
+        {organized.hiddenWithDependenciesCount > 0 && !showHidden && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/40 bg-warning/10 p-3.5 text-xs text-foreground">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="size-4 shrink-0 text-warning" />
+              <div>
+                <span className="font-semibold">
+                  {organized.hiddenWithDependenciesCount === 1
+                    ? "1 plugin em uso por Métodos está oculto da biblioteca."
+                    : `${organized.hiddenWithDependenciesCount} plugins em uso por Métodos estão ocultos da biblioteca.`}
+                </span>{" "}
+                <span className="text-muted-foreground">
+                  Eles continuam executando normalmente nos seus canais. Ocultar afeta apenas a biblioteca.
+                </span>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 h-7 text-xs ml-auto"
+              onClick={() => setShowHidden(true)}
+            >
+              <Eye className="size-3.5" />
+              Exibir plugins ocultos
+            </Button>
+          </div>
+        )}
+
         <section className="rounded-xl border border-border bg-card/40 p-3 sm:p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{data.plugins.length} plugins</Badge>
+            {organized.hiddenCount > 0 && (
+              <Button
+                size="sm"
+                variant={showHidden ? "secondary" : "outline"}
+                className="h-7 gap-1 text-xs"
+                onClick={() => setShowHidden((prev) => !prev)}
+              >
+                {showHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                {showHidden ? "Ocultar plugins ocultos" : `Mostrar ocultos (${organized.hiddenCount})`}
+              </Button>
+            )}
             {filtersActive && (
-              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={clearFilters}>
+              <Button size="sm" variant="ghost" className="ml-auto h-7 text-xs" onClick={clearFilters}>
                 Limpar filtros
               </Button>
             )}
           </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(15rem,1fr)_repeat(3,minmax(9rem,0.42fr))]">
+          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(13rem,1fr)_repeat(4,minmax(8.5rem,0.35fr))]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -359,6 +446,25 @@ function PluginsPage() {
                 className="pl-9"
               />
             </div>
+            <Select
+              value={sectionFilter}
+              onValueChange={(value) =>
+                setSectionFilter(value as "all" | "favorites" | PluginSection)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Seção" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas as seções</SelectItem>
+                <SelectItem value="favorites">⭐ Favoritos</SelectItem>
+                {PLUGIN_SECTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {PLUGIN_SECTION_META[s].label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select
               value={deliveryFilter}
               onValueChange={(value) => setDeliveryFilter(value as "all" | PluginDeliveryType)}
@@ -416,17 +522,108 @@ function PluginsPage() {
               <LoaderCircle className="size-4 animate-spin" /> Procurando plugins locais...
             </span>
           </div>
-        ) : filteredPlugins.length ? (
-          <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-            {filteredPlugins.map((plugin) => (
-              <PluginCard
-                key={`${plugin.source}-${plugin.id}`}
-                plugin={plugin}
-                update={updates[plugin.id]}
-                onChanged={refreshPluginsAndUpdates}
-              />
-            ))}
-          </section>
+        ) : hasAnyPlugins ? (
+          <div className="space-y-6 mt-4">
+            {/* 1. Favoritos no topo (quando visualizando todas as seções) */}
+            {sectionFilter === "all" && organized.favorites.length > 0 && (
+              <section key="favorites-top">
+                <div className="mb-3 flex items-center gap-2">
+                  <Star className="size-4 fill-amber-400 text-amber-400" />
+                  <h2 className="text-sm font-semibold">Favoritos</h2>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {organized.favorites.length}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {organized.favorites.map((plugin) => (
+                    <PluginCard
+                      key={`fav-${plugin.source}-${plugin.id}`}
+                      plugin={plugin}
+                      update={updates[plugin.id]}
+                      onChanged={refreshPluginsAndUpdates}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* 2. Visualização exclusiva de favoritos */}
+            {sectionFilter === "favorites" && (
+              <section key="favorites-only">
+                <div className="mb-3 flex items-center gap-2">
+                  <Star className="size-4 fill-amber-400 text-amber-400" />
+                  <h2 className="text-sm font-semibold">Favoritos</h2>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {organized.favorites.length}
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {organized.favorites.map((plugin) => (
+                    <PluginCard
+                      key={`fav-${plugin.source}-${plugin.id}`}
+                      plugin={plugin}
+                      update={updates[plugin.id]}
+                      onChanged={refreshPluginsAndUpdates}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* 3. Seções do usuário */}
+            {sectionFilter === "all" &&
+              PLUGIN_SECTIONS.map((sectionKey) => {
+                const sectionPlugins = organized.sections[sectionKey];
+                if (!sectionPlugins?.length) return null;
+                return (
+                  <section key={sectionKey}>
+                    <div className="mb-3 flex items-center gap-2">
+                      <h2 className="text-sm font-semibold">
+                        {PLUGIN_SECTION_META[sectionKey].label}
+                      </h2>
+                      <Badge variant="secondary" className="text-[10px]">
+                        {sectionPlugins.length}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                      {sectionPlugins.map((plugin) => (
+                        <PluginCard
+                          key={`${plugin.source}-${plugin.id}`}
+                          plugin={plugin}
+                          update={updates[plugin.id]}
+                          onChanged={refreshPluginsAndUpdates}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+
+            {/* 4. Visualização de seção específica */}
+            {sectionFilter !== "all" &&
+              sectionFilter !== "favorites" && (
+                <section key={sectionFilter}>
+                  <div className="mb-3 flex items-center gap-2">
+                    <h2 className="text-sm font-semibold">
+                      {PLUGIN_SECTION_META[sectionFilter].label}
+                    </h2>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {organized.sections[sectionFilter]?.length ?? 0}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    {(organized.sections[sectionFilter] ?? []).map((plugin) => (
+                      <PluginCard
+                        key={`${plugin.source}-${plugin.id}`}
+                        plugin={plugin}
+                        update={updates[plugin.id]}
+                        onChanged={refreshPluginsAndUpdates}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
+          </div>
         ) : (
           <section className="mt-5 grid min-h-72 place-items-center rounded-xl border border-dashed border-border bg-card/25 p-8 text-center">
             <div>
@@ -449,6 +646,12 @@ function PluginsPage() {
             </div>
           </section>
         )}
+
+        <PluginLibraryManagementDialog
+          open={manageOpen}
+          onOpenChange={setManageOpen}
+          plugins={data.plugins}
+        />
 
         {data.issues.length > 0 && (
           <section className="mt-5 rounded-xl border border-warning/40 bg-warning/5 p-4">
@@ -587,6 +790,22 @@ function PluginCard({
   const [open, setOpen] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const {
+    pluginOrganization,
+    togglePluginFavorite,
+    setPluginSection,
+    movePluginInSection,
+    setPluginHidden,
+  } = useAppPreferences();
+
+  const pref = pluginOrganization.items[plugin.id] ?? {
+    section: "none",
+    favorite: false,
+    hidden: false,
+  };
+  const isFavorite = Boolean(pref.favorite);
+  const isHidden = Boolean(pref.hidden);
+
   const initials = manifest.name
     .split(/\s+/)
     .filter(Boolean)
@@ -651,9 +870,39 @@ function PluginCard({
         <button
           type="button"
           aria-label={`Abrir detalhes de ${manifest.name}`}
-          className="group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+          className={`group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 ${
+            isHidden ? "opacity-60 hover:opacity-100" : ""
+          }`}
         >
+          <button
+            type="button"
+            aria-label={isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+            title={isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+            className="absolute left-3 top-3 z-10 rounded-full p-1 transition hover:bg-muted/80 text-muted-foreground hover:text-amber-400"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              togglePluginFavorite(plugin.id);
+            }}
+          >
+            <Star
+              className={`size-4 ${
+                isFavorite
+                  ? "fill-amber-400 text-amber-400"
+                  : "opacity-40 hover:opacity-100"
+              }`}
+            />
+          </button>
+
           <span className="absolute right-3 top-3 flex items-center gap-2">
+            {isHidden && (
+              <span
+                className="size-2 rounded-full bg-muted-foreground ring-4 ring-muted-foreground/10"
+                title="Oculto na biblioteca"
+              >
+                <span className="sr-only">Oculto na biblioteca</span>
+              </span>
+            )}
             {update?.updateAvailable && (
               <span
                 className="size-2 rounded-full bg-sky-500 ring-4 ring-sky-500/10"
@@ -687,12 +936,19 @@ function PluginCard({
           <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] max-w-[15rem] text-[11px] leading-snug text-muted-foreground">
             {manifest.description}
           </p>
-          {manifest.profileSetup && (
-            <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-brand-soft">
-              <CircleUserRound className="size-3" /> {plugin.profileCount ?? 0}{" "}
-              {plugin.profileCount === 1 ? "perfil" : "perfis"}
-            </span>
-          )}
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+            {isHidden && (
+              <span className="inline-flex items-center gap-1 rounded bg-muted/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <EyeOff className="size-2.5" /> Oculto
+              </span>
+            )}
+            {manifest.profileSetup && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-soft">
+                <CircleUserRound className="size-3" /> {plugin.profileCount ?? 0}{" "}
+                {plugin.profileCount === 1 ? "perfil" : "perfis"}
+              </span>
+            )}
+          </div>
         </button>
       </DialogTrigger>
 
@@ -809,6 +1065,81 @@ function PluginCard({
               <span className="text-[11px] text-muted-foreground">Sem permissões adicionais.</span>
             )}
           </div>
+        </section>
+
+        <section className="rounded-xl border border-border bg-muted/15 p-3.5">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <SlidersHorizontal className="size-3.5 text-brand-soft" /> Organização na biblioteca
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label className="text-[11px] text-muted-foreground">Seção</Label>
+              <Select
+                value={pref.section}
+                onValueChange={(value) => setPluginSection(plugin.id, value as PluginSection)}
+              >
+                <SelectTrigger className="mt-1 h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLUGIN_SECTIONS.map((sectionKey) => (
+                    <SelectItem key={sectionKey} value={sectionKey} className="text-xs">
+                      {PLUGIN_SECTION_META[sectionKey].label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-[11px] text-muted-foreground">Ordem nesta seção</Label>
+              <div className="mt-1 flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1 text-xs"
+                  onClick={() => movePluginInSection(plugin.id, "up")}
+                >
+                  <ArrowUp className="size-3" /> Mover para cima
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1 text-xs"
+                  onClick={() => movePluginInSection(plugin.id, "down")}
+                >
+                  <ArrowDown className="size-3" /> Mover para baixo
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 pt-2 border-t border-border/60">
+            <Button
+              type="button"
+              size="sm"
+              variant={isFavorite ? "secondary" : "outline"}
+              className="gap-1.5 h-8 text-xs"
+              onClick={() => togglePluginFavorite(plugin.id)}
+            >
+              <Star className={`size-3.5 ${isFavorite ? "fill-amber-400 text-amber-400" : ""}`} />
+              {isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={isHidden ? "secondary" : "outline"}
+              className="gap-1.5 h-8 text-xs"
+              onClick={() => setPluginHidden(plugin.id, !isHidden)}
+            >
+              {isHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+              {isHidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">
+            Organizar ou ocultar afeta apenas a biblioteca neste dispositivo. Não altera nem
+            desativa o plugin e não interrompe Métodos configurados.
+          </p>
         </section>
 
         <CommunityAccessPanel plugin={plugin} onChanged={onChanged} />
@@ -1799,4 +2130,212 @@ function exportManifest(plugin: DiscoveredPlugin) {
     description:
       "Para compartilhar um plugin funcional, envie também a pasta completa do executor.",
   });
+}
+
+function PluginLibraryManagementDialog({
+  open,
+  onOpenChange,
+  plugins,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  plugins: DiscoveredPlugin[];
+}) {
+  const {
+    pluginOrganization,
+    togglePluginFavorite,
+    setPluginSection,
+    movePluginInSection,
+    setPluginHidden,
+  } = useAppPreferences();
+
+  const pluginMap = useMemo(() => new Map(plugins.map((p) => [p.id, p])), [plugins]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Organizar biblioteca de plugins</DialogTitle>
+          <DialogDescription>
+            Defina favoritos, organize plugins em seções, ajuste a ordem manual e oculte plugins sem
+            afetar os Métodos ou a execução.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6 pt-2">
+          {PLUGIN_SECTIONS.map((sectionKey) => {
+            const sectionMeta = PLUGIN_SECTION_META[sectionKey];
+            const orderedIds = pluginOrganization.sectionOrder[sectionKey] ?? [];
+            const sectionPlugins = orderedIds
+              .map((id) => pluginMap.get(id))
+              .filter((p): p is DiscoveredPlugin => Boolean(p));
+
+            for (const plugin of plugins) {
+              const pref = pluginOrganization.items[plugin.id];
+              const sec = pref?.section ?? "none";
+              if (sec === sectionKey && !orderedIds.includes(plugin.id)) {
+                sectionPlugins.push(plugin);
+              }
+            }
+
+            return (
+              <div
+                key={sectionKey}
+                className="rounded-xl border border-border bg-card/60 p-3 sm:p-4"
+              >
+                <div className="flex items-center justify-between mb-3 border-b border-border/70 pb-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold">{sectionMeta.label}</h3>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {sectionPlugins.length}
+                    </Badge>
+                  </div>
+                </div>
+
+                {sectionPlugins.length === 0 ? (
+                  <p className="text-xs text-muted-foreground py-2 italic">
+                    Nenhum plugin nesta seção.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-border/60">
+                    {sectionPlugins.map((plugin, index) => {
+                      const pref = pluginOrganization.items[plugin.id] ?? {
+                        section: "none",
+                        favorite: false,
+                        hidden: false,
+                      };
+                      const isFirst = index === 0;
+                      const isLast = index === sectionPlugins.length - 1;
+
+                      return (
+                        <div
+                          key={plugin.id}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <button
+                              type="button"
+                              aria-label={
+                                pref.favorite
+                                  ? "Remover dos favoritos"
+                                  : "Adicionar aos favoritos"
+                              }
+                              title={
+                                pref.favorite
+                                  ? "Remover dos favoritos"
+                                  : "Adicionar aos favoritos"
+                              }
+                              className="p-1 text-muted-foreground hover:text-amber-400 transition shrink-0"
+                              onClick={() => togglePluginFavorite(plugin.id)}
+                            >
+                              <Star
+                                className={`size-4 ${
+                                  pref.favorite
+                                    ? "fill-amber-400 text-amber-400"
+                                    : "opacity-40 hover:opacity-100"
+                                }`}
+                              />
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-xs font-semibold truncate">
+                                  {plugin.manifest.name}
+                                </span>
+                                <Badge variant="outline" className="text-[9px]">
+                                  v{plugin.manifest.version}
+                                </Badge>
+                                {pref.hidden && (
+                                  <Badge variant="secondary" className="text-[9px] gap-1">
+                                    <EyeOff className="size-2.5" /> Oculto
+                                  </Badge>
+                                )}
+                                {(plugin.methodDependencyCount ?? 0) > 0 && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[9px] text-brand-soft border-brand/40"
+                                  >
+                                    Em uso por {plugin.methodDependencyCount} bloco(s)
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                {plugin.manifest.author} · {plugin.id}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                            {/* Reorder buttons */}
+                            <div className="flex items-center rounded border border-border">
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-7 rounded-none"
+                                disabled={isFirst}
+                                title="Mover para cima"
+                                aria-label="Mover para cima"
+                                onClick={() => movePluginInSection(plugin.id, "up")}
+                              >
+                                <ArrowUp className="size-3.5" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-7 rounded-none border-l border-border"
+                                disabled={isLast}
+                                title="Mover para baixo"
+                                aria-label="Mover para baixo"
+                                onClick={() => movePluginInSection(plugin.id, "down")}
+                              >
+                                <ArrowDown className="size-3.5" />
+                              </Button>
+                            </div>
+
+                            {/* Section selector */}
+                            <Select
+                              value={pref.section}
+                              onValueChange={(val) =>
+                                setPluginSection(plugin.id, val as PluginSection)
+                              }
+                            >
+                              <SelectTrigger className="h-7 w-32 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {PLUGIN_SECTIONS.map((s) => (
+                                  <SelectItem key={s} value={s} className="text-xs">
+                                    {PLUGIN_SECTION_META[s].label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+
+                            {/* Hide / Show toggle */}
+                            <Button
+                              size="sm"
+                              variant={pref.hidden ? "secondary" : "ghost"}
+                              className="h-7 text-xs gap-1"
+                              title={
+                                pref.hidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"
+                              }
+                              onClick={() => setPluginHidden(plugin.id, !pref.hidden)}
+                            >
+                              {pref.hidden ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
+                              <span className="hidden md:inline">
+                                {pref.hidden ? "Exibir" : "Ocultar"}
+                              </span>
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }

@@ -14,12 +14,411 @@ import {
 export type AppTheme = "light" | "dark";
 export type AppLanguage = "pt-BR" | "en" | "es";
 
+export const PLUGIN_SECTIONS = [
+  "generation",
+  "editing",
+  "publishing",
+  "utilities",
+  "none",
+] as const;
+
+export type PluginSection = (typeof PLUGIN_SECTIONS)[number];
+
+export const PLUGIN_SECTION_META: Record<
+  PluginSection,
+  { id: PluginSection; label: string }
+> = {
+  generation: { id: "generation", label: "Geração" },
+  editing: { id: "editing", label: "Edição" },
+  publishing: { id: "publishing", label: "Publicação" },
+  utilities: { id: "utilities", label: "Utilitários" },
+  none: { id: "none", label: "Sem seção" },
+};
+
+export type PluginItemPreference = {
+  section: PluginSection;
+  favorite: boolean;
+  hidden: boolean;
+};
+
+export type PluginLibraryOrganization = {
+  items: Record<string, PluginItemPreference>;
+  sectionOrder: Record<PluginSection, string[]>;
+};
+
+export const DEFAULT_PLUGIN_ORGANIZATION: PluginLibraryOrganization = {
+  items: {},
+  sectionOrder: {
+    generation: [],
+    editing: [],
+    publishing: [],
+    utilities: [],
+    none: [],
+  },
+};
+
+export function normalizePluginOrganization(raw: unknown): PluginLibraryOrganization {
+  const sections: PluginSection[] = [...PLUGIN_SECTIONS];
+  const items: Record<string, PluginItemPreference> = {};
+  const sectionOrder: Record<PluginSection, string[]> = {
+    generation: [],
+    editing: [],
+    publishing: [],
+    utilities: [],
+    none: [],
+  };
+
+  if (!raw || typeof raw !== "object") {
+    return { items, sectionOrder };
+  }
+
+  const record = raw as Record<string, unknown>;
+
+  if (record.items && typeof record.items === "object") {
+    for (const [id, value] of Object.entries(record.items as Record<string, unknown>)) {
+      const cleanId = typeof id === "string" ? id.trim() : "";
+      if (!cleanId) continue;
+      const pref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const section = sections.includes(pref.section as PluginSection)
+        ? (pref.section as PluginSection)
+        : "none";
+      const favorite = Boolean(pref.favorite);
+      const hidden = Boolean(pref.hidden);
+      items[cleanId] = { section, favorite, hidden };
+    }
+  }
+
+  if (Array.isArray(record.favorites)) {
+    for (const fav of record.favorites) {
+      const cleanId = typeof fav === "string" ? fav.trim() : "";
+      if (!cleanId) continue;
+      items[cleanId] = {
+        section: items[cleanId]?.section ?? "none",
+        favorite: true,
+        hidden: Boolean(items[cleanId]?.hidden),
+      };
+    }
+  }
+
+  if (Array.isArray(record.hidden)) {
+    for (const hid of record.hidden) {
+      const cleanId = typeof hid === "string" ? hid.trim() : "";
+      if (!cleanId) continue;
+      items[cleanId] = {
+        section: items[cleanId]?.section ?? "none",
+        favorite: Boolean(items[cleanId]?.favorite),
+        hidden: true,
+      };
+    }
+  }
+
+  if (record.sections && typeof record.sections === "object") {
+    const sectionsObj = record.sections as Record<string, unknown>;
+    for (const s of sections) {
+      const secArray: unknown = sectionsObj[s];
+      if (Array.isArray(secArray)) {
+        for (const entry of secArray) {
+          const cleanId = typeof entry === "string" ? entry.trim() : "";
+          if (!cleanId) continue;
+          items[cleanId] = {
+            section: s,
+            favorite: Boolean(items[cleanId]?.favorite),
+            hidden: Boolean(items[cleanId]?.hidden),
+          };
+        }
+      }
+    }
+  }
+
+  const rawOrder = (record.sectionOrder && typeof record.sectionOrder === "object"
+    ? record.sectionOrder
+    : record.sections && typeof record.sections === "object"
+      ? record.sections
+      : {}) as Record<string, unknown>;
+
+  for (const s of sections) {
+    const list = Array.isArray(rawOrder[s]) ? rawOrder[s] : [];
+    for (const id of list) {
+      const cleanId = typeof id === "string" ? id.trim() : "";
+      if (!cleanId) continue;
+      if (!items[cleanId]) {
+        items[cleanId] = { section: s, favorite: false, hidden: false };
+      }
+      if (items[cleanId].section === s && !sectionOrder[s].includes(cleanId)) {
+        sectionOrder[s].push(cleanId);
+      }
+    }
+  }
+
+  for (const [id, item] of Object.entries(items)) {
+    if (!sectionOrder[item.section].includes(id)) {
+      sectionOrder[item.section].push(id);
+    }
+  }
+
+  return { items, sectionOrder };
+}
+
+export function togglePluginFavorite(
+  organization: PluginLibraryOrganization,
+  pluginId: string,
+): PluginLibraryOrganization {
+  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
+  if (!cleanId) return organization;
+  const current = normalizePluginOrganization(organization);
+  const existing = current.items[cleanId] ?? {
+    section: "none",
+    favorite: false,
+    hidden: false,
+  };
+  const updatedItems = {
+    ...current.items,
+    [cleanId]: {
+      ...existing,
+      favorite: !existing.favorite,
+    },
+  };
+  return normalizePluginOrganization({
+    items: updatedItems,
+    sectionOrder: current.sectionOrder,
+  });
+}
+
+export function setPluginSection(
+  organization: PluginLibraryOrganization,
+  pluginId: string,
+  targetSection: PluginSection,
+): PluginLibraryOrganization {
+  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
+  if (!cleanId) return organization;
+  const section = PLUGIN_SECTIONS.includes(targetSection) ? targetSection : "none";
+  const current = normalizePluginOrganization(organization);
+  const existing = current.items[cleanId] ?? {
+    section: "none",
+    favorite: false,
+    hidden: false,
+  };
+  if (existing.section === section) return current;
+  const oldSection = existing.section;
+  const updatedOrder = {
+    ...current.sectionOrder,
+    [oldSection]: current.sectionOrder[oldSection].filter((id) => id !== cleanId),
+    [section]: [...current.sectionOrder[section].filter((id) => id !== cleanId), cleanId],
+  };
+  const updatedItems = {
+    ...current.items,
+    [cleanId]: {
+      ...existing,
+      section,
+    },
+  };
+  return normalizePluginOrganization({
+    items: updatedItems,
+    sectionOrder: updatedOrder,
+  });
+}
+
+export function movePluginInSection(
+  organization: PluginLibraryOrganization,
+  pluginId: string,
+  direction: "up" | "down",
+): PluginLibraryOrganization {
+  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
+  if (!cleanId) return organization;
+  const current = normalizePluginOrganization(organization);
+  const item = current.items[cleanId];
+  const section = item?.section ?? "none";
+  const list = [...(current.sectionOrder[section] ?? [])];
+  const index = list.indexOf(cleanId);
+  if (index === -1) return current;
+  if (direction === "up") {
+    if (index === 0) return current;
+    const temp = list[index - 1];
+    list[index - 1] = list[index];
+    list[index] = temp;
+  } else {
+    if (index === list.length - 1) return current;
+    const temp = list[index + 1];
+    list[index + 1] = list[index];
+    list[index] = temp;
+  }
+  return {
+    items: { ...current.items },
+    sectionOrder: {
+      ...current.sectionOrder,
+      [section]: list,
+    },
+  };
+}
+
+export function setPluginHidden(
+  organization: PluginLibraryOrganization,
+  pluginId: string,
+  hidden: boolean,
+): PluginLibraryOrganization {
+  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
+  if (!cleanId) return organization;
+  const current = normalizePluginOrganization(organization);
+  const existing = current.items[cleanId] ?? {
+    section: "none",
+    favorite: false,
+    hidden: false,
+  };
+  const updatedItems = {
+    ...current.items,
+    [cleanId]: {
+      ...existing,
+      hidden: Boolean(hidden),
+    },
+  };
+  return normalizePluginOrganization({
+    items: updatedItems,
+    sectionOrder: current.sectionOrder,
+  });
+}
+
+export type OrganizedPluginGroups<T extends { id: string; manifest?: { name: string } }> = {
+  favorites: T[];
+  sections: Record<PluginSection, T[]>;
+  hiddenCount: number;
+  hiddenWithDependenciesCount: number;
+};
+
+export function organizePluginList<
+  T extends { id: string; manifest?: { name: string }; methodDependencyCount?: number },
+>(
+  plugins: T[],
+  organization: PluginLibraryOrganization,
+  options?: {
+    showHidden?: boolean;
+    sectionFilter?: "all" | "favorites" | PluginSection;
+  },
+): OrganizedPluginGroups<T> {
+  const norm = normalizePluginOrganization(organization);
+  const showHidden = Boolean(options?.showHidden);
+  const sectionFilter = options?.sectionFilter ?? "all";
+
+  let hiddenCount = 0;
+  let hiddenWithDependenciesCount = 0;
+
+  for (const plugin of plugins) {
+    const pref = norm.items[plugin.id];
+    if (pref?.hidden) {
+      hiddenCount += 1;
+      if ((plugin.methodDependencyCount ?? 0) > 0) {
+        hiddenWithDependenciesCount += 1;
+      }
+    }
+  }
+
+  const sections: Record<PluginSection, T[]> = {
+    generation: [],
+    editing: [],
+    publishing: [],
+    utilities: [],
+    none: [],
+  };
+
+  const favorites: T[] = [];
+
+  for (const plugin of plugins) {
+    const pref = norm.items[plugin.id] ?? {
+      section: "none",
+      favorite: false,
+      hidden: false,
+    };
+
+    if (pref.hidden && !showHidden) {
+      continue;
+    }
+
+    if (pref.favorite) {
+      favorites.push(plugin);
+    }
+
+    const sec = pref.section;
+    if (sections[sec]) {
+      sections[sec].push(plugin);
+    } else {
+      sections.none.push(plugin);
+    }
+  }
+
+  for (const s of PLUGIN_SECTIONS) {
+    const orderList = norm.sectionOrder[s] ?? [];
+    sections[s].sort((a, b) => {
+      const idxA = orderList.indexOf(a.id);
+      const idxB = orderList.indexOf(b.id);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      const nameA = a.manifest?.name ?? a.id;
+      const nameB = b.manifest?.name ?? b.id;
+      return nameA.localeCompare(nameB);
+    });
+  }
+
+  favorites.sort((a, b) => {
+    const secA = norm.items[a.id]?.section ?? "none";
+    const secB = norm.items[b.id]?.section ?? "none";
+    const orderA = norm.sectionOrder[secA]?.indexOf(a.id) ?? -1;
+    const orderB = norm.sectionOrder[secB]?.indexOf(b.id) ?? -1;
+    if (secA !== secB) {
+      return PLUGIN_SECTIONS.indexOf(secA) - PLUGIN_SECTIONS.indexOf(secB);
+    }
+    if (orderA !== -1 && orderB !== -1) return orderA - orderB;
+    const nameA = a.manifest?.name ?? a.id;
+    const nameB = b.manifest?.name ?? b.id;
+    return nameA.localeCompare(nameB);
+  });
+
+  if (sectionFilter === "favorites") {
+    return {
+      favorites,
+      sections: {
+        generation: [],
+        editing: [],
+        publishing: [],
+        utilities: [],
+        none: [],
+      },
+      hiddenCount,
+      hiddenWithDependenciesCount,
+    };
+  }
+
+  if (sectionFilter !== "all") {
+    const singleSection: Record<PluginSection, T[]> = {
+      generation: [],
+      editing: [],
+      publishing: [],
+      utilities: [],
+      none: [],
+    };
+    singleSection[sectionFilter] = sections[sectionFilter] ?? [];
+    return {
+      favorites: [],
+      sections: singleSection,
+      hiddenCount,
+      hiddenWithDependenciesCount,
+    };
+  }
+
+  return {
+    favorites,
+    sections,
+    hiddenCount,
+    hiddenWithDependenciesCount,
+  };
+}
+
 export type AppPreferences = {
   theme: AppTheme;
   language: AppLanguage;
   notificationSound: boolean;
   systemNotifications: boolean;
   methodsLibraryView: "methods" | "channels";
+  pluginOrganization: PluginLibraryOrganization;
 };
 
 type PreferencesContextValue = AppPreferences & {
@@ -29,6 +428,15 @@ type PreferencesContextValue = AppPreferences & {
   setNotificationSound: (enabled: boolean) => void;
   setSystemNotifications: (enabled: boolean) => void;
   setMethodsLibraryView: (view: AppPreferences["methodsLibraryView"]) => void;
+  setPluginOrganization: (
+    organization:
+      | PluginLibraryOrganization
+      | ((current: PluginLibraryOrganization) => PluginLibraryOrganization),
+  ) => void;
+  togglePluginFavorite: (pluginId: string) => void;
+  setPluginSection: (pluginId: string, section: PluginSection) => void;
+  movePluginInSection: (pluginId: string, direction: "up" | "down") => void;
+  setPluginHidden: (pluginId: string, hidden: boolean) => void;
   t: (source: string) => string;
 };
 
@@ -38,6 +446,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   notificationSound: false,
   systemNotifications: false,
   methodsLibraryView: "channels",
+  pluginOrganization: DEFAULT_PLUGIN_ORGANIZATION,
 };
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
@@ -45,6 +454,30 @@ const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 type Translation = [english: string, spanish: string];
 
 const PHRASES: Record<string, Translation> = {
+  Favoritos: ["Favorites", "Favoritos"],
+  Geração: ["Generation", "Generación"],
+  Utilitários: ["Utilities", "Utilidades"],
+  "Sem seção": ["No section", "Sin sección"],
+  "Organizar biblioteca": ["Organize library", "Organizar biblioteca"],
+  "Gerenciar biblioteca": ["Manage library", "Gestionar biblioteca"],
+  "Mostrar ocultos": ["Show hidden", "Mostrar ocultos"],
+  "Ocultar da biblioteca": ["Hide from library", "Ocultar de la biblioteca"],
+  "Exibir na biblioteca": ["Show in library", "Mostrar en la biblioteca"],
+  "Oculto na biblioteca": ["Hidden in library", "Oculto en la biblioteca"],
+  "Exibir plugins ocultos": ["Show hidden plugins", "Mostrar plugins ocultos"],
+  "Todas as seções": ["All sections", "Todas las secciones"],
+  Seção: ["Section", "Sección"],
+  "Adicionar aos favoritos": ["Add to favorites", "Añadir a favoritos"],
+  "Remover dos favoritos": ["Remove from favorites", "Eliminar de favoritos"],
+  "Organização na biblioteca": ["Library organization", "Organización en la biblioteca"],
+  "Organizar biblioteca de plugins": [
+    "Organize plugin library",
+    "Organizar biblioteca de plugins",
+  ],
+  "Defina favoritos, organize plugins em seções, ajuste a ordem manual e oculte plugins sem afetar os Métodos ou a execução.": [
+    "Set favorites, organize plugins into sections, adjust manual order, and hide plugins without affecting Methods or execution.",
+    "Define favoritos, organiza plugins en secciones, ajusta el orden manual y oculta plugins sin afectar los Métodos ni la ejecución.",
+  ],
   "Pesquisa estratégica": ["Strategic research", "Investigación estratégica"],
   Pesquisa: ["Research", "Investigación"],
   "Não foi possível ler as pesquisas.": [
@@ -1759,7 +2192,11 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       })
       .then((stored) => {
         if (active && !hasLocalChange.current) {
-          setPreferences({ ...DEFAULT_PREFERENCES, ...stored });
+          setPreferences({
+            ...DEFAULT_PREFERENCES,
+            ...stored,
+            pluginOrganization: normalizePluginOrganization(stored?.pluginOrganization),
+          });
         }
       })
       .catch((error) => console.error(error))
@@ -1801,24 +2238,28 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     return () => observer.disconnect();
   }, [preferences.language]);
 
-  const updatePreferences = useCallback((patch: Partial<AppPreferences>) => {
-    hasLocalChange.current = true;
-    setPreferences((current) => {
-      const next = { ...current, ...patch };
-      persistenceQueue.current = persistenceQueue.current
-        .catch(() => undefined)
-        .then(async () => {
-          const response = await fetch("/api/preferences", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(next),
-          });
-          if (!response.ok) throw new Error("Could not save preferences");
-        })
-        .catch((error) => console.error(error));
-      return next;
-    });
-  }, []);
+  const updatePreferences = useCallback(
+    (patch: Partial<AppPreferences> | ((current: AppPreferences) => Partial<AppPreferences>)) => {
+      hasLocalChange.current = true;
+      setPreferences((current) => {
+        const resolvedPatch = typeof patch === "function" ? patch(current) : patch;
+        const next = { ...current, ...resolvedPatch };
+        persistenceQueue.current = persistenceQueue.current
+          .catch(() => undefined)
+          .then(async () => {
+            const response = await fetch("/api/preferences", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(next),
+            });
+            if (!response.ok) throw new Error("Could not save preferences");
+          })
+          .catch((error) => console.error(error));
+        return next;
+      });
+    },
+    [],
+  );
 
   const value = useMemo<PreferencesContextValue>(
     () => ({
@@ -1829,6 +2270,50 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       setNotificationSound: (notificationSound) => updatePreferences({ notificationSound }),
       setSystemNotifications: (systemNotifications) => updatePreferences({ systemNotifications }),
       setMethodsLibraryView: (methodsLibraryView) => updatePreferences({ methodsLibraryView }),
+      setPluginOrganization: (organizationOrUpdater) => {
+        updatePreferences((current) => {
+          const nextOrg =
+            typeof organizationOrUpdater === "function"
+              ? organizationOrUpdater(current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION)
+              : organizationOrUpdater;
+          return { pluginOrganization: normalizePluginOrganization(nextOrg) };
+        });
+      },
+      togglePluginFavorite: (pluginId: string) => {
+        updatePreferences((current) => ({
+          pluginOrganization: togglePluginFavorite(
+            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
+            pluginId,
+          ),
+        }));
+      },
+      setPluginSection: (pluginId: string, section: PluginSection) => {
+        updatePreferences((current) => ({
+          pluginOrganization: setPluginSection(
+            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
+            pluginId,
+            section,
+          ),
+        }));
+      },
+      movePluginInSection: (pluginId: string, direction: "up" | "down") => {
+        updatePreferences((current) => ({
+          pluginOrganization: movePluginInSection(
+            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
+            pluginId,
+            direction,
+          ),
+        }));
+      },
+      setPluginHidden: (pluginId: string, hidden: boolean) => {
+        updatePreferences((current) => ({
+          pluginOrganization: setPluginHidden(
+            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
+            pluginId,
+            hidden,
+          ),
+        }));
+      },
       t: (source) => translate(source, preferences.language),
     }),
     [preferences, ready, updatePreferences],
