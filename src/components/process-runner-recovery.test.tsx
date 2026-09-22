@@ -2,16 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import {
-  ExternalRecoveryGate,
-  FailedExecutionGate,
-} from "./process-runner";
+import { ExternalRecoveryGate, FailedExecutionGate } from "./process-runner";
 import { retryBlockExecution } from "@/lib/store";
-import type {
-  ActionBlock,
-  BlockExecution,
-  PluginExternalRecoverySnapshot,
-} from "@/lib/domain";
+import type { ActionBlock, BlockExecution, PluginExternalRecoverySnapshot } from "@/lib/domain";
 
 // Fixtures
 const mockBlock: ActionBlock = {
@@ -66,7 +59,7 @@ test("UI com recoverySnapshot pendente: apresenta alvo, ciclo, motivo, consequê
   assert.ok(html.includes("spanish_flow_bridge"), "Deve apresentar o sistema externo");
 
   // 2. Ciclo
-  assert.ok(html.includes("data-testid=\"recovery-cycle\""), "Deve ter elemento do ciclo");
+  assert.ok(html.includes('data-testid="recovery-cycle"'), "Deve ter elemento do ciclo");
   assert.ok(html.includes(">2<"), "Deve apresentar o ciclo 2");
 
   // 3. Motivo
@@ -77,7 +70,7 @@ test("UI com recoverySnapshot pendente: apresenta alvo, ciclo, motivo, consequê
 
   // 4. Consequência da retomada
   assert.ok(
-    html.includes("data-testid=\"recovery-consequence\""),
+    html.includes('data-testid="recovery-consequence"'),
     "Deve conter a seção de consequência da retomada",
   );
   assert.ok(
@@ -86,18 +79,15 @@ test("UI com recoverySnapshot pendente: apresenta alvo, ciclo, motivo, consequê
   );
 
   // 5. Revisão do snapshot
-  assert.ok(
-    html.includes("rev_bf88b727b22b490e"),
-    "Deve exibir a revisão exata do snapshot",
-  );
+  assert.ok(html.includes("rev_bf88b727b22b490e"), "Deve exibir a revisão exata do snapshot");
 
   // 6. Checkbox de consentimento e botão de confirmação
   assert.ok(
-    html.includes("data-testid=\"recovery-confirm-checkbox\""),
+    html.includes('data-testid="recovery-confirm-checkbox"'),
     "Deve conter checkbox de consentimento",
   );
   assert.ok(
-    html.includes("data-testid=\"recovery-confirm-button\""),
+    html.includes('data-testid="recovery-confirm-button"'),
     "Deve conter botão de confirmação de recuperação",
   );
   assert.ok(
@@ -113,7 +103,7 @@ test("UI com recoverySnapshot pendente: apresenta alvo, ciclo, motivo, consequê
 
   // 8. Botão está desabilitado quando a confirmação não foi dada
   assert.ok(
-    html.includes("disabled=\"\"") || html.includes("disabled"),
+    html.includes('disabled=""') || html.includes("disabled"),
     "Botão deve estar desabilitado sem consentimento prévio",
   );
 });
@@ -129,7 +119,7 @@ test("UI sem recoverySnapshot (legado): preserva botão Tentar novamente comum",
 
   assert.ok(html.includes("Tentar novamente"), "Deve conter o botão legado 'Tentar novamente'");
   assert.ok(
-    !html.includes("data-testid=\"external-recovery-gate\""),
+    !html.includes('data-testid="external-recovery-gate"'),
     "Não deve renderizar o gate de recuperação externa",
   );
   assert.ok(
@@ -154,7 +144,7 @@ test("UI com erro de revisão (409): renderiza alerta explicativo para atualizar
   );
 
   assert.ok(
-    html.includes("data-testid=\"recovery-revision-error\""),
+    html.includes('data-testid="recovery-revision-error"'),
     "Deve renderizar o banner de erro de revisão",
   );
   assert.ok(
@@ -230,11 +220,7 @@ test("Payload emitido pelo store: envia confirmSnapshotRevision no caminho /api/
     };
 
     // Chamada com confirmação de revisão
-    const result = await retryBlockExecution(
-      "exec-123",
-      "block-collector",
-      "rev_bf88b727b22b490e",
-    );
+    const result = await retryBlockExecution("exec-123", "block-collector", "rev_bf88b727b22b490e");
     assert.equal(result, true);
 
     const commandReq = capturedRequests.find((r) => r.url.endsWith("/api/commands"));

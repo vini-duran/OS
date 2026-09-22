@@ -2,8 +2,8 @@ import { deriveProcessOutput } from "../src/lib/process-output";
 import { applyGeneratedProjectTitle } from "../src/lib/project-title";
 import {
   PROCESS_META,
-  PROCESS_ORDER,
   type ActionBlock,
+  type BlockItemRetryScope,
   type Channel,
   type ChannelLibraryItem,
   type PluginRecoveryAuthorization,
@@ -16,6 +16,12 @@ import {
   type StrategicCollection,
 } from "../src/lib/domain";
 import { CoreKeyStore } from "./security/core-keystore";
+import {
+  captureProjectStrategy,
+  completedProcessProgress,
+  nextExecutableProcess,
+  projectProcessOrder,
+} from "../src/lib/process-order";
 import {
   createProcessOutputFields,
   getMethodConfigurationIssue,
@@ -51,15 +57,11 @@ export function executionCommands(
   };
   function completeProjectStage(project: Project, stage: ProcessId) {
     project.stages = { ...project.stages, [stage]: "done" };
-    const next = PROCESS_ORDER.find(
-      (process) => project.stages[process] !== "done" && project.stages[process] !== "approved",
-    );
-    project.currentStage = next ?? "publishing";
+    const order = projectProcessOrder(project);
+    const next = nextExecutableProcess(order, project.stages, project.runFrom, project.runThrough);
+    project.currentStage = next ?? stage;
     project.state = next ? project.stages[next] : "done";
-    const completed = PROCESS_ORDER.filter(
-      (process) => project.stages[process] === "done" || project.stages[process] === "approved",
-    ).length;
-    project.progress = Math.round((completed / PROCESS_ORDER.length) * 100);
+    project.progress = completedProcessProgress(project.stages);
   }
 
   function startProcessExecution(projectId: string, processType: ProcessId) {
@@ -69,7 +71,13 @@ export function executionCommands(
     if (existing) return existing;
     const project = db.projects.find((item) => item.id === projectId);
     const channel = project ? db.channels.find((item) => item.id === project.channelId) : undefined;
-    const method = channel?.methods[processType];
+    if (project && channel)
+      captureProjectStrategy(
+        project,
+        channel,
+        db.executions.some((item) => item.projectId === projectId),
+      );
+    const method = project?.strategySnapshot?.methods[processType] ?? channel?.methods[processType];
     const normalizedMethod = method
       ? {
           name: method.name || `Método de ${PROCESS_META[processType].label}`,
@@ -180,6 +188,30 @@ export function executionCommands(
     }
     touchExecution(execution);
     return execution;
+  }
+
+  function blockDeliveryIssues(block: ActionBlock, values: Record<string, RuntimeValue>) {
+    const issues = (block.outputs ?? [])
+      .filter((output) => output.required && isEmptyRuntimeValue(values[output.key]))
+      .map((output) => output.label);
+    for (const output of block.outputs ?? []) {
+      const issue = getPresentationRestrictionIssue(output.presentation, values[output.key]);
+      if (issue) issues.push(`${output.label}: ${issue}`);
+    }
+    for (const output of (block.outputs ?? []).filter((field) => field.type === "records")) {
+      const storedRecords = values[output.key];
+      const records = Array.isArray(storedRecords) ? storedRecords : [];
+      records.forEach((record, index) => {
+        if (!record || typeof record !== "object" || Array.isArray(record) || "url" in record)
+          return;
+        for (const recordField of (output.recordFields ?? []).filter((field) => field.required)) {
+          if (isEmptyRuntimeValue(record[recordField.key] as RuntimeValue | undefined)) {
+            issues.push(`${output.label} · registro ${index + 1} · ${recordField.label}`);
+          }
+        }
+      });
+    }
+    return issues;
   }
 
   function chooseCollectionItem(executionId: string, blockId: string, itemId: string) {
@@ -391,26 +423,7 @@ export function executionCommands(
         missing: unresolvedInputs.map((item) => `Entrada: ${item.input.label}`),
       };
     }
-    const missing = (block.outputs ?? [])
-      .filter((output) => output.required && isEmptyRuntimeValue(values[output.key]))
-      .map((output) => output.label);
-    for (const output of block.outputs ?? []) {
-      const issue = getPresentationRestrictionIssue(output.presentation, values[output.key]);
-      if (issue) missing.push(`${output.label}: ${issue}`);
-    }
-    for (const output of (block.outputs ?? []).filter((field) => field.type === "records")) {
-      const storedRecords = values[output.key];
-      const records = Array.isArray(storedRecords) ? storedRecords : [];
-      records.forEach((record, index) => {
-        if (!record || typeof record !== "object" || Array.isArray(record) || "url" in record)
-          return;
-        for (const recordField of (output.recordFields ?? []).filter((field) => field.required)) {
-          if (isEmptyRuntimeValue(record[recordField.key] as RuntimeValue | undefined)) {
-            missing.push(`${output.label} · registro ${index + 1} · ${recordField.label}`);
-          }
-        }
-      });
-    }
+    const missing = blockDeliveryIssues(block, values);
     if (missing.length) return { ok: false, missing };
     const rejected = (block.outputs ?? []).some(
       (output) => output.type === "approval" && values[output.key] === "rejected",
@@ -465,19 +478,83 @@ export function executionCommands(
     return { ok: true };
   }
 
-  function retryBlockExecution(
-    executionId: string,
-    blockId: string,
-    options?: { confirmSnapshotRevision?: string } | string,
-  ) {
-    const confirmSnapshotRevision =
-      typeof options === "string" ? options.trim() : options?.confirmSnapshotRevision?.trim();
+  function acceptBlockDelivery(executionId: string, blockId: string) {
     const execution = db.executions.find((item) => item.id === executionId);
     const blockExecution = execution?.blocks.find((item) => item.blockId === blockId);
     const block = execution?.methodSnapshot.blocks.find((item) => item.id === blockId);
-    if (!execution || !blockExecution || !block || blockExecution.status !== "failed") return false;
+    if (
+      !execution ||
+      !blockExecution ||
+      !block ||
+      !["failed", "cancelled"].includes(blockExecution.status) ||
+      block.type === "ESCOLHER" ||
+      block.type === "VALIDAR"
+    ) {
+      return { ok: false as const, missing: ["Esta entrega não pode ser finalizada neste estado"] };
+    }
+    const missing = blockDeliveryIssues(block, blockExecution.values);
+    if (missing.length) return { ok: false as const, missing };
 
-    // 1. Se há snapshot pendente, exige confirmação correspondente ANTES de qualquer mutação
+    const now = new Date().toISOString();
+    blockExecution.status = "completed";
+    blockExecution.completedAt = now;
+    blockExecution.error = undefined;
+    blockExecution.progress = 1;
+    blockExecution.progressMessage = undefined;
+    blockExecution.itemProgress = undefined;
+    blockExecution.itemRetryScope = undefined;
+    recordBlockDeliveries(execution, block, blockExecution.values, "completed", now);
+    execution.error = undefined;
+    const updated = activateNextBlock(execution, execution.blocks.indexOf(blockExecution));
+    return { ok: true as const, completedProcess: updated.status === "completed" };
+  }
+
+  function retryBlockExecution(
+    executionId: string,
+    blockId: string,
+    retryScopeOrOptions:
+      | BlockItemRetryScope
+      | { confirmSnapshotRevision?: string; retryScope?: BlockItemRetryScope; itemId?: string }
+      | string = "all",
+    argItemId?: string,
+  ) {
+    let retryScope: BlockItemRetryScope = "all";
+    let itemId = argItemId;
+    let confirmSnapshotRevision: string | undefined;
+
+    if (typeof retryScopeOrOptions === "object" && retryScopeOrOptions !== null) {
+      confirmSnapshotRevision = retryScopeOrOptions.confirmSnapshotRevision?.trim();
+      if (retryScopeOrOptions.retryScope) {
+        retryScope = retryScopeOrOptions.retryScope;
+      }
+      if (retryScopeOrOptions.itemId) {
+        itemId = retryScopeOrOptions.itemId;
+      }
+    } else if (typeof retryScopeOrOptions === "string") {
+      if (
+        retryScopeOrOptions === "all" ||
+        retryScopeOrOptions === "remaining" ||
+        retryScopeOrOptions === "selected"
+      ) {
+        retryScope = retryScopeOrOptions;
+      } else {
+        confirmSnapshotRevision = retryScopeOrOptions.trim();
+      }
+    }
+
+    const execution = db.executions.find((item) => item.id === executionId);
+    const blockExecution = execution?.blocks.find((item) => item.blockId === blockId);
+    const block = execution?.methodSnapshot.blocks.find((item) => item.id === blockId);
+    if (
+      !execution ||
+      !blockExecution ||
+      !block ||
+      (!["failed", "cancelled"].includes(blockExecution.status) &&
+        !(retryScope === "selected" && blockExecution.status === "completed"))
+    )
+      return false;
+
+    // Se há snapshot pendente, exige confirmação correspondente ANTES de qualquer mutação
     if (blockExecution.recoverySnapshot) {
       if (
         !confirmSnapshotRevision ||
@@ -494,6 +571,24 @@ export function executionCommands(
     invalidateBlockDeliveries(execution, [blockId]);
     blockExecution.error = undefined;
     blockExecution.pluginConversation = undefined;
+    blockExecution.jobId = undefined;
+    blockExecution.traceId = undefined;
+
+    if (retryScope === "selected" && !blockExecution.items?.some((item) => item.id === itemId)) {
+      return false;
+    }
+    blockExecution.itemRetryScope = retryScope;
+    blockExecution.itemRetryId = retryScope === "selected" ? itemId : undefined;
+    blockExecution.completedAt = undefined;
+    if (retryScope === "all") {
+      blockExecution.values = {};
+      blockExecution.itemProgress = undefined;
+      blockExecution.progress = undefined;
+    } else if (blockExecution.itemProgress?.total) {
+      blockExecution.progress =
+        blockExecution.itemProgress.completed / blockExecution.itemProgress.total;
+    }
+    blockExecution.progressMessage = undefined;
 
     // Emite autorização de recuperação assinada somente quando a confirmação do snapshot é válida
     if (confirmSnapshotRevision && blockExecution.recoverySnapshot) {
@@ -514,18 +609,12 @@ export function executionCommands(
       const recoveryAuth = signer.signRecoveryAuthorization({ target });
 
       blockExecution.recoveryAuthorization = recoveryAuth;
-      blockExecution.recoveryHistory = [
-        ...(blockExecution.recoveryHistory ?? []),
-        recoveryAuth,
-      ];
-      // O snapshot foi consumido na emissão desta autorização
+      blockExecution.recoveryHistory = [...(blockExecution.recoveryHistory ?? []), recoveryAuth];
       blockExecution.recoverySnapshot = undefined;
     } else {
-      // Retry comum sem snapshot ou sem confirmação: NÃO emite autorização externa
       blockExecution.recoveryAuthorization = undefined;
       blockExecution.recoverySnapshot = undefined;
     }
-
     blockExecution.status =
       block.operator === "Humano" && !block.plugin ? "awaiting_human" : "blocked_executor";
     execution.error = undefined;
@@ -550,6 +639,7 @@ export function executionCommands(
     chooseCollectionItem,
     completeHumanBlock,
     completeProcessOutput,
+    acceptBlockDelivery,
     saveHumanBlockDraft,
     retryBlockExecution,
   };

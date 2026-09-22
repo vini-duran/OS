@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { RuntimeValue, StoredFile } from "../src/lib/domain";
+import type {
+  BlockExecutionItem,
+  BlockItemRetryScope,
+  RuntimeValue,
+  StoredFile,
+} from "../src/lib/domain";
 import type { PluginExecutionRequest } from "../src/lib/plugin-contract";
 import { prepareItemJobResume } from "./plugin-item-resume";
 
@@ -35,6 +40,8 @@ export type PersistentPluginJob = {
     currentIndex: number;
     reconciliationNote: string;
   }>;
+  /** Define se uma nova tentativa editorial reaproveita o prefixo concluído ou recomeça o lote. */
+  retryScope?: BlockItemRetryScope;
   profileFallback?: {
     configurationKey: string;
     candidates: string[];
@@ -45,9 +52,13 @@ export type PersistentPluginJob = {
     inputPort: string;
     outputPort: string;
     combinedOutputPort?: string;
+    separator?: string;
     items: RuntimeValue[];
     itemIds: string[];
+    /** Modelo operacional persistente. Campos legados acima permanecem para compatibilidade. */
+    workItems?: BlockExecutionItem[];
     currentIndex: number;
+    accumulatedItems?: RuntimeValue[];
   };
   createdAt: string;
   updatedAt: string;
@@ -217,6 +228,29 @@ export class PluginJobStore {
     return persist.immediate();
   }
 
+  /** Persists an incremental snapshot without releasing the active worker lease. */
+  updateClaimed(claim: ClaimedPluginJob, job: PersistentPluginJob) {
+    const updatedAt = new Date().toISOString();
+    const current = this.database
+      .prepare("SELECT status FROM plugin_jobs WHERE id = ? AND lease_token = ?")
+      .get(job.id, claim.leaseToken) as { status: PluginJobStatus } | undefined;
+    if (!current) throw new Error("O lease do job expirou antes da entrega parcial.");
+    const saved: PersistentPluginJob = {
+      ...job,
+      status: current.status,
+      cancelRequested: current.status === "cancel_requested" || job.cancelRequested,
+      updatedAt,
+    };
+    const result = this.database
+      .prepare(
+        `UPDATE plugin_jobs SET payload = ?, updated_at = ?
+         WHERE id = ? AND lease_token = ?`,
+      )
+      .run(JSON.stringify(saved), updatedAt, saved.id, claim.leaseToken);
+    if (!result.changes) throw new Error("O lease do job expirou antes da entrega parcial.");
+    return saved;
+  }
+
   requestCancellation(executionId: string, now = new Date()) {
     const jobs = this.listForExecution(executionId).filter((job) =>
       ["starting", "pending", "cancel_requested"].includes(job.status),
@@ -323,6 +357,7 @@ export function createPersistentPluginJob(input: {
   timeoutMs: number;
   profileFallback?: PersistentPluginJob["profileFallback"];
   itemOrchestration?: PersistentPluginJob["itemOrchestration"];
+  retryScope?: BlockItemRetryScope;
   now?: Date;
 }): PersistentPluginJob {
   const now = input.now ?? new Date();
@@ -344,6 +379,7 @@ export function createPersistentPluginJob(input: {
     partialArtifacts: [],
     cancelRequested: false,
     retryCount: 0,
+    retryScope: input.retryScope,
     profileFallback: structuredClone(input.profileFallback),
     itemOrchestration: structuredClone(input.itemOrchestration),
     createdAt: timestamp,

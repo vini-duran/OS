@@ -24,6 +24,9 @@ export const PROCESS_ORDER = [
 export type UniversalProcess = (typeof PROCESS_ORDER)[number];
 export type ProcessId = UniversalProcess;
 
+export const BLOCK_OPERATORS = ["IA", "Humano", "Código"] as const;
+export const BLOCK_TYPES = ["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"] as const;
+
 export type ProcessState =
   | "not_started"
   | "configuring"
@@ -35,8 +38,8 @@ export type ProcessState =
   | "error"
   | "blocked";
 
-export type BlockOperator = "IA" | "Humano" | "Código";
-export type BlockType = "BUSCAR" | "ESCOLHER" | "CRIAR" | "VALIDAR";
+export type BlockOperator = (typeof BLOCK_OPERATORS)[number];
+export type BlockType = (typeof BLOCK_TYPES)[number];
 export type BlockParameterType = "text" | "number" | "select" | "boolean" | "textarea";
 
 export type HumanFieldType =
@@ -250,6 +253,9 @@ export type ChannelResearchBrief = {
 
 export type Channel = {
   id: string;
+  /** Absent in legacy channels; read through effectiveProcessOrder. */
+  processOrder?: UniversalProcess[];
+  definitionRevision?: number;
   youtubeChannelId?: string;
   name: string;
   handle: string;
@@ -276,6 +282,13 @@ export type Channel = {
 export type Project = {
   runThrough?: ProcessId;
   runFrom?: ProcessId;
+  /** Captured once at the first execution; absent on projects started before sequence snapshots. */
+  strategySnapshot?: {
+    processOrder: UniversalProcess[];
+    methods: Record<UniversalProcess, ProcessMethod>;
+    definitionRevision: number;
+    capturedAt: string;
+  };
   id: string;
   title: string;
   channelId: string;
@@ -311,6 +324,8 @@ export type DeliveryItemReference = {
 export type DeliveryItem = {
   /** Identidade universal gerada pelo núcleo para este item da entrega. */
   id: string;
+  /** Item operacional que originou esta posição, quando houver execução item a item. */
+  sourceExecutionItemId?: string;
   order: number;
   value: RuntimeValue | StructuredRecord;
   externalKey?: string;
@@ -373,6 +388,55 @@ export type BlockExecutionStatus =
   | "failed"
   | "cancelled";
 
+export type BlockItemRetryScope = "remaining" | "all" | "selected";
+
+export type BlockItemProgress = {
+  /** Quantidade total de itens recebidos pela entrada orquestrada. */
+  total: number;
+  /** Prefixo sequencial já concluído e persistido pelo núcleo. */
+  completed: number;
+  /** Quantidade ainda não concluída, incluindo o item atual quando houver. */
+  pending: number;
+  /** Índice zero-based atualmente em execução ou que falhou. */
+  currentIndex?: number;
+  /** Índice zero-based do item que encerrou a tentativa com falha. */
+  failedIndex?: number;
+};
+
+export type BlockExecutionItemStatus =
+  "pending" | "in_progress" | "completed" | "failed" | "cancelled";
+
+export type BlockExecutionItemValue = RuntimeValue | StructuredRecord;
+
+export type BlockExecutionItemAttempt = {
+  attempt: number;
+  status: BlockExecutionItemStatus;
+  input: BlockExecutionItemValue;
+  output?: BlockExecutionItemValue;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
+/**
+ * Unidade operacional persistente de uma execução item a item.
+ *
+ * O significado editorial do item permanece externo ao núcleo. O ID pertence
+ * ao ContentFlow e sobrevive a retomadas da mesma coleção, enquanto
+ * `sourceItemId` preserva a linhagem com a entrega que originou a entrada.
+ */
+export type BlockExecutionItem = {
+  id: string;
+  sourceItemId?: string;
+  order: number;
+  input: BlockExecutionItemValue;
+  status: BlockExecutionItemStatus;
+  attempt: number;
+  output?: BlockExecutionItemValue;
+  error?: string;
+  attempts: BlockExecutionItemAttempt[];
+};
+
 export type BlockExecution = {
   blockId: string;
   status: BlockExecutionStatus;
@@ -385,6 +449,14 @@ export type BlockExecution = {
   traceId?: string;
   progress?: number;
   progressMessage?: string;
+  /** Resumo compacto do validador universal de uma entrada executada item a item. */
+  itemProgress?: BlockItemProgress;
+  /** Itens operacionais persistentes quando o bloco executa uma coleção. */
+  items?: BlockExecutionItem[];
+  /** Política escolhida pelo usuário para a próxima tentativa manual do lote. */
+  itemRetryScope?: BlockItemRetryScope;
+  /** Item específico solicitado quando a próxima tentativa é isolada. */
+  itemRetryId?: string;
   startedAt?: string;
   completedAt?: string;
   /** Referência opaca devolvida pelo plugin para continuidade entre blocos. */

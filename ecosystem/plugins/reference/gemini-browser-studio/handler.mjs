@@ -1102,6 +1102,7 @@ async function textTurn(c, s, bridge, promptText, settings, signal, operationKey
     if (detectedError) throw detectedError;
     const notice = providerError(st.notices);
     if (notice) throw err(notice.code, notice.message, false);
+    if (phase === "completed") return { text, links: [] };
     await waitForDomMutation(c, s, calculateJitteredDelay(1_000), signal);
   }
   throw err("TIMEOUT", "Gemini não concluiu resposta.", true);
@@ -1388,6 +1389,14 @@ export async function execute(request, services) {
         }
       }
       if (last) throw last;
+      if (id === "generate-text-in-browser") {
+        const partialText = clean(responses.map((response) => response.text).join("\n\n"));
+        await services.publishPartial?.({
+          values: { result: partialText, parts: responses.map((response) => response.text) },
+          progress: (i + 1) / parts.length,
+          message: `Resposta ${i + 1} de ${parts.length} capturada.`,
+        });
+      }
       if (i < parts.length - 1) await dynamicSleep(TIMING.SHORT, services.signal);
     }
     const combined = responses.map((x) => x.text).join("\n\n");
@@ -1395,6 +1404,12 @@ export async function execute(request, services) {
     if (media) {
       const captured = await captureMedia(client, sessionId, services, request, media);
       lifecycle.succeeded = true;
+      await services.publishPartial?.({
+        values: { [media === "image" ? "image" : "audio"]: captured.file, description: combined },
+        artifacts: [captured.artifact],
+        progress: 1,
+        message: media === "image" ? "Imagem capturada." : "Áudio capturado.",
+      });
       return {
         status: "success",
         values: { [media === "image" ? "image" : "audio"]: captured.file, description: combined },

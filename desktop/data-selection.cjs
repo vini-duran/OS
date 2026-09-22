@@ -129,9 +129,7 @@ function validateDestinationPair(rawDataDir, rawUserData) {
       );
     }
     if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) {
-      throw new Error(
-        `CONTENTFLOW_DESTINATION_INVALID: ${candidate} existe e não é um diretório.`,
-      );
+      throw new Error(`CONTENTFLOW_DESTINATION_INVALID: ${candidate} existe e não é um diretório.`);
     }
   }
 
@@ -391,9 +389,7 @@ function resolveDataLocation(options = {}) {
   const hasUserData = typeof envUserData === "string" && envUserData.trim() !== "";
   if (hasDataDir || hasUserData) {
     const rawUserData = hasUserData ? envUserData : path.dirname(path.resolve(envDataDir));
-    const rawDataDir = hasDataDir
-      ? envDataDir
-      : path.join(path.resolve(envUserData), "data");
+    const rawDataDir = hasDataDir ? envDataDir : path.join(path.resolve(envUserData), "data");
     const validated = validateDestinationPair(rawDataDir, rawUserData);
     enforceBundleBoundary(appRoot, [validated.dataDir, validated.userData]);
     return {
@@ -523,7 +519,8 @@ function resolveDataLocation(options = {}) {
   // caminhos padrão são determinísticos (reabertura devolve o mesmo lugar).
   // Persistir aqui criaria o estado ambíguo "config existe, banco não",
   // indistinguível de um banco removido/desconectado — que deve bloquear.
-  const defaultCandidate = candidates.find((candidate) => candidate.id === "contentflow") || candidates[0];
+  const defaultCandidate =
+    candidates.find((candidate) => candidate.id === "contentflow") || candidates[0];
   const validated = validateDestinationPair(defaultCandidate.dataDir, defaultCandidate.userData);
   enforceBundleBoundary(appRoot, [validated.dataDir, validated.userData]);
   return {

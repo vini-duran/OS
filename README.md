@@ -49,7 +49,7 @@ autor não substitui essa decisão. Projetos, plugins e credenciais existentes
 devem ser preservados e conferidos antes/depois. Uma instalação vazia começa
 sem plugins: eles são pacotes separados, sujeitos a consentimento.
 
-O [guia Windows herdado](docs/DESKTOP_V0.md) documenta o produto upstream;
+O [registro de atualização do fork para 1.1.0](docs/FORK_UPDATE_V1_1.md) documenta a validação local e a transferência segura. O [guia Windows herdado](docs/DESKTOP.md) documenta o produto upstream;
 não representa homologação do nosso fork nessa plataforma.
 
 ## Estrutura do repositório

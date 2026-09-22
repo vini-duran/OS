@@ -63,6 +63,11 @@ export type JsonSchema = {
   oneOf?: JsonSchema[];
   not?: JsonSchema;
   additionalProperties?: boolean | JsonSchema;
+  /** Declarative UI hint: only renders a field when another configuration value matches. */
+  visibleWhen?: {
+    property: string;
+    values: Array<string | number | boolean>;
+  };
 };
 
 export type PluginDataType = HumanFieldType;
@@ -97,9 +102,10 @@ export type PluginExecutionPolicy = {
   itemOrchestration?: {
     inputPort: string;
     outputPort: string;
-    /** Optional text output that receives the ordered items joined with blank lines. */
-    combinedOutputPort?: string;
     mode: "sequential";
+    /** Optional text output rebuilt from the accumulated list after each item. */
+    combinedOutputPort?: string;
+    separator?: string;
   };
 };
 
@@ -138,6 +144,10 @@ export type PluginFieldContract = Pick<
 
 export type PluginCapability = {
   id: string;
+  /** Friendly, user-facing capability name. The stable `id` remains internal to the contract. */
+  name?: string;
+  /** Short user-facing explanation of what this capability accomplishes. */
+  description?: string;
   operator: PluginOperator;
   /** Optional in API v1 for backwards compatibility; omitted means `optional`. */
   instructionUsage?: PluginInstructionUsage;
@@ -281,6 +291,11 @@ export type PluginExecutionRequest = {
   /** Metadados paralelos aos valores, sem quebrar plugins v1 que leem apenas `inputs`. */
   inputDeliveries?: PluginInputDelivery[];
   outputContract: PluginFieldContract[];
+  /** Core-owned durable partial outputs available to a later retry of the same block. */
+  resume?: {
+    values: Record<string, RuntimeValue>;
+    artifacts: StoredFile[];
+  };
   validation?: BlockValidationConfig;
   retryFeedback?: Record<string, RuntimeValue>;
   /** Core-resolved block instruction. Updated plugins should prefer this over the raw template. */
@@ -358,12 +373,23 @@ export type PluginExecutionResponse =
       recoverySnapshot?: PluginExternalRecoverySnapshot;
     };
 
+/** Incremental snapshot emitted while an immediate plugin invocation is still running. */
+export type PluginPartialUpdate = {
+  values: Record<string, RuntimeValue>;
+  artifacts?: PluginArtifact[];
+  progress?: number;
+  message?: string;
+  logs?: string[];
+};
+
 export type PluginExecutionServices = {
   signal: AbortSignal;
   getSecret: (key: string) => Promise<string | undefined>;
   resolveInputFile: (file: StoredFile) => Promise<string>;
   getOutputPath: (relativePath: string) => string;
   getWorkspacePath: (relativePath: string) => string;
+  /** Makes completed intermediate work durable before execute() returns. */
+  publishPartial: (update: PluginPartialUpdate) => Promise<void>;
 };
 
 export type PluginEntrypoint = {
@@ -382,9 +408,11 @@ export function validateExternalRecoverySnapshot(
   if (typeof raw.system !== "string" || !raw.system.trim()) return undefined;
   if (typeof raw.runId !== "string" || !raw.runId.trim()) return undefined;
   if (typeof raw.targetId !== "string" || !raw.targetId.trim()) return undefined;
-  if (typeof raw.cycle !== "number" || !Number.isInteger(raw.cycle) || raw.cycle < 0) return undefined;
+  if (typeof raw.cycle !== "number" || !Number.isInteger(raw.cycle) || raw.cycle < 0)
+    return undefined;
   if (typeof raw.snapshotRevision !== "string" || !raw.snapshotRevision.trim()) return undefined;
-  if (typeof raw.recordedAt !== "string" || Number.isNaN(Date.parse(raw.recordedAt))) return undefined;
+  if (typeof raw.recordedAt !== "string" || Number.isNaN(Date.parse(raw.recordedAt)))
+    return undefined;
   const metadata =
     raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
       ? (raw.metadata as Record<string, unknown>)

@@ -224,7 +224,9 @@ export class CoreKeyStore {
       target: params.target,
     });
 
-    const signature = sign(null, Buffer.from(canonical, "utf8"), this.privateKey).toString("base64");
+    const signature = sign(null, Buffer.from(canonical, "utf8"), this.privateKey).toString(
+      "base64",
+    );
 
     return {
       version: "1",

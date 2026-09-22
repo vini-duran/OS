@@ -52,6 +52,7 @@ for (const provider of ["gemini-browser-studio", "claude-browser-text"]) {
         sends++;
       },
       clamp: () => 30,
+      calculateJitteredDelay: (value: number) => value,
       waitForDomMutation: async () => {
         clock += 1000;
       },
@@ -61,8 +62,19 @@ for (const provider of ["gemini-browser-studio", "claude-browser-text"]) {
       codedError: (code: string, message: string, retryable: boolean) =>
         Object.assign(new Error(message), { code, retryable }),
     });
+    const classifyGeminiError = gemini
+      ? source.slice(
+          source.indexOf("function classifyGeminiError("),
+          source.indexOf(
+            "\nasync function waitForDomMutation(",
+            source.indexOf("function classifyGeminiError("),
+          ),
+        )
+      : "";
     const fn = vm.runInContext(
-      extract(source, gemini ? "textTurn" : "waitForResponse") +
+      classifyGeminiError +
+        "\n" +
+        extract(source, gemini ? "textTurn" : "waitForResponse") +
         `; ${gemini ? "textTurn" : "waitForResponse"}`,
       context,
     );

@@ -46,6 +46,7 @@ import {
 import {
   arrayMove,
   SortableContext,
+  rectSortingStrategy,
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
@@ -82,6 +83,7 @@ import {
 } from "@/lib/app-preferences";
 import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
 import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
+import { pluginCapabilityDescription, pluginCapabilityLabel } from "@/lib/plugin-capability-label";
 import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
 import { cn } from "@/lib/utils";
 
@@ -210,7 +212,11 @@ function PluginsPage() {
   const [showHidden, setShowHidden] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
 
-  const { pluginOrganization } = useAppPreferences();
+  const { pluginOrganization, setPluginOrganization } = useAppPreferences();
+  const panelSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -300,6 +306,36 @@ function PluginsPage() {
     processFilter !== "all" ||
     sectionFilter !== "all" ||
     showHidden;
+
+  const canReorderFromPanel =
+    !normalizedSearch &&
+    deliveryFilter === "all" &&
+    blockFilter === "all" &&
+    processFilter === "all" &&
+    !showHidden &&
+    sectionFilter !== "favorites";
+
+  const reorderPanelSection = useCallback(
+    (section: PluginSection, plugins: DiscoveredPlugin[], event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = plugins.findIndex((plugin) => `panel-${plugin.id}` === active.id);
+      const newIndex = plugins.findIndex((plugin) => `panel-${plugin.id}` === over.id);
+      if (oldIndex < 0 || newIndex < 0) return;
+      setPluginOrganization((current) => ({
+        ...current,
+        sectionOrder: {
+          ...current.sectionOrder,
+          [section]: arrayMove(
+            plugins.map((plugin) => plugin.id),
+            oldIndex,
+            newIndex,
+          ),
+        },
+      }));
+    },
+    [setPluginOrganization],
+  );
 
   const hasAnyPlugins =
     sectionFilter === "favorites"
@@ -422,7 +458,8 @@ function PluginsPage() {
                     : `${organized.hiddenWithDependenciesCount} plugins em uso por Métodos estão ocultos da biblioteca.`}
                 </span>{" "}
                 <span className="text-muted-foreground">
-                  Eles continuam executando normalmente nos seus canais. Ocultar afeta apenas a biblioteca.
+                  Eles continuam executando normalmente nos seus canais. Ocultar afeta apenas a
+                  biblioteca.
                 </span>
               </div>
             </div>
@@ -449,11 +486,18 @@ function PluginsPage() {
                 onClick={() => setShowHidden((prev) => !prev)}
               >
                 {showHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                {showHidden ? "Ocultar plugins ocultos" : `Mostrar ocultos (${organized.hiddenCount})`}
+                {showHidden
+                  ? "Ocultar plugins ocultos"
+                  : `Mostrar ocultos (${organized.hiddenCount})`}
               </Button>
             )}
             {filtersActive && (
-              <Button size="sm" variant="ghost" className="ml-auto h-7 text-xs" onClick={clearFilters}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto h-7 text-xs"
+                onClick={clearFilters}
+              >
                 Limpar filtros
               </Button>
             )}
@@ -548,6 +592,13 @@ function PluginsPage() {
           </div>
         ) : hasAnyPlugins ? (
           <div className="space-y-6 mt-4">
+            {canReorderFromPanel && (
+              <p className="rounded-lg border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-muted-foreground">
+                Arraste o ícone{" "}
+                <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" /> no canto
+                inferior direito de um card para reorganizar a seção atual.
+              </p>
+            )}
             {/* 1. Favoritos no topo (quando visualizando todas as seções) */}
             {sectionFilter === "all" && organized.favorites.length > 0 && (
               <section key="favorites-top">
@@ -609,44 +660,41 @@ function PluginsPage() {
                         {sectionPlugins.length}
                       </Badge>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                      {sectionPlugins.map((plugin) => (
-                        <PluginCard
-                          key={`${plugin.source}-${plugin.id}`}
-                          plugin={plugin}
-                          update={updates[plugin.id]}
-                          onChanged={refreshPluginsAndUpdates}
-                        />
-                      ))}
-                    </div>
+                    <SortablePluginGrid
+                      section={sectionKey}
+                      plugins={sectionPlugins}
+                      updates={updates}
+                      onChanged={refreshPluginsAndUpdates}
+                      sensors={panelSensors}
+                      enabled={canReorderFromPanel}
+                      onDragEnd={reorderPanelSection}
+                    />
                   </section>
                 );
               })}
 
             {/* 4. Visualização de seção específica */}
-            {sectionFilter !== "all" &&
-              sectionFilter !== "favorites" && (
-                <section key={sectionFilter}>
-                  <div className="mb-3 flex items-center gap-2">
-                    <h2 className="text-sm font-semibold">
-                      {PLUGIN_SECTION_META[sectionFilter].label}
-                    </h2>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {organized.sections[sectionFilter]?.length ?? 0}
-                    </Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                    {(organized.sections[sectionFilter] ?? []).map((plugin) => (
-                      <PluginCard
-                        key={`${plugin.source}-${plugin.id}`}
-                        plugin={plugin}
-                        update={updates[plugin.id]}
-                        onChanged={refreshPluginsAndUpdates}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
+            {sectionFilter !== "all" && sectionFilter !== "favorites" && (
+              <section key={sectionFilter}>
+                <div className="mb-3 flex items-center gap-2">
+                  <h2 className="text-sm font-semibold">
+                    {PLUGIN_SECTION_META[sectionFilter].label}
+                  </h2>
+                  <Badge variant="secondary" className="text-[10px]">
+                    {organized.sections[sectionFilter]?.length ?? 0}
+                  </Badge>
+                </div>
+                <SortablePluginGrid
+                  section={sectionFilter}
+                  plugins={organized.sections[sectionFilter] ?? []}
+                  updates={updates}
+                  onChanged={refreshPluginsAndUpdates}
+                  sensors={panelSensors}
+                  enabled={canReorderFromPanel}
+                  onDragEnd={reorderPanelSection}
+                />
+              </section>
+            )}
           </div>
         ) : (
           <section className="mt-5 grid min-h-72 place-items-center rounded-xl border border-dashed border-border bg-card/25 p-8 text-center">
@@ -891,8 +939,18 @@ function PluginCard({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <button
-          type="button"
+        <div
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              (event.key === "Enter" || event.key === " ")
+            ) {
+              event.preventDefault();
+              event.currentTarget.click();
+            }
+          }}
           aria-label={`Abrir detalhes de ${manifest.name}`}
           className={`group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 ${
             isHidden ? "opacity-60 hover:opacity-100" : ""
@@ -911,9 +969,7 @@ function PluginCard({
           >
             <Star
               className={`size-4 ${
-                isFavorite
-                  ? "fill-amber-400 text-amber-400"
-                  : "opacity-40 hover:opacity-100"
+                isFavorite ? "fill-amber-400 text-amber-400" : "opacity-40 hover:opacity-100"
               }`}
             />
           </button>
@@ -973,7 +1029,7 @@ function PluginCard({
               </span>
             )}
           </div>
-        </button>
+        </div>
       </DialogTrigger>
 
       <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
@@ -1028,7 +1084,7 @@ function PluginCard({
         </div>
 
         <section>
-          <h3 className="text-xs font-semibold">Entregas e capacidades</h3>
+          <h3 className="text-xs font-semibold">O que este plugin faz</h3>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {types.map((type) => {
               const meta = DELIVERY_META[type];
@@ -1043,35 +1099,67 @@ function PluginCard({
               );
             })}
           </div>
-          <div className="mt-3 divide-y divide-border rounded-xl border border-border px-3">
-            {manifest.capabilities.map((capability) => (
-              <div key={capability.id} className="py-3">
-                <div className="flex flex-wrap items-center gap-1.5">
+          <div className="mt-3 space-y-2">
+            {manifest.capabilities.slice(0, 3).map((capability) => (
+              <div
+                key={capability.id}
+                className="rounded-lg border border-border/70 bg-card/50 px-3 py-2.5"
+              >
+                <div className="flex items-center gap-2">
                   {capability.operator === "IA" ? (
                     <Bot className="size-3.5 text-brand-soft" />
                   ) : (
                     <Code2 className="size-3.5 text-brand-soft" />
                   )}
-                  <span className="text-xs font-medium">{capability.id}</span>
-                  <Badge variant="outline" className="ml-auto text-[9px]">
-                    {capability.operator}
-                  </Badge>
+                  <span className="text-xs font-medium">{pluginCapabilityLabel(capability)}</span>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {capability.blockTypes.map((block) => (
-                    <Badge key={block} variant="secondary" className="text-[9px]">
-                      {BLOCK_LABEL[block]}
-                    </Badge>
-                  ))}
-                  {(capability.processTypes ?? []).map((process) => (
-                    <Badge key={process} variant="outline" className="text-[9px]">
-                      {PROCESS_META[process as UniversalProcess].label}
-                    </Badge>
-                  ))}
-                </div>
+                {pluginCapabilityDescription(capability) && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {pluginCapabilityDescription(capability)}
+                  </p>
+                )}
               </div>
             ))}
+            {manifest.capabilities.length > 3 && (
+              <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+                <span>+ {manifest.capabilities.length - 3}</span>
+                <span>Recursos disponíveis</span>
+              </p>
+            )}
           </div>
+          <details className="mt-3 rounded-lg border border-border/70 bg-card/40 px-3">
+            <summary className="flex cursor-pointer items-center gap-1 py-2.5 text-[11px] font-medium text-muted-foreground">
+              <span>Detalhes técnicos</span>
+              <span>({manifest.capabilities.length})</span>
+            </summary>
+            <div className="divide-y divide-border">
+              {manifest.capabilities.map((capability) => (
+                <div key={capability.id} className="py-2.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs font-medium">{pluginCapabilityLabel(capability)}</span>
+                    <Badge variant="outline" className="ml-auto text-[9px]">
+                      {capability.operator}
+                    </Badge>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {capability.blockTypes.map((block) => (
+                      <Badge key={block} variant="secondary" className="text-[9px]">
+                        {BLOCK_LABEL[block]}
+                      </Badge>
+                    ))}
+                    {(capability.processTypes ?? []).map((process) => (
+                      <Badge key={process} variant="outline" className="text-[9px]">
+                        {PROCESS_META[process as UniversalProcess].label}
+                      </Badge>
+                    ))}
+                  </div>
+                  <code className="mt-2 block text-[10px] text-muted-foreground">
+                    {capability.id}
+                  </code>
+                </div>
+              ))}
+            </div>
+          </details>
         </section>
 
         <section className="rounded-xl border border-border bg-muted/15 p-3">
@@ -1209,6 +1297,103 @@ function PluginCard({
         </footer>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SortablePluginCard({
+  plugin,
+  update,
+  onChanged,
+}: {
+  plugin: DiscoveredPlugin;
+  update?: PluginUpdate;
+  onChanged: () => Promise<void>;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: `panel-${plugin.id}` });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn("relative", isDragging && "z-10 opacity-75")}
+    >
+      <PluginCard plugin={plugin} update={update} onChanged={onChanged} />
+      <button
+        ref={setActivatorNodeRef}
+        type="button"
+        className="absolute bottom-3 right-3 z-20 touch-none rounded-md border border-border/80 bg-background/85 p-1.5 text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+        aria-label={`Arrastar ${plugin.manifest.name} para reorganizar`}
+        title="Segure e arraste para reorganizar"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="size-4" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function SortablePluginGrid({
+  section,
+  plugins,
+  updates,
+  onChanged,
+  sensors,
+  enabled,
+  onDragEnd,
+}: {
+  section: PluginSection;
+  plugins: DiscoveredPlugin[];
+  updates: Record<string, PluginUpdate>;
+  onChanged: () => Promise<void>;
+  sensors: ReturnType<typeof useSensors>;
+  enabled: boolean;
+  onDragEnd: (section: PluginSection, plugins: DiscoveredPlugin[], event: DragEndEvent) => void;
+}) {
+  const grid = (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+      {plugins.map((plugin) =>
+        enabled ? (
+          <SortablePluginCard
+            key={`${plugin.source}-${plugin.id}`}
+            plugin={plugin}
+            update={updates[plugin.id]}
+            onChanged={onChanged}
+          />
+        ) : (
+          <PluginCard
+            key={`${plugin.source}-${plugin.id}`}
+            plugin={plugin}
+            update={updates[plugin.id]}
+            onChanged={onChanged}
+          />
+        ),
+      )}
+    </div>
+  );
+
+  if (!enabled) return grid;
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={(event) => onDragEnd(section, plugins, event)}
+    >
+      <SortableContext
+        items={plugins.map((plugin) => `panel-${plugin.id}`)}
+        strategy={rectSortingStrategy}
+      >
+        {grid}
+      </SortableContext>
+    </DndContext>
   );
 }
 
@@ -2250,8 +2435,8 @@ function PluginLibraryManagementDialog({
         </DialogHeader>
 
         <p className="rounded-lg border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-muted-foreground">
-          Arraste pelo ícone <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" /> para
-          reorganizar a ordem dentro da seção. Os botões de seta continuam disponíveis.
+          Arraste pelo ícone <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" />{" "}
+          para reorganizar a ordem dentro da seção. Os botões de seta continuam disponíveis.
         </p>
 
         <div className="space-y-6 pt-2">
@@ -2298,139 +2483,140 @@ function PluginLibraryManagementDialog({
                       items={sectionPlugins.map((plugin) => plugin.id)}
                       strategy={verticalListSortingStrategy}
                     >
-                    <div className="divide-y divide-border/60">
-                    {sectionPlugins.map((plugin, index) => {
-                      const pref = pluginOrganization.items[plugin.id] ?? {
-                        section: "none",
-                        favorite: false,
-                        hidden: false,
-                      };
-                      const isFirst = index === 0;
-                      const isLast = index === sectionPlugins.length - 1;
+                      <div className="divide-y divide-border/60">
+                        {sectionPlugins.map((plugin, index) => {
+                          const pref = pluginOrganization.items[plugin.id] ?? {
+                            section: "none",
+                            favorite: false,
+                            hidden: false,
+                          };
+                          const isFirst = index === 0;
+                          const isLast = index === sectionPlugins.length - 1;
 
-                      return (
-                        <SortablePluginRow
-                          key={plugin.id}
-                          id={plugin.id}
-                        >
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <button
-                              type="button"
-                              aria-label={
-                                pref.favorite
-                                  ? "Remover dos favoritos"
-                                  : "Adicionar aos favoritos"
-                              }
-                              title={
-                                pref.favorite
-                                  ? "Remover dos favoritos"
-                                  : "Adicionar aos favoritos"
-                              }
-                              className="p-1 text-muted-foreground hover:text-amber-400 transition shrink-0"
-                              onClick={() => togglePluginFavorite(plugin.id)}
-                            >
-                              <Star
-                                className={`size-4 ${
-                                  pref.favorite
-                                    ? "fill-amber-400 text-amber-400"
-                                    : "opacity-40 hover:opacity-100"
-                                }`}
-                              />
-                            </button>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <span className="text-xs font-semibold truncate">
-                                  {plugin.manifest.name}
-                                </span>
-                                <Badge variant="outline" className="text-[9px]">
-                                  v{plugin.manifest.version}
-                                </Badge>
-                                {pref.hidden && (
-                                  <Badge variant="secondary" className="text-[9px] gap-1">
-                                    <EyeOff className="size-2.5" /> Oculto
-                                  </Badge>
-                                )}
-                                {(plugin.methodDependencyCount ?? 0) > 0 && (
-                                  <Badge
-                                    variant="outline"
-                                    className="text-[9px] text-brand-soft border-brand/40"
-                                  >
-                                    Em uso por {plugin.methodDependencyCount} bloco(s)
-                                  </Badge>
-                                )}
+                          return (
+                            <SortablePluginRow key={plugin.id} id={plugin.id}>
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <button
+                                  type="button"
+                                  aria-label={
+                                    pref.favorite
+                                      ? "Remover dos favoritos"
+                                      : "Adicionar aos favoritos"
+                                  }
+                                  title={
+                                    pref.favorite
+                                      ? "Remover dos favoritos"
+                                      : "Adicionar aos favoritos"
+                                  }
+                                  className="p-1 text-muted-foreground hover:text-amber-400 transition shrink-0"
+                                  onClick={() => togglePluginFavorite(plugin.id)}
+                                >
+                                  <Star
+                                    className={`size-4 ${
+                                      pref.favorite
+                                        ? "fill-amber-400 text-amber-400"
+                                        : "opacity-40 hover:opacity-100"
+                                    }`}
+                                  />
+                                </button>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="text-xs font-semibold truncate">
+                                      {plugin.manifest.name}
+                                    </span>
+                                    <Badge variant="outline" className="text-[9px]">
+                                      v{plugin.manifest.version}
+                                    </Badge>
+                                    {pref.hidden && (
+                                      <Badge variant="secondary" className="text-[9px] gap-1">
+                                        <EyeOff className="size-2.5" /> Oculto
+                                      </Badge>
+                                    )}
+                                    {(plugin.methodDependencyCount ?? 0) > 0 && (
+                                      <Badge
+                                        variant="outline"
+                                        className="text-[9px] text-brand-soft border-brand/40"
+                                      >
+                                        Em uso por {plugin.methodDependencyCount} bloco(s)
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                    {plugin.manifest.author} · {plugin.id}
+                                  </p>
+                                </div>
                               </div>
-                              <p className="text-[10px] text-muted-foreground truncate mt-0.5">
-                                {plugin.manifest.author} · {plugin.id}
-                              </p>
-                            </div>
-                          </div>
 
-                          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                            {/* Reorder buttons */}
-                            <div className="flex items-center rounded border border-border">
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="size-7 rounded-none"
-                                disabled={isFirst}
-                                title="Mover para cima"
-                                aria-label="Mover para cima"
-                                onClick={() => movePluginInSection(plugin.id, "up")}
-                              >
-                                <ArrowUp className="size-3.5" />
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="size-7 rounded-none border-l border-border"
-                                disabled={isLast}
-                                title="Mover para baixo"
-                                aria-label="Mover para baixo"
-                                onClick={() => movePluginInSection(plugin.id, "down")}
-                              >
-                                <ArrowDown className="size-3.5" />
-                              </Button>
-                            </div>
+                              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                {/* Reorder buttons */}
+                                <div className="flex items-center rounded border border-border">
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 rounded-none"
+                                    disabled={isFirst}
+                                    title="Mover para cima"
+                                    aria-label="Mover para cima"
+                                    onClick={() => movePluginInSection(plugin.id, "up")}
+                                  >
+                                    <ArrowUp className="size-3.5" />
+                                  </Button>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="size-7 rounded-none border-l border-border"
+                                    disabled={isLast}
+                                    title="Mover para baixo"
+                                    aria-label="Mover para baixo"
+                                    onClick={() => movePluginInSection(plugin.id, "down")}
+                                  >
+                                    <ArrowDown className="size-3.5" />
+                                  </Button>
+                                </div>
 
-                            {/* Section selector */}
-                            <Select
-                              value={pref.section}
-                              onValueChange={(val) =>
-                                setPluginSection(plugin.id, val as PluginSection)
-                              }
-                            >
-                              <SelectTrigger className="h-7 w-32 text-xs">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {PLUGIN_SECTIONS.map((s) => (
-                                  <SelectItem key={s} value={s} className="text-xs">
-                                    {PLUGIN_SECTION_META[s].label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                                {/* Section selector */}
+                                <Select
+                                  value={pref.section}
+                                  onValueChange={(val) =>
+                                    setPluginSection(plugin.id, val as PluginSection)
+                                  }
+                                >
+                                  <SelectTrigger className="h-7 w-32 text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {PLUGIN_SECTIONS.map((s) => (
+                                      <SelectItem key={s} value={s} className="text-xs">
+                                        {PLUGIN_SECTION_META[s].label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
 
-                            {/* Hide / Show toggle */}
-                            <Button
-                              size="sm"
-                              variant={pref.hidden ? "secondary" : "ghost"}
-                              className="h-7 text-xs gap-1"
-                              title={
-                                pref.hidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"
-                              }
-                              onClick={() => setPluginHidden(plugin.id, !pref.hidden)}
-                            >
-                              {pref.hidden ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
-                              <span className="hidden md:inline">
-                                {pref.hidden ? "Exibir" : "Ocultar"}
-                              </span>
-                            </Button>
-                          </div>
-                        </SortablePluginRow>
-                      );
-                    })}
-                  </div>
+                                {/* Hide / Show toggle */}
+                                <Button
+                                  size="sm"
+                                  variant={pref.hidden ? "secondary" : "ghost"}
+                                  className="h-7 text-xs gap-1"
+                                  title={
+                                    pref.hidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"
+                                  }
+                                  onClick={() => setPluginHidden(plugin.id, !pref.hidden)}
+                                >
+                                  {pref.hidden ? (
+                                    <Eye className="size-3" />
+                                  ) : (
+                                    <EyeOff className="size-3" />
+                                  )}
+                                  <span className="hidden md:inline">
+                                    {pref.hidden ? "Exibir" : "Ocultar"}
+                                  </span>
+                                </Button>
+                              </div>
+                            </SortablePluginRow>
+                          );
+                        })}
+                      </div>
                     </SortableContext>
                   </DndContext>
                 )}

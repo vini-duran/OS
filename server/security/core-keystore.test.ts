@@ -3,11 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  buildCanonicalRecoveryPayload,
-  CoreKeyStore,
-  deriveCoreKeyId,
-} from "./core-keystore";
+import { buildCanonicalRecoveryPayload, CoreKeyStore, deriveCoreKeyId } from "./core-keystore";
 import { validateExternalRecoverySnapshot } from "../../src/lib/plugin-contract";
 import type {
   PluginExternalRecoverySnapshot,
@@ -209,22 +205,13 @@ test("validateExternalRecoverySnapshot: validação estrita do contrato genéric
     validateExternalRecoverySnapshot({ ...validData, format: "wrong-format" }),
     undefined,
   );
-  assert.equal(
-    validateExternalRecoverySnapshot({ ...validData, system: "   " }),
-    undefined,
-  );
-  assert.equal(
-    validateExternalRecoverySnapshot({ ...validData, cycle: -1 }),
-    undefined,
-  );
+  assert.equal(validateExternalRecoverySnapshot({ ...validData, system: "   " }), undefined);
+  assert.equal(validateExternalRecoverySnapshot({ ...validData, cycle: -1 }), undefined);
   assert.equal(
     validateExternalRecoverySnapshot({ ...validData, recordedAt: "not-a-date" }),
     undefined,
   );
-  assert.equal(
-    validateExternalRecoverySnapshot({ ...validData, snapshotRevision: "" }),
-    undefined,
-  );
+  assert.equal(validateExternalRecoverySnapshot({ ...validData, snapshotRevision: "" }), undefined);
 });
 
 test("CoreKeyStore: metadados divergentes lançam erro explícito e NÃO sobrescrevem arquivos", () => {

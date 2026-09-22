@@ -7,6 +7,12 @@ import express, {
 import { z } from "zod";
 import { executionCommands } from "./execution-commands";
 import { createMethodPackage, readMethodPackage } from "./method-package";
+import {
+  copyImportedMethods,
+  parsePortableLibraryItems,
+  type PortableCollectionV2,
+  type PortableLibraryItemV2,
+} from "../src/lib/method-file";
 import { deriveProcessOutput } from "../src/lib/process-output";
 import {
   applyGeneratedProjectTitle,
@@ -26,12 +32,13 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
   ActionBlock,
   BlockInputBinding,
   BlockExecution,
+  BlockExecutionItemValue,
   Channel,
   ChannelResearchBrief,
   ChannelResearchRun,
@@ -43,11 +50,22 @@ import type {
   RuntimeValue,
   StoredFile,
   StrategicCollection,
+  ThumbnailLayout,
   UniversalProcess,
   PluginExternalRecoverySnapshot,
 } from "../src/lib/domain";
 import { CoreKeyStore } from "./security/core-keystore";
-import { PROCESS_META, PROCESS_ORDER } from "../src/lib/domain";
+import { createEmptyMethods, PROCESS_META, PROCESS_ORDER } from "../src/lib/domain";
+import {
+  effectiveProcessOrder,
+  isProcessOrder,
+  validateProcessDependencies,
+  captureProjectStrategy,
+  completedProcessProgress,
+  nextExecutableProcess,
+  projectProcessOrder,
+  resolveProcessOrderForMethods,
+} from "../src/lib/process-order";
 import {
   createProcessOutputFields,
   getMethodConfigurationIssue,
@@ -57,6 +75,9 @@ import {
 import {
   ACTIVE_ORCHESTRATOR_STATUSES,
   buildOrchestratorSteps,
+  executionOrchestratorIsActive,
+  expandOrchestratorSlots,
+  isAggregateOrchestratorStep,
   type ExecutionOrchestrator,
   type ExecutionOrchestratorMode,
   type ExecutionOrchestratorStatus,
@@ -67,12 +88,17 @@ import {
 } from "../src/lib/presentation";
 import {
   validateExternalRecoverySnapshot,
+  type PluginCapability,
   type PluginExecutionRequest,
   type PluginExecutionResponse,
   type PluginFieldContract,
   type PluginProfileSetup,
 } from "../src/lib/plugin-contract";
-import { resolveInstructionTemplate } from "../src/lib/instruction-template";
+import {
+  instructionCollectionKey,
+  instructionVariables,
+  resolveInstructionTemplate,
+} from "../src/lib/instruction-template";
 import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import { attemptAfterRetryInvalidation } from "../src/lib/retry-attempt";
@@ -114,11 +140,21 @@ import {
 } from "./credential-vault";
 import { canAdvanceProfileFallback, orderedProfileCandidates } from "./plugin-account-fallback";
 import {
-  appendOrchestratedOutput,
-  combineOrchestratedTextOutput,
+  blockExecutionItemsForJob,
+  completedOutputs,
+  completeCurrentOrchestratedItem,
   declaredItemOrchestration,
+  failCurrentOrchestratedItem,
   invocationRequestForJob,
+  itemProgressForJob,
+  legacyItemOrchestration,
+  nextPendingItemIndex,
   requestForNextOrchestratedItem,
+  resumedItemOrchestration,
+  resumedItemOrchestrationFromItems,
+  selectedItemOrchestration,
+  selectedItemOrchestrationFromItems,
+  startCurrentOrchestratedItem,
 } from "./plugin-item-orchestration";
 import {
   findPluginConnectionDependencies,
@@ -217,7 +253,8 @@ function builderMcpLaunch(channelId?: string) {
   const bundledEntry = path.join(applicationRoot, "desktop-dist", "mcp.mjs");
   const sourceEntry = path.join(applicationRoot, "server", "mcp.ts");
   const tsxEntry = path.join(applicationRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  const bundled = existsSync(bundledEntry);
+  const sourceAvailable = existsSync(sourceEntry) && existsSync(tsxEntry);
+  const bundled = !sourceAvailable && existsSync(bundledEntry);
   const command = process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE ?? process.execPath;
   const args = bundled
     ? [bundledEntry, "--session", builderMcpSessionPath]
@@ -274,7 +311,19 @@ mkdirSync(uploadsDirectory, { recursive: true });
 mkdirSync(installedPluginsDirectory, { recursive: true });
 mkdirSync(developmentLinksDirectory, { recursive: true });
 
-const database = new Database(databasePath);
+const sqlMetricsFile = process.env.CONTENTFLOW_SQL_METRICS_FILE;
+let sqlStatementCount = 0;
+const database = new Database(
+  databasePath,
+  sqlMetricsFile
+    ? {
+        verbose: () => {
+          sqlStatementCount += 1;
+          writeFileSync(sqlMetricsFile, String(sqlStatementCount));
+        },
+      }
+    : undefined,
+);
 database.pragma("busy_timeout = 5000");
 database.pragma("journal_mode = WAL");
 const existingDatabaseTables = new Set(
@@ -588,11 +637,13 @@ function normalizeServerPluginOrganization(raw: unknown): PluginLibraryOrganizat
     }
   }
 
-  const rawOrder = (record.sectionOrder && typeof record.sectionOrder === "object"
-    ? record.sectionOrder
-    : record.sections && typeof record.sections === "object"
-      ? record.sections
-      : {}) as Record<string, unknown>;
+  const rawOrder = (
+    record.sectionOrder && typeof record.sectionOrder === "object"
+      ? record.sectionOrder
+      : record.sections && typeof record.sections === "object"
+        ? record.sections
+        : {}
+  ) as Record<string, unknown>;
 
   for (const s of sections) {
     const list = Array.isArray(rawOrder[s]) ? rawOrder[s] : [];
@@ -699,6 +750,100 @@ function reconcileStoredProjectTitles() {
 }
 
 reconcileStoredProjectTitles();
+
+function capabilityWithDeterministicItemMapping(
+  capability: PluginCapability,
+  request: PluginExecutionRequest,
+  values: Record<string, RuntimeValue>,
+) {
+  if (capability.execution.itemOrchestration) return capability;
+  const inputCandidates = Object.entries(request.inputs).filter(
+    ([, value]) => Array.isArray(value) && value.length >= 2,
+  );
+  if (inputCandidates.length !== 1) return capability;
+  const [inputPort, inputItems] = inputCandidates[0];
+  if (!Array.isArray(inputItems)) return capability;
+  const outputCandidates = request.outputContract.filter((field) => {
+    const output = values[field.key];
+    return Array.isArray(output) && output.length > 0 && output.length <= inputItems.length;
+  });
+  if (outputCandidates.length !== 1) return capability;
+  return {
+    ...capability,
+    execution: {
+      ...capability.execution,
+      itemOrchestration: {
+        mode: "sequential" as const,
+        inputPort,
+        outputPort: outputCandidates[0].portKey,
+      },
+    },
+  } satisfies PluginCapability;
+}
+
+function reconcileStoredExecutionItems() {
+  const executionRows = database
+    .prepare("SELECT id, payload FROM process_executions")
+    .all() as Array<{ id: string; payload: string }>;
+  const jobsForBlock = database.prepare(
+    "SELECT payload FROM plugin_jobs WHERE execution_id = ? AND block_id = ? ORDER BY attempt DESC, updated_at DESC",
+  );
+  const updateExecution = database.prepare(
+    "UPDATE process_executions SET payload = ? WHERE id = ?",
+  );
+
+  database.transaction(() => {
+    for (const row of executionRows) {
+      const execution = JSON.parse(row.payload) as ProcessExecution;
+      let changed = false;
+      for (const blockExecution of execution.blocks) {
+        if (blockExecution.items?.length) continue;
+        const jobRows = jobsForBlock.all(execution.id, blockExecution.blockId) as Array<{
+          payload: string;
+        }>;
+        for (const jobRow of jobRows) {
+          const job = JSON.parse(jobRow.payload) as PersistentPluginJob;
+          const plugin = getRegisteredPlugin(job.pluginId);
+          const capability = plugin?.manifest.capabilities.find(
+            (candidate) => candidate.id === job.capabilityId,
+          );
+          if (!capability) continue;
+          const effectiveCapability = capabilityWithDeterministicItemMapping(
+            capability,
+            job.request,
+            blockExecution.values,
+          );
+          const policy = effectiveCapability.execution.itemOrchestration;
+          if (!policy) continue;
+          const inputItems = job.request.inputs[policy.inputPort];
+          if (!Array.isArray(inputItems) || inputItems.length < 2) continue;
+          const outputKey =
+            job.request.outputContract.find((field) => field.portKey === policy.outputPort)?.key ??
+            policy.outputPort;
+          const outputs = blockExecution.values[outputKey];
+          if (!Array.isArray(outputs) || outputs.length > inputItems.length) continue;
+          const migrated = legacyItemOrchestration(
+            effectiveCapability,
+            job.request,
+            structuredClone(outputs) as RuntimeValue[],
+            blockExecution.completedAt,
+          );
+          if (!migrated?.workItems?.length) continue;
+          blockExecution.items = structuredClone(migrated.workItems);
+          blockExecution.itemProgress = {
+            total: inputItems.length,
+            completed: outputs.length,
+            pending: inputItems.length - outputs.length,
+            currentIndex: outputs.length < inputItems.length ? outputs.length : undefined,
+          };
+          changed = true;
+          break;
+        }
+      }
+      if (changed) updateExecution.run(JSON.stringify(execution), execution.id);
+    }
+  })();
+}
 
 type PluginConsent = {
   version: string;
@@ -819,14 +964,14 @@ function updateProjectAfterPluginBlock(project: Project, execution: ProcessExecu
               : "processing";
   project.stages = { ...project.stages, [execution.processType]: project.state };
   if (execution.status === "completed") {
-    const completed = PROCESS_ORDER.filter(
-      (process) => project.stages[process] === "done" || project.stages[process] === "approved",
-    ).length;
-    project.progress = Math.round((completed / PROCESS_ORDER.length) * 100);
-    const next = PROCESS_ORDER.find(
-      (process) => project.stages[process] !== "done" && project.stages[process] !== "approved",
+    project.progress = completedProcessProgress(project.stages);
+    const next = nextExecutableProcess(
+      projectProcessOrder(project),
+      project.stages,
+      project.runFrom,
+      project.runThrough,
     );
-    project.currentStage = next ?? "publishing";
+    project.currentStage = next ?? execution.processType;
     project.state = next ? project.stages[next] : "done";
   }
   project.updatedAt = "Agora";
@@ -985,6 +1130,12 @@ function failAutomaticPluginStart(executionId: string, blockId: string, message:
   persistPluginExecution(execution, project);
 }
 
+function automaticPluginBlockReady(block?: ActionBlock) {
+  if (!block?.plugin) return false;
+  const plugin = getRegisteredPlugin(block.plugin.pluginId);
+  return Boolean(plugin?.executable && pluginConsentIsCurrent(plugin));
+}
+
 function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
   if (execution.status !== "blocked_executor") return;
   const blockExecution = execution.blocks.find((item) => item.status !== "completed");
@@ -994,6 +1145,7 @@ function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
   if (!blockExecution || blockExecution.status !== "blocked_executor" || !block || !block.plugin) {
     return;
   }
+  if (!automaticPluginBlockReady(block)) return;
 
   const executionId = execution.id;
   const blockId = block.id;
@@ -1113,6 +1265,58 @@ function createOrchestratedProject(channelId: string, title: string, index: numb
   };
 }
 
+function prepareExecutionOrchestration(input: {
+  channel: Channel;
+  mode: ExecutionOrchestratorMode;
+  quantity: number;
+  projectPrefix: string;
+  globalBatchId?: string;
+  globalChannelCount?: number;
+  includeChannelName?: boolean;
+}) {
+  const { channel, mode, quantity } = input;
+  const now = new Date().toISOString();
+  const projects = Array.from({ length: quantity }, (_, index) => {
+    const prefix = input.includeChannelName
+      ? `${input.projectPrefix} · ${channel.name}`
+      : input.projectPrefix;
+    return createOrchestratedProject(channel.id, `${prefix} ${index + 1}`, index);
+  });
+  const strategyVersion = 5;
+  const order = effectiveProcessOrder(channel);
+  for (const project of projects) {
+    captureProjectStrategy(project, channel, false);
+    project.currentStage = order[0];
+  }
+  const steps = buildOrchestratorSteps(
+    projects.map((project) => project.id),
+    mode,
+    strategyVersion,
+    order,
+  );
+  const orchestrator: ExecutionOrchestrator = {
+    id: randomUUID(),
+    channelId: channel.id,
+    globalBatchId: input.globalBatchId,
+    globalChannelCount: input.globalChannelCount,
+    mode,
+    strategyVersion,
+    processOrder: order,
+    plannedSteps: steps,
+    quantity,
+    projectPrefix: input.projectPrefix,
+    projectIds: projects.map((project) => project.id),
+    currentStep: 0,
+    totalSteps: expandOrchestratorSlots(steps).length,
+    status: "running",
+    message: "Preparando a primeira execução.",
+    createdAt: now,
+    updatedAt: now,
+  };
+  channel.activeProjects += quantity;
+  return { channel, projects, orchestrator };
+}
+
 function startOrchestratedProcess(
   project: Project,
   channel: Channel,
@@ -1120,8 +1324,17 @@ function startOrchestratedProcess(
 ) {
   const existing = executionFor(project.id, processType);
   if (existing) return { execution: existing };
-
-  const savedMethod = channel.methods?.[processType];
+  captureProjectStrategy(
+    project,
+    channel,
+    Boolean(
+      database
+        .prepare("SELECT 1 FROM process_executions WHERE project_id = ? LIMIT 1")
+        .get(project.id),
+    ),
+  );
+  const savedMethod =
+    project.strategySnapshot?.methods[processType] ?? channel.methods?.[processType];
   const method = savedMethod
     ? {
         name: savedMethod.name || `Método de ${PROCESS_META[processType].label}`,
@@ -1200,12 +1413,195 @@ function orchestrationMessage(
   return `Executando ${processLabel} em ${project.title}.`;
 }
 
+function executionSlotState(execution: ProcessExecution) {
+  if (execution.status === "completed") return "completed" as const;
+  if (execution.status === "cancelled") return "cancelled" as const;
+  if (execution.status === "awaiting_human" || execution.status === "awaiting_output") {
+    return "awaiting_human" as const;
+  }
+  if (execution.status === "failed") return "failed" as const;
+  if (execution.status === "blocked_executor") {
+    const activeBlockExecution = execution.blocks.find((item) => item.status !== "completed");
+    const activeBlock = activeBlockExecution
+      ? execution.methodSnapshot.blocks.find((item) => item.id === activeBlockExecution.blockId)
+      : undefined;
+    return automaticPluginBlockReady(activeBlock) ? ("running" as const) : ("blocked" as const);
+  }
+  return "running" as const;
+}
+
+function executionSlotDependenciesReady(
+  orchestrator: ExecutionOrchestrator,
+  project: Project,
+  processType: UniversalProcess,
+) {
+  const order =
+    project.strategySnapshot?.processOrder ?? orchestrator.processOrder ?? PROCESS_ORDER;
+  const index = order.indexOf(processType);
+  if (index <= 0) return index === 0;
+  return order
+    .slice(0, index)
+    .every((previousProcess) => executionFor(project.id, previousProcess)?.status === "completed");
+}
+
+function reconcileEligibleSlotOrchestrator(orchestrator: ExecutionOrchestrator, channel: Channel) {
+  const steps =
+    orchestrator.plannedSteps ??
+    buildOrchestratorSteps(
+      orchestrator.projectIds,
+      orchestrator.mode,
+      5,
+      orchestrator.processOrder,
+    );
+  const slots = expandOrchestratorSlots(steps);
+  const completedCount = () =>
+    slots.filter((slot) => executionFor(slot.projectId, slot.processType)?.status === "completed")
+      .length;
+  const updateCurrent = (slot: (typeof slots)[number], patch: Partial<ExecutionOrchestrator>) =>
+    setExecutionOrchestratorState(orchestrator, {
+      currentStep: completedCount(),
+      totalSteps: slots.length,
+      currentProjectId: slot.projectId,
+      currentProcessType: slot.processType,
+      currentBatchItem: slot.batchItem,
+      currentBatchTotal: slot.batchTotal,
+      ...patch,
+    });
+
+  for (const slot of slots) {
+    const execution = executionFor(slot.projectId, slot.processType);
+    if (!execution) continue;
+    const state = executionSlotState(execution);
+    if (state === "cancelled") {
+      updateCurrent(slot, {
+        status: "cancelled",
+        message: "A execução atual foi cancelada.",
+      });
+      return;
+    }
+    if (state !== "running") continue;
+    if (execution.status === "blocked_executor") scheduleAutomaticPluginBlock(execution);
+    const project = readPayload<Project>("projects", slot.projectId);
+    updateCurrent(slot, {
+      status: "running",
+      message: project
+        ? (execution.error ?? orchestrationMessage("running", project, slot.processType))
+        : "Executando a próxima etapa elegível.",
+    });
+    return;
+  }
+
+  const parked: Array<{
+    slot: (typeof slots)[number];
+    status: "awaiting_human" | "blocked" | "failed";
+    message?: string;
+  }> = [];
+
+  for (const slot of slots) {
+    let execution = executionFor(slot.projectId, slot.processType);
+    if (execution?.status === "completed") continue;
+    if (execution) {
+      const state = executionSlotState(execution);
+      if (state === "awaiting_human" || state === "blocked" || state === "failed") {
+        const project = readPayload<Project>("projects", slot.projectId);
+        parked.push({
+          slot,
+          status: state,
+          message:
+            execution.error ??
+            (project ? orchestrationMessage(state, project, slot.processType) : undefined),
+        });
+      }
+      continue;
+    }
+
+    const project = readPayload<Project>("projects", slot.projectId);
+    if (!project) {
+      updateCurrent(slot, {
+        status: "failed",
+        message: "Um projeto da orquestração não existe mais.",
+      });
+      return;
+    }
+    if (!executionSlotDependenciesReady(orchestrator, project, slot.processType)) continue;
+
+    const started = startOrchestratedProcess(project, channel, slot.processType);
+    if (!started.execution) {
+      parked.push({
+        slot,
+        status: "blocked",
+        message: started.issue,
+      });
+      continue;
+    }
+    execution = started.execution;
+    const state = executionSlotState(execution);
+    if (state === "completed") continue;
+    if (state === "cancelled") {
+      updateCurrent(slot, {
+        status: "cancelled",
+        message: "A execução atual foi cancelada.",
+      });
+      return;
+    }
+    if (state === "awaiting_human" || state === "blocked" || state === "failed") {
+      parked.push({
+        slot,
+        status: state,
+        message: execution.error ?? orchestrationMessage(state, project, slot.processType),
+      });
+      continue;
+    }
+    updateCurrent(slot, {
+      status: "running",
+      message: execution.error ?? orchestrationMessage("running", project, slot.processType),
+    });
+    return;
+  }
+
+  const completed = completedCount();
+  if (completed === slots.length) {
+    setExecutionOrchestratorState(orchestrator, {
+      currentStep: completed,
+      totalSteps: slots.length,
+      status: "completed",
+      currentProjectId: undefined,
+      currentProcessType: undefined,
+      currentBatchItem: undefined,
+      currentBatchTotal: undefined,
+      message: "Todos os projetos da orquestração foram concluídos.",
+      completedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  const waiting = parked[0];
+  if (waiting) {
+    updateCurrent(waiting.slot, {
+      status: waiting.status,
+      message: waiting.message,
+    });
+    return;
+  }
+
+  setExecutionOrchestratorState(orchestrator, {
+    currentStep: completed,
+    totalSteps: slots.length,
+    status: "blocked",
+    currentProjectId: undefined,
+    currentProcessType: undefined,
+    currentBatchItem: undefined,
+    currentBatchTotal: undefined,
+    message: "Nenhum slot da fila está elegível para execução neste momento.",
+  });
+}
+
 function reconcileExecutionOrchestrator(id: string) {
   if (orchestratorReconciliationLocks.has(id)) return;
   orchestratorReconciliationLocks.add(id);
   try {
     const orchestrator = executionOrchestratorById(id);
-    if (!orchestrator || !ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status)) return;
+    if (!orchestrator || !executionOrchestratorIsActive(orchestrator)) return;
     const channel = readPayload<Channel>("channels", orchestrator.channelId);
     if (!channel) {
       setExecutionOrchestratorState(orchestrator, {
@@ -1214,10 +1610,93 @@ function reconcileExecutionOrchestrator(id: string) {
       });
       return;
     }
+    if (orchestrator.strategyVersion === 5) {
+      reconcileEligibleSlotOrchestrator(orchestrator, channel);
+      return;
+    }
 
-    const steps = buildOrchestratorSteps(orchestrator.projectIds, orchestrator.mode);
+    const steps =
+      orchestrator.plannedSteps ??
+      buildOrchestratorSteps(
+        orchestrator.projectIds,
+        orchestrator.mode,
+        orchestrator.strategyVersion ?? 1,
+        orchestrator.processOrder,
+      );
     while (orchestrator.currentStep < steps.length) {
       const step = steps[orchestrator.currentStep];
+      if (isAggregateOrchestratorStep(step)) {
+        let aggregateCompleted = true;
+        for (let index = 0; index < step.projectIds.length; index += 1) {
+          const projectId = step.projectIds[index];
+          const project = readPayload<Project>("projects", projectId);
+          if (!project) {
+            setExecutionOrchestratorState(orchestrator, {
+              status: "failed",
+              message: "Um projeto da orquestração não existe mais.",
+              currentProjectId: projectId,
+              currentProcessType: step.processType,
+              currentBatchItem: index,
+              currentBatchTotal: step.projectIds.length,
+            });
+            return;
+          }
+          const started = startOrchestratedProcess(project, channel, step.processType);
+          if (!started.execution) {
+            setExecutionOrchestratorState(orchestrator, {
+              status: "blocked",
+              currentProjectId: projectId,
+              currentProcessType: step.processType,
+              currentBatchItem: index,
+              currentBatchTotal: step.projectIds.length,
+              message: started.issue,
+            });
+            return;
+          }
+          const execution = started.execution;
+          if (execution.status === "completed") continue;
+          aggregateCompleted = false;
+          if (execution.status === "cancelled") {
+            setExecutionOrchestratorState(orchestrator, {
+              status: "cancelled",
+              currentProjectId: projectId,
+              currentProcessType: step.processType,
+              currentBatchItem: index,
+              currentBatchTotal: step.projectIds.length,
+              message: "A execução atual foi cancelada.",
+            });
+            return;
+          }
+          const activeBlockExecution = execution.blocks.find((item) => item.status !== "completed");
+          const activeBlock = activeBlockExecution
+            ? execution.methodSnapshot.blocks.find(
+                (item) => item.id === activeBlockExecution.blockId,
+              )
+            : undefined;
+          const status: ExecutionOrchestratorStatus =
+            execution.status === "awaiting_human" || execution.status === "awaiting_output"
+              ? "awaiting_human"
+              : execution.status === "failed"
+                ? "failed"
+                : execution.status === "blocked_executor" && !automaticPluginBlockReady(activeBlock)
+                  ? "blocked"
+                  : "running";
+          setExecutionOrchestratorState(orchestrator, {
+            status,
+            currentProjectId: projectId,
+            currentProcessType: step.processType,
+            currentBatchItem: index,
+            currentBatchTotal: step.projectIds.length,
+            message: execution.error ?? orchestrationMessage(status, project, step.processType),
+          });
+          return;
+        }
+        if (aggregateCompleted) {
+          orchestrator.currentStep += 1;
+          continue;
+        }
+      }
+      if (isAggregateOrchestratorStep(step)) return;
       const project = readPayload<Project>("projects", step.projectId);
       if (!project) {
         setExecutionOrchestratorState(orchestrator, {
@@ -1263,13 +1742,15 @@ function reconcileExecutionOrchestrator(id: string) {
           ? "awaiting_human"
           : execution.status === "failed"
             ? "failed"
-            : execution.status === "blocked_executor" && !activeBlock?.plugin
+            : execution.status === "blocked_executor" && !automaticPluginBlockReady(activeBlock)
               ? "blocked"
               : "running";
       setExecutionOrchestratorState(orchestrator, {
         status,
         currentProjectId: step.projectId,
         currentProcessType: step.processType,
+        currentBatchItem: undefined,
+        currentBatchTotal: undefined,
         message: execution.error ?? orchestrationMessage(status, project, step.processType),
       });
       return;
@@ -1281,6 +1762,8 @@ function reconcileExecutionOrchestrator(id: string) {
       status: "completed",
       currentProjectId: undefined,
       currentProcessType: undefined,
+      currentBatchItem: undefined,
+      currentBatchTotal: undefined,
       message: "Todos os projetos da orquestração foram concluídos.",
       completedAt: new Date().toISOString(),
     });
@@ -1296,7 +1779,7 @@ function queueOrchestratorReconciliation(id: string) {
 function queueOrchestratorReconciliationForProject(projectId: string) {
   for (const orchestrator of executionOrchestrators()) {
     if (
-      ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status) &&
+      executionOrchestratorIsActive(orchestrator) &&
       orchestrator.projectIds.includes(projectId)
     ) {
       queueOrchestratorReconciliation(orchestrator.id);
@@ -1331,7 +1814,7 @@ function cancelStoredProcessExecution(execution: ProcessExecution, project: Proj
 
 function resumeExecutionOrchestrators() {
   for (const orchestrator of executionOrchestrators()) {
-    if (ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status)) {
+    if (executionOrchestratorIsActive(orchestrator)) {
       reconcileExecutionOrchestrator(orchestrator.id);
     }
   }
@@ -1366,10 +1849,12 @@ function markPluginJobFailed(
   status: "failed" | "abandoned" = "failed",
   recoverySnapshot?: PluginExternalRecoverySnapshot,
 ) {
+  const failedJob = failCurrentOrchestratedItem(claim.job, message);
+  claim.job = failedJob;
   return pluginJobs.save(
     claim,
     {
-      ...claim.job,
+      ...failedJob,
       status,
       error: message,
       message,
@@ -1378,7 +1863,14 @@ function markPluginJobFailed(
     (saved) => {
       if (saved.status === "cancel_requested" || !execution || !project) return;
       const blockExecution = execution.blocks.find((item) => item.blockId === saved.blockId);
+      const block = execution.methodSnapshot.blocks.find((item) => item.id === saved.blockId);
       if (blockExecution && blockExecution.status !== "cancelled") {
+        if (Object.keys(saved.partialValues).length > 0) {
+          blockExecution.values = structuredClone(saved.partialValues);
+          if (block) recordBlockDeliveries(execution, block, saved.partialValues, "partial");
+        }
+        blockExecution.itemProgress = itemProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved);
         blockExecution.status = "failed";
         blockExecution.error = message;
         blockExecution.progressMessage = message;
@@ -1437,7 +1929,7 @@ async function processPluginJob(
 ) {
   const claim = existingClaim ?? pluginJobs.claim(jobId);
   if (!claim) return pluginJobs.get(jobId);
-  const { job } = claim;
+  let job = claim.job;
   let execution = executionById(job.executionId);
   let project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
   if (!execution || !project) {
@@ -1459,6 +1951,33 @@ async function processPluginJob(
       "O bloco ou a tentativa associada ao job não existe mais.",
       "abandoned",
     );
+  }
+  if (job.attempt > 1 && job.retryScope === "remaining") {
+    const previousAttempt = pluginJobs.getByExecution(
+      job.executionId,
+      job.blockId,
+      job.attempt - 1,
+    );
+    if (previousAttempt) {
+      const inheritedValues = {
+        ...previousAttempt.partialValues,
+        ...job.partialValues,
+      };
+      const inheritedArtifacts = mergeStoredArtifacts(
+        previousAttempt.partialArtifacts,
+        job.partialArtifacts,
+      );
+      const inheritedSomething =
+        Object.keys(inheritedValues).length !== Object.keys(job.partialValues).length ||
+        inheritedArtifacts.length !== job.partialArtifacts.length;
+      if (inheritedSomething) {
+        job = pluginJobs.updateClaimed(claim, {
+          ...job,
+          partialValues: inheritedValues,
+          partialArtifacts: inheritedArtifacts,
+        });
+      }
+    }
   }
   const plugin = getRegisteredPlugin(job.pluginId);
   if (!plugin) {
@@ -1584,12 +2103,99 @@ async function processPluginJob(
       job.status === "starting"
         ? ({ mode: "start" } as const)
         : ({ mode: "resume", jobId: job.jobId! } as const);
+    const startedItemJob = startCurrentOrchestratedItem(job);
+    if (startedItemJob !== job) {
+      job = pluginJobs.updateClaimed(claim, startedItemJob);
+      claim.job = job;
+      blockExecution.items = blockExecutionItemsForJob(job);
+      blockExecution.itemProgress = itemProgressForJob(job);
+      persistPluginExecution(execution, project);
+    }
     const pluginResponse = await executeRegisteredPlugin(
       plugin,
       invocationRequestForJob(job, invocation),
       invocationTimeout,
       secrets,
-      { workspaceDirectory, existingArtifacts: job.partialArtifacts },
+      {
+        workspaceDirectory,
+        existingArtifacts: job.partialArtifacts,
+        onPartial: async (update) => {
+          const latestExecution = executionById(job.executionId);
+          const latestProject = latestExecution
+            ? readPayload<Project>("projects", latestExecution.projectId)
+            : undefined;
+          const latestBlock = latestExecution?.methodSnapshot.blocks.find(
+            (item) => item.id === job.blockId,
+          );
+          const latestBlockExecution = latestExecution?.blocks.find(
+            (item) => item.blockId === job.blockId,
+          );
+          if (
+            !latestExecution ||
+            !latestProject ||
+            !latestBlock ||
+            !latestBlockExecution ||
+            latestExecution.status === "cancelled" ||
+            (latestBlockExecution.attempt ?? 1) !== job.attempt
+          ) {
+            return;
+          }
+          const mappedUpdate = mappedPluginValues(
+            latestBlock,
+            update.values,
+            job.request.outputContract,
+          );
+          const partialValues: Record<string, RuntimeValue> = {
+            ...job.partialValues,
+            ...mappedUpdate,
+          };
+          if (job.itemOrchestration) {
+            const orchestration = job.itemOrchestration;
+            const rawCurrent = update.values[orchestration.outputPort];
+            const currentItems = Array.isArray(rawCurrent)
+              ? rawCurrent
+              : rawCurrent === undefined
+                ? []
+                : [rawCurrent];
+            const visibleItems = [...(orchestration.accumulatedItems ?? []), ...currentItems];
+            const mappedListKey = job.request.outputContract.find(
+              (field) => field.portKey === orchestration.outputPort,
+            )?.key;
+            const mappedCombinedKey = orchestration.combinedOutputPort
+              ? job.request.outputContract.find(
+                  (field) => field.portKey === orchestration.combinedOutputPort,
+                )?.key
+              : undefined;
+            if (mappedListKey) partialValues[mappedListKey] = visibleItems as RuntimeValue;
+            if (mappedCombinedKey) {
+              partialValues[mappedCombinedKey] = visibleItems
+                .filter((item): item is string => typeof item === "string")
+                .join(orchestration.separator ?? "\n\n");
+            }
+          }
+          job = pluginJobs.updateClaimed(claim, {
+            ...job,
+            partialValues,
+            partialArtifacts: mergeStoredArtifacts(job.partialArtifacts, update.storedArtifacts),
+            progress: Number.isFinite(update.progress)
+              ? Math.max(job.progress ?? 0, Math.min(1, Math.max(0, update.progress!)))
+              : job.progress,
+            message: update.message ?? job.message,
+          });
+          claim.job = job;
+          latestBlockExecution.status = "in_progress";
+          latestBlockExecution.values = structuredClone(partialValues);
+          latestBlockExecution.progress = job.progress;
+          latestBlockExecution.progressMessage = job.message;
+          latestBlockExecution.itemProgress = itemProgressForJob(job);
+          latestBlockExecution.items = blockExecutionItemsForJob(job);
+          latestBlockExecution.logs = update.logs ?? latestBlockExecution.logs;
+          latestExecution.status = "running";
+          latestExecution.error = undefined;
+          recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
+          persistPluginExecution(latestExecution, latestProject);
+        },
+      },
     );
 
     // No object captured before an external await is allowed to overwrite newer state.
@@ -1669,6 +2275,8 @@ async function processPluginJob(
       blockExecution.traceId = saved.traceId;
       blockExecution.progress = saved.progress;
       blockExecution.progressMessage = saved.message;
+      blockExecution.itemProgress = itemProgressForJob(saved);
+      blockExecution.items = blockExecutionItemsForJob(saved);
       blockExecution.logs = pluginResponse.logs;
       execution.status = "running";
       execution.error = undefined;
@@ -1721,6 +2329,8 @@ async function processPluginJob(
         blockExecution.status = "in_progress";
         blockExecution.values = structuredClone(partialValues);
         blockExecution.progressMessage = saved.message;
+        blockExecution.itemProgress = itemProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved);
         blockExecution.logs = pluginResponse.logs;
         execution.status = "running";
         recordBlockDeliveries(execution, block, partialValues, "partial");
@@ -1749,9 +2359,13 @@ async function processPluginJob(
         });
         if (saved.status === "cancel_requested") return saved;
         blockExecution.status = "in_progress";
+        blockExecution.values = structuredClone(partialValues);
         blockExecution.progressMessage = saved.message;
+        blockExecution.itemProgress = itemProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved);
         blockExecution.logs = pluginResponse.logs;
         execution.status = "running";
+        recordBlockDeliveries(execution, block, partialValues, "partial");
         persistPluginExecution(execution, project);
         return saved;
       }
@@ -1783,30 +2397,48 @@ async function processPluginJob(
             (field) => field.portKey === itemOrchestration.combinedOutputPort,
           )?.key ?? itemOrchestration.combinedOutputPort)
         : undefined;
-      const accumulated = combineOrchestratedTextOutput(
-        appendOrchestratedOutput(
-          job.partialValues,
-          mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
-          outputKey,
-        ),
-        outputKey,
-        combinedOutputKey,
+      const mappedValues = mappedPluginValues(
+        block,
+        pluginResponse.values,
+        job.request.outputContract,
       );
-      if (itemOrchestration.currentIndex + 1 < itemOrchestration.items.length) {
-        const nextIndex = itemOrchestration.currentIndex + 1;
+      const rawIncoming = pluginResponse.values[itemOrchestration.outputPort];
+      const incomingItems = Array.isArray(rawIncoming)
+        ? rawIncoming
+        : rawIncoming === undefined
+          ? []
+          : [rawIncoming];
+      const completedItemJob = completeCurrentOrchestratedItem(
+        job,
+        structuredClone(rawIncoming) as BlockExecutionItemValue,
+      );
+      const completedItemOrchestration = completedItemJob.itemOrchestration!;
+      const accumulatedItems = completedItemOrchestration.workItems
+        ? completedOutputs(completedItemOrchestration.workItems)
+        : ([...(itemOrchestration.accumulatedItems ?? []), ...incomingItems] as RuntimeValue[]);
+      const accumulated = { ...job.partialValues, ...mappedValues };
+      if (outputKey) accumulated[outputKey] = accumulatedItems as RuntimeValue;
+      if (combinedOutputKey) {
+        accumulated[combinedOutputKey] = accumulatedItems
+          .filter((item): item is string => typeof item === "string")
+          .join(itemOrchestration.separator ?? "\n\n");
+      }
+      const nextItemOrchestration = { ...completedItemOrchestration, accumulatedItems };
+      const nextIndex = nextPendingItemIndex(completedItemJob);
+      if (nextIndex !== undefined) {
         const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
         const activeProfile = job.profileFallback
           ? job.profileFallback.candidates[job.profileFallback.activeIndex]
           : profileConfigurationKey
             ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
             : undefined;
-        const nextRequest = requestForNextOrchestratedItem(job, {
+        const nextRequest = requestForNextOrchestratedItem(completedItemJob, {
           conversationId: completedConversationId,
           sourceProfile: activeProfile,
           fallbackContext: pluginConversationFallbackContext(block, accumulated),
         });
         const saved = pluginJobs.save(claim, {
-          ...job,
+          ...completedItemJob,
           request: nextRequest,
           status: "starting",
           nextPollAt: new Date().toISOString(),
@@ -1816,9 +2448,11 @@ async function processPluginJob(
             job.partialArtifacts,
             pluginResponse.storedArtifacts,
           ),
-          itemOrchestration: { ...itemOrchestration, currentIndex: nextIndex },
-          progress: nextIndex / itemOrchestration.items.length,
-          message: `Item ${nextIndex} de ${itemOrchestration.items.length} concluído.`,
+          itemOrchestration: { ...nextItemOrchestration, currentIndex: nextIndex },
+          progress:
+            (completedItemOrchestration.workItems?.filter((item) => item.status === "completed")
+              .length ?? nextIndex) / itemOrchestration.items.length,
+          message: `Item ${itemOrchestration.currentIndex + 1} de ${itemOrchestration.items.length} concluído.`,
           error: undefined,
         });
         if (saved.status === "cancel_requested") return saved;
@@ -1826,6 +2460,8 @@ async function processPluginJob(
         blockExecution.values = structuredClone(accumulated);
         blockExecution.progress = saved.progress;
         blockExecution.progressMessage = saved.message;
+        blockExecution.itemProgress = itemProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved);
         blockExecution.logs = pluginResponse.logs;
         execution.status = "running";
         recordBlockDeliveries(execution, block, accumulated, "partial");
@@ -1833,6 +2469,8 @@ async function processPluginJob(
         return saved;
       }
       Object.assign(values, accumulated);
+      job = { ...completedItemJob, itemOrchestration: nextItemOrchestration };
+      claim.job = job;
     }
     if (
       block.type === "ESCOLHER" &&
@@ -1853,6 +2491,38 @@ async function processPluginJob(
     });
     if (restrictionIssues.length) {
       throw new Error(`O plugin entregou valores incompatíveis: ${restrictionIssues.join("; ")}.`);
+    }
+    if (!job.itemOrchestration) {
+      const inferredCapability = capabilityWithDeterministicItemMapping(
+        capability,
+        job.request,
+        values,
+      );
+      const inferredPolicy = inferredCapability.execution.itemOrchestration;
+      const inferredOutputKey = inferredPolicy
+        ? job.request.outputContract.find((field) => field.portKey === inferredPolicy.outputPort)
+            ?.key
+        : undefined;
+      const inferredInputs = inferredPolicy
+        ? job.request.inputs[inferredPolicy.inputPort]
+        : undefined;
+      const inferredOutputs = inferredOutputKey ? values[inferredOutputKey] : undefined;
+      if (
+        inferredPolicy &&
+        Array.isArray(inferredInputs) &&
+        Array.isArray(inferredOutputs) &&
+        inferredInputs.length === inferredOutputs.length
+      ) {
+        const materialized = legacyItemOrchestration(
+          inferredCapability,
+          job.request,
+          structuredClone(inferredOutputs) as RuntimeValue[],
+        );
+        if (materialized) {
+          job = { ...job, itemOrchestration: materialized };
+          claim.job = job;
+        }
+      }
     }
     const saved = pluginJobs.save(
       claim,
@@ -1893,6 +2563,9 @@ async function processPluginJob(
         blockExecution.logs = pluginResponse.logs;
         blockExecution.progress = 1;
         blockExecution.progressMessage = undefined;
+        blockExecution.itemProgress = itemProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved);
+        blockExecution.itemRetryScope = undefined;
         persistPluginExecution(execution, project);
       },
     );
@@ -1946,6 +2619,8 @@ async function processPluginJob(
       if (saved.status === "cancel_requested") return saved;
       blockExecution.status = "in_progress";
       blockExecution.progressMessage = saved.message;
+      blockExecution.itemProgress = itemProgressForJob(saved);
+      blockExecution.items = blockExecutionItemsForJob(saved);
       execution.status = "running";
       persistPluginExecution(execution, project);
       return saved;
@@ -1963,6 +2638,8 @@ async function processPluginJob(
       if (saved.status === "cancel_requested") return saved;
       blockExecution.status = "in_progress";
       blockExecution.progressMessage = saved.message;
+      blockExecution.itemProgress = itemProgressForJob(saved);
+      blockExecution.items = blockExecutionItemsForJob(saved);
       execution.status = "running";
       persistPluginExecution(execution, project);
       return saved;
@@ -1997,6 +2674,7 @@ async function processDuePluginJobs() {
 }
 
 initializePluginRunner();
+reconcileStoredExecutionItems();
 const pluginJobScheduler = setInterval(() => void processDuePluginJobs(), 500);
 pluginJobScheduler.unref();
 function cleanupAbandonedPluginJobs() {
@@ -2280,7 +2958,15 @@ function isPluginManifest(manifest: Record<string, unknown>) {
             ) &&
             (capability.outputPorts as Array<Record<string, unknown>>).some(
               (port) => port.key === itemOrchestration.outputPort,
-            ))) &&
+            ) &&
+            (itemOrchestration.combinedOutputPort === undefined ||
+              (isNonEmptyString(itemOrchestration.combinedOutputPort) &&
+                (capability.outputPorts as Array<Record<string, unknown>>).some(
+                  (port) => port.key === itemOrchestration.combinedOutputPort,
+                ))) &&
+            (itemOrchestration.separator === undefined ||
+              (typeof itemOrchestration.separator === "string" &&
+                itemOrchestration.separator.length <= 20)))) &&
         isUniqueStringArray(capabilitySideEffects, sideEffects) &&
         (!usesNetwork || manifestPermissions.includes("network")) &&
         (!capabilitySideEffects.includes("local_artifact") ||
@@ -2473,20 +3159,9 @@ app.post(
         response.status(400).json({ error: "Pacote vazio ou inválido." });
         return;
       }
-      const manifest = await readMethodPackage(request.body, (assetPath, data) => {
-        if (uploadDirectorySize() + data.length > maxUploadStorageBytes) {
-          throw new Error(
-            `O armazenamento local de uploads atingiu o limite de ${maxUploadStorageGb} GB.`,
-          );
-        }
-        const extension = path.extname(assetPath).toLowerCase();
-        if (![".webp", ".png", ".jpg"].includes(extension)) {
-          throw new Error("Formato de capa inválido.");
-        }
-        const storedName = `${randomUUID()}${extension}`;
-        writeFileSync(path.join(uploadsDirectory, storedName), data);
-        return `/api/files/${storedName}`;
-      });
+      // Abrir um pacote serve apenas para pré-visualização. Os assets permanecem
+      // embutidos no manifesto como data URLs até a aplicação/importação efetiva.
+      const manifest = await readMethodPackage(request.body);
       response.json({ manifest });
     } catch (error) {
       response.status(400).json({
@@ -3683,6 +4358,121 @@ function channelCollections(channelId: string) {
   ) as StrategicCollection[];
 }
 
+function channelLibraryItems(channelId: string) {
+  return parseRows(
+    database
+      .prepare("SELECT payload FROM library_items WHERE channel_id = ? ORDER BY created_at ASC")
+      .all(channelId) as { payload: string }[],
+  ) as ChannelLibraryItem[];
+}
+
+const builderCollectionFieldSchema = z.object({
+  id: z.string().min(1).max(200).optional(),
+  label: z.string().trim().min(1).max(200),
+  type: z.enum(["text", "textarea", "number", "image", "url", "thumbnail_layout"]),
+  required: z.boolean(),
+});
+
+function builderCollectionReferences(channel: Channel, collection: StrategicCollection) {
+  const instructionKey = instructionCollectionKey(collection);
+  const references: string[] = [];
+  for (const [processType, method] of Object.entries(channel.methods ?? {}) as [
+    UniversalProcess,
+    ProcessMethod | undefined,
+  ][]) {
+    for (const block of method?.blocks ?? []) {
+      if (block.collectionId === collection.id) {
+        references.push(`${processType}/${block.name ?? block.type}`);
+      }
+      if (
+        instructionVariables(block.instructions ?? "").some(
+          (variable) => variable.toLowerCase() === `collections.${instructionKey}`.toLowerCase(),
+        )
+      ) {
+        references.push(`${processType}/${block.name ?? block.type}`);
+      }
+    }
+  }
+  return [...new Set(references)];
+}
+
+function normalizeBuilderLibraryValues(
+  collection: StrategicCollection,
+  values: unknown,
+): { ok: true; values: ChannelLibraryItem["values"] } | { ok: false; error: string } {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return { ok: false, error: "Informe values como um objeto." };
+  }
+  const normalized: ChannelLibraryItem["values"] = {};
+  for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
+    const field = collection.fields.find(
+      (candidate) =>
+        candidate.id === key ||
+        candidate.label.trim().toLocaleLowerCase("pt-BR") === key.trim().toLocaleLowerCase("pt-BR"),
+    );
+    if (!field) return { ok: false, error: `Campo desconhecido na coleção: “${key}”.` };
+    if (field.type === "number") {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return { ok: false, error: `O campo “${field.label}” exige um número.` };
+      }
+      normalized[field.id] = value;
+      continue;
+    }
+    if (["text", "textarea", "url"].includes(field.type)) {
+      if (typeof value !== "string") {
+        return { ok: false, error: `O campo “${field.label}” exige texto.` };
+      }
+      if (field.type === "url" && value.trim()) {
+        try {
+          const parsed = new URL(value);
+          if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("invalid");
+        } catch {
+          return { ok: false, error: `O campo “${field.label}” exige uma URL HTTP válida.` };
+        }
+      }
+      normalized[field.id] = value.trim();
+      continue;
+    }
+    if (!value || typeof value !== "object") {
+      return {
+        ok: false,
+        error: `O campo “${field.label}” exige um valor estruturado compatível com ${field.type}.`,
+      };
+    }
+    normalized[field.id] = value as StoredFile | ThumbnailLayout;
+  }
+  for (const field of collection.fields) {
+    const value = normalized[field.id];
+    const empty =
+      value === undefined || value === null || (typeof value === "string" && !value.trim());
+    if (field.required && empty) {
+      return { ok: false, error: `O campo obrigatório “${field.label}” está vazio.` };
+    }
+    if (!empty && field.type === "image") {
+      const file = value as StoredFile;
+      if (
+        typeof file.id !== "string" ||
+        typeof file.name !== "string" ||
+        typeof file.mimeType !== "string" ||
+        typeof file.size !== "number" ||
+        typeof file.url !== "string"
+      ) {
+        return { ok: false, error: `O campo “${field.label}” exige um arquivo de imagem válido.` };
+      }
+    }
+    if (!empty && field.type === "thumbnail_layout") {
+      const layout = value as ThumbnailLayout;
+      if (layout.aspectRatio !== "16:9" || !Array.isArray(layout.boxes)) {
+        return {
+          ok: false,
+          error: `O campo “${field.label}” exige um layout de thumbnail 16:9 válido.`,
+        };
+      }
+    }
+  }
+  return { ok: true, values: normalized };
+}
+
 app.get("/api/builder/mcp-info", (request, response) => {
   const channelId =
     typeof request.query.channelId === "string" ? request.query.channelId : undefined;
@@ -3716,6 +4506,8 @@ app.get("/api/builder/channels", requireBuilderMcp, (_request, response) => {
       handle: channel.handle,
       niche: channel.niche,
       language: channel.language,
+      processOrder: effectiveProcessOrder(channel),
+      definitionRevision: channel.definitionRevision ?? 0,
       configuredProcesses: PROCESS_ORDER.filter(
         (processType) => channel.methods?.[processType]?.blocks?.length,
       ),
@@ -3745,12 +4537,356 @@ app.get(
         niche: channel.niche,
         language: channel.language,
         description: channel.description,
+        processOrder: effectiveProcessOrder(channel),
+        definitionRevision: channel.definitionRevision ?? 0,
         methods: channel.methods,
       },
-      collections: channelCollections(channel.id),
+      collections: channelCollections(channel.id).map((collection) => ({
+        ...collection,
+        itemCount: channelLibraryItems(channel.id).filter(
+          (item) => item.collectionId === collection.id,
+        ).length,
+      })),
       plugins: plugins.map(publicBuilderPlugin),
       contract: BUILDER_METHOD_CONTRACT,
     });
+  },
+);
+
+app.get("/api/builder/channels/:channelId/library", requireBuilderMcp, (request, response) => {
+  const channel = readPayload<Channel>("channels", String(request.params.channelId));
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  const collections = channelCollections(channel.id);
+  const items = channelLibraryItems(channel.id);
+  response.json({
+    channelId: channel.id,
+    collections: collections.map((collection) => ({
+      ...collection,
+      items: items.filter((item) => item.collectionId === collection.id),
+    })),
+  });
+});
+
+app.put(
+  "/api/builder/channels/:channelId/process-order",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const order = request.body?.processOrder;
+    if (!isProcessOrder(order)) {
+      response.status(400).json({ error: "Ordem dos Processos inválida." });
+      return;
+    }
+    const errors = validateProcessDependencies(order, channel.methods);
+    if (errors.length) {
+      response.status(422).json({ ok: false, error: errors[0], errors });
+      return;
+    }
+    channel.processOrder = [...order];
+    channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
+    database
+      .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(channel), channel.id);
+    response.json({
+      ok: true,
+      channelId: channel.id,
+      processOrder: effectiveProcessOrder(channel),
+      definitionRevision: channel.definitionRevision,
+    });
+  },
+);
+
+app.post("/api/builder/channels/:channelId/collections", requireBuilderMcp, (request, response) => {
+  const channel = readPayload<Channel>("channels", String(request.params.channelId));
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  const parsed = z
+    .object({
+      name: z.string().trim().min(1).max(200),
+      fields: z.array(builderCollectionFieldSchema).min(1).max(100),
+    })
+    .safeParse(request.body);
+  if (!parsed.success) {
+    response
+      .status(400)
+      .json({ error: "Coleção estratégica inválida.", issues: parsed.error.issues });
+    return;
+  }
+  const key = instructionCollectionKey({ name: parsed.data.name });
+  if (
+    channelCollections(channel.id).some(
+      (collection) => instructionCollectionKey(collection) === key,
+    )
+  ) {
+    response.status(409).json({ error: "Já existe uma coleção com esse nome no canal." });
+    return;
+  }
+  const fieldIds = new Set<string>();
+  const fields: StrategicCollection["fields"] = [];
+  for (const field of parsed.data.fields) {
+    const id = field.id ?? `collection-field-${randomUUID()}`;
+    if (fieldIds.has(id)) {
+      response.status(400).json({ error: "Os IDs dos campos da coleção precisam ser únicos." });
+      return;
+    }
+    fieldIds.add(id);
+    fields.push({ ...field, id });
+  }
+  const collection: StrategicCollection = {
+    id: `collection-${randomUUID()}`,
+    channelId: channel.id,
+    name: parsed.data.name,
+    fields,
+    createdAt: new Date().toISOString(),
+  };
+  database
+    .prepare(
+      "INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(collection.id, collection.channelId, JSON.stringify(collection), collection.createdAt);
+  response.status(201).json({ ok: true, collection });
+});
+
+app.put(
+  "/api/builder/channels/:channelId/collections/:collectionId",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const existing = channelCollections(channel.id).find(
+      (collection) => collection.id === String(request.params.collectionId),
+    );
+    if (!existing) {
+      response.status(404).json({ error: "Coleção não encontrada." });
+      return;
+    }
+    const parsed = z
+      .object({
+        name: z.string().trim().min(1).max(200),
+        fields: z.array(builderCollectionFieldSchema).min(1).max(100),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      response
+        .status(400)
+        .json({ error: "Coleção estratégica inválida.", issues: parsed.error.issues });
+      return;
+    }
+    const nextKey = instructionCollectionKey({ name: parsed.data.name });
+    if (
+      channelCollections(channel.id).some(
+        (collection) =>
+          collection.id !== existing.id && instructionCollectionKey(collection) === nextKey,
+      )
+    ) {
+      response.status(409).json({ error: "Já existe uma coleção com esse nome no canal." });
+      return;
+    }
+    const existingByLabel = new Map(
+      existing.fields.map((field) => [field.label.trim().toLocaleLowerCase("pt-BR"), field]),
+    );
+    const fields = parsed.data.fields.map((field) => ({
+      ...field,
+      id:
+        field.id ??
+        existingByLabel.get(field.label.trim().toLocaleLowerCase("pt-BR"))?.id ??
+        `collection-field-${randomUUID()}`,
+    }));
+    if (new Set(fields.map((field) => field.id)).size !== fields.length) {
+      response.status(400).json({ error: "Os IDs dos campos da coleção precisam ser únicos." });
+      return;
+    }
+    const references = builderCollectionReferences(channel, existing);
+    const removed = existing.fields.filter(
+      (field) => !fields.some((candidate) => candidate.id === field.id),
+    );
+    const changedTypes = existing.fields.filter((field) => {
+      const next = fields.find((candidate) => candidate.id === field.id);
+      return next && next.type !== field.type;
+    });
+    if (references.length && (removed.length || changedTypes.length)) {
+      response.status(422).json({
+        ok: false,
+        error:
+          "A coleção está em uso por Métodos. Preserve os campos existentes e seus tipos enquanto houver referências.",
+        references,
+      });
+      return;
+    }
+    const oldKey = instructionCollectionKey(existing);
+    const updated: StrategicCollection = {
+      ...existing,
+      name: parsed.data.name,
+      fields,
+    };
+    database
+      .prepare("UPDATE library_collections SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(updated), updated.id);
+    if (oldKey !== nextKey) {
+      const matcher = new RegExp(`\\{\\{\\s*collections\\.${oldKey}\\s*\\}\\}`, "gi");
+      let changed = false;
+      for (const method of Object.values(channel.methods ?? {})) {
+        for (const block of method?.blocks ?? []) {
+          const current = block.instructions ?? "";
+          const next = current.replace(matcher, `{{collections.${nextKey}}}`);
+          if (next !== current) {
+            block.instructions = next;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
+        database
+          .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+          .run(JSON.stringify(channel), channel.id);
+      }
+    }
+    response.json({ ok: true, collection: updated });
+  },
+);
+
+app.delete(
+  "/api/builder/channels/:channelId/collections/:collectionId",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const collection = channelCollections(channel.id).find(
+      (candidate) => candidate.id === String(request.params.collectionId),
+    );
+    if (!collection) {
+      response.status(404).json({ error: "Coleção não encontrada." });
+      return;
+    }
+    const references = builderCollectionReferences(channel, collection);
+    if (references.length) {
+      response.status(422).json({
+        ok: false,
+        error: "A coleção está em uso por Métodos e não pode ser excluída.",
+        references,
+      });
+      return;
+    }
+    const remove = database.transaction(() => {
+      for (const item of channelLibraryItems(channel.id).filter(
+        (candidate) => candidate.collectionId === collection.id,
+      )) {
+        database.prepare("DELETE FROM library_items WHERE id = ?").run(item.id);
+      }
+      database.prepare("DELETE FROM library_collections WHERE id = ?").run(collection.id);
+    });
+    remove();
+    response.json({ ok: true, deletedCollectionId: collection.id });
+  },
+);
+
+app.post(
+  "/api/builder/channels/:channelId/collections/:collectionId/items",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const collection = channelCollections(channel.id).find(
+      (candidate) => candidate.id === String(request.params.collectionId),
+    );
+    if (!collection) {
+      response.status(404).json({ error: "Coleção não encontrada." });
+      return;
+    }
+    const normalized = normalizeBuilderLibraryValues(collection, request.body?.values);
+    if (!normalized.ok) {
+      response.status(400).json({ error: normalized.error });
+      return;
+    }
+    const item: ChannelLibraryItem = {
+      id: `library-item-${randomUUID()}`,
+      channelId: channel.id,
+      collectionId: collection.id,
+      values: normalized.values,
+      createdAt: new Date().toISOString(),
+    };
+    database
+      .prepare(
+        "INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(item.id, item.channelId, JSON.stringify(item), item.createdAt);
+    response.status(201).json({ ok: true, item });
+  },
+);
+
+app.put(
+  "/api/builder/channels/:channelId/collections/:collectionId/items/:itemId",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const collection = channelCollections(channel.id).find(
+      (candidate) => candidate.id === String(request.params.collectionId),
+    );
+    const item = channelLibraryItems(channel.id).find(
+      (candidate) =>
+        candidate.id === String(request.params.itemId) &&
+        candidate.collectionId === String(request.params.collectionId),
+    );
+    if (!collection || !item) {
+      response.status(404).json({ error: "Coleção ou item não encontrado." });
+      return;
+    }
+    const normalized = normalizeBuilderLibraryValues(collection, request.body?.values);
+    if (!normalized.ok) {
+      response.status(400).json({ error: normalized.error });
+      return;
+    }
+    const updated: ChannelLibraryItem = { ...item, values: normalized.values };
+    database
+      .prepare("UPDATE library_items SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(updated), updated.id);
+    response.json({ ok: true, item: updated });
+  },
+);
+
+app.delete(
+  "/api/builder/channels/:channelId/collections/:collectionId/items/:itemId",
+  requireBuilderMcp,
+  (request, response) => {
+    const channel = readPayload<Channel>("channels", String(request.params.channelId));
+    if (!channel) {
+      response.status(404).json({ error: "Canal não encontrado." });
+      return;
+    }
+    const item = channelLibraryItems(channel.id).find(
+      (candidate) =>
+        candidate.id === String(request.params.itemId) &&
+        candidate.collectionId === String(request.params.collectionId),
+    );
+    if (!item) {
+      response.status(404).json({ error: "Item não encontrado." });
+      return;
+    }
+    database.prepare("DELETE FROM library_items WHERE id = ?").run(item.id);
+    response.json({ ok: true, deletedItemId: item.id });
   },
 );
 
@@ -3803,6 +4939,15 @@ app.post("/api/builder/channels/:channelId/apply", requireBuilderMcp, async (req
           : undefined,
     };
   }
+  const dependencyErrors = validateProcessDependencies(
+    effectiveProcessOrder(channel),
+    channel.methods,
+  );
+  if (dependencyErrors.length) {
+    response.status(422).json({ ok: false, errors: dependencyErrors, warnings: result.warnings });
+    return;
+  }
+  channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
   database
     .prepare("UPDATE channels SET payload = ? WHERE id = ?")
     .run(JSON.stringify(channel), channel.id);
@@ -3913,6 +5058,7 @@ app.post("/api/execute-block", async (request, response) => {
       blockExecution,
       execution,
       projectExecutions,
+      processOrder: projectProcessOrder(project),
       pluginId: plugin.id,
       supportsContinuation: plugin.manifest.supportsConversationContinuation === true,
       profileSetup: plugin.manifest.profileSetup,
@@ -4121,6 +5267,12 @@ app.post("/api/execute-block", async (request, response) => {
       value: resolved.value ?? null,
     })),
     parameters: executionParameters,
+    collections: collections.map((collection) => ({
+      name: collection.name,
+      items: libraryItems
+        .filter((item) => item.collectionId === collection.id)
+        .map((item) => collectionItemValuesForPlugin(collection, item)),
+    })),
   });
   if (resolvedInstruction.unresolved.length) {
     response.status(422).json({
@@ -4265,19 +5417,75 @@ app.post("/api/execute-block", async (request, response) => {
     return;
   }
   const executionTimeoutMs = capability.execution.defaultTimeoutMs ?? 60_000;
-  const createdJob = pluginJobs.create(
-    createPersistentPluginJob({
-      pluginId: plugin.id,
-      pluginVersion: plugin.manifest.version,
-      request: pluginRequest,
-      timeoutMs: executionTimeoutMs,
-      profileFallback: orderedProfileCandidates(plugin.manifest, pluginRequest.configuration),
-      itemOrchestration: declaredItemOrchestration(capability, pluginRequest),
-    }),
-  );
+  const requestedRetryScope = blockExecution.itemRetryScope ?? "all";
+  const itemCapability =
+    requestedRetryScope === "all"
+      ? capability
+      : capabilityWithDeterministicItemMapping(capability, pluginRequest, blockExecution.values);
+  const previousJob =
+    ["remaining", "selected"].includes(requestedRetryScope) && pluginRequest.attempt > 1
+      ? pluginJobs.getByExecution(execution.id, block.id, pluginRequest.attempt - 1)
+      : undefined;
+  const resumedOrchestration =
+    requestedRetryScope === "remaining" && previousJob
+      ? resumedItemOrchestration(itemCapability, pluginRequest, previousJob)
+      : requestedRetryScope === "remaining"
+        ? resumedItemOrchestrationFromItems(itemCapability, pluginRequest, blockExecution.items)
+        : undefined;
+  const selectedOrchestration =
+    requestedRetryScope === "selected" && blockExecution.itemRetryId
+      ? ((previousJob
+          ? selectedItemOrchestration(
+              itemCapability,
+              pluginRequest,
+              previousJob,
+              blockExecution.itemRetryId,
+            )
+          : undefined) ??
+        selectedItemOrchestrationFromItems(
+          itemCapability,
+          pluginRequest,
+          blockExecution.items,
+          blockExecution.itemRetryId,
+        ))
+      : undefined;
+  const itemOrchestration =
+    selectedOrchestration ??
+    resumedOrchestration ??
+    declaredItemOrchestration(itemCapability, pluginRequest);
+  const retryScope = selectedOrchestration
+    ? "selected"
+    : resumedOrchestration
+      ? "remaining"
+      : "all";
+  if (
+    ["remaining", "selected"].includes(requestedRetryScope) &&
+    !selectedOrchestration &&
+    !resumedOrchestration
+  ) {
+    blockExecution.values = {};
+    blockExecution.itemProgress = undefined;
+  }
+  const pendingJob = createPersistentPluginJob({
+    pluginId: plugin.id,
+    pluginVersion: plugin.manifest.version,
+    request: pluginRequest,
+    timeoutMs: executionTimeoutMs,
+    profileFallback: orderedProfileCandidates(plugin.manifest, pluginRequest.configuration),
+    itemOrchestration,
+    retryScope,
+  });
+  if (selectedOrchestration) pendingJob.partialValues = structuredClone(blockExecution.values);
+  const createdJob = pluginJobs.create(pendingJob);
   blockExecution.status = "in_progress";
   blockExecution.traceId = pluginRequest.traceId;
-  blockExecution.progress = 0;
+  blockExecution.itemProgress = itemProgressForJob(createdJob);
+  blockExecution.items = blockExecutionItemsForJob(createdJob);
+  blockExecution.itemRetryScope = undefined;
+  blockExecution.itemRetryId = undefined;
+  blockExecution.progress = itemOrchestration
+    ? (blockExecution.itemProgress?.completed ?? 0) / itemOrchestration.items.length
+    : 0;
   blockExecution.progressMessage = "Iniciando job…";
   execution.status = "running";
   persistPluginExecution(execution, project);
@@ -4717,6 +5925,7 @@ const commandSchema = z.object({
     "outputDraft",
     "completeHuman",
     "completeOutput",
+    "acceptBlockDelivery",
     "retry",
     "reset",
   ]),
@@ -4726,6 +5935,7 @@ const commandSchema = z.object({
   blockId: z.string().optional(),
   itemId: z.string().optional(),
   attempt: z.number().int().positive().optional(),
+  retryScope: z.enum(["remaining", "all", "selected"]).optional(),
   values: z.record(z.string(), z.unknown()).optional(),
   confirmSnapshotRevision: z.string().trim().min(1).optional(),
 });
@@ -4765,7 +5975,7 @@ app.post("/api/commands", (request, response) => {
           if (!command.processType) throw new Error("Processo não informado.");
           updated = engine.startProcessExecution(project.id, command.processType);
           if (!updated) throw new Error("Configure o Método antes de executar.");
-          project.runThrough = "publishing";
+          project.runThrough = projectProcessOrder(project).at(-1);
           project.runFrom = command.processType;
           result = updated;
           break;
@@ -4784,6 +5994,9 @@ app.post("/api/commands", (request, response) => {
           break;
         case "completeOutput":
           result = engine.completeProcessOutput(execution!.id, values);
+          break;
+        case "acceptBlockDelivery":
+          result = engine.acceptBlockDelivery(execution!.id, command.blockId ?? "");
           break;
         case "outputDraft":
           if (execution!.status !== "awaiting_output") {
@@ -4813,11 +6026,11 @@ app.post("/api/commands", (request, response) => {
               "Esta etapa não possui recuperação pendente aguardando confirmação. Atualize a tela antes de continuar.",
             );
           }
-          result = engine.retryBlockExecution(
-            execution!.id,
-            command.blockId ?? "",
-            command.confirmSnapshotRevision,
-          );
+          result = engine.retryBlockExecution(execution!.id, command.blockId ?? "", {
+            confirmSnapshotRevision: command.confirmSnapshotRevision,
+            retryScope: command.retryScope ?? "all",
+            itemId: command.itemId,
+          });
           if (!result) {
             throw new Error("Esta etapa não pôde ser reiniciada.");
           }
@@ -4835,12 +6048,7 @@ app.post("/api/commands", (request, response) => {
           project.stages[command.processType] = "not_started";
           project.currentStage = command.processType;
           project.state = "not_started";
-          project.progress = Math.round(
-            (PROCESS_ORDER.filter((id) => ["done", "approved"].includes(project.stages[id]))
-              .length /
-              PROCESS_ORDER.length) *
-              100,
-          );
+          project.progress = completedProcessProgress(project.stages);
           result = true;
           break;
         }
@@ -4909,8 +6117,7 @@ function reconcileStandaloneProcesses() {
     if (
       !project.runThrough ||
       orchestrators.some(
-        (item) =>
-          ACTIVE_ORCHESTRATOR_STATUSES.has(item.status) && item.projectIds.includes(project.id),
+        (item) => executionOrchestratorIsActive(item) && item.projectIds.includes(project.id),
       )
     )
       continue;
@@ -4921,15 +6128,11 @@ function reconcileStandaloneProcesses() {
       if (current.status === "blocked_executor") scheduleAutomaticPluginBlock(current);
       continue;
     }
-    const next = PROCESS_ORDER.find(
-      (id) =>
-        PROCESS_ORDER.indexOf(id) >= PROCESS_ORDER.indexOf(project.runFrom ?? "theme") &&
-        !["done", "approved"].includes(project.stages[id]),
-    );
+    const order = projectProcessOrder(project);
+    const next = nextExecutableProcess(order, project.stages, project.runFrom, project.runThrough);
     if (
       !next ||
-      PROCESS_ORDER.indexOf(next) > PROCESS_ORDER.indexOf(project.runThrough) ||
-      !channel.methods[next]?.blocks.length
+      !(project.strategySnapshot?.methods[next] ?? channel.methods[next])?.blocks.length
     ) {
       delete project.runThrough;
       database
@@ -5001,6 +6204,18 @@ app.post("/api/channels", (request, response) => {
     response.status(400).json({ error: "Canal inválido." });
     return;
   }
+  if (channel.processOrder !== undefined && !isProcessOrder(channel.processOrder)) {
+    response.status(400).json({ error: "Ordem dos Processos inválida." });
+    return;
+  }
+  const dependencyErrors = validateProcessDependencies(
+    effectiveProcessOrder(channel),
+    channel.methods ?? {},
+  );
+  if (dependencyErrors.length) {
+    response.status(422).json({ error: dependencyErrors[0], errors: dependencyErrors });
+    return;
+  }
   if (
     typeof channel.methodsImageUrl === "string" &&
     (!(
@@ -5070,7 +6285,16 @@ app.put("/api/channels/:id/methods/:processType", (request, response) => {
     response.status(400).json({ error: "Método inválido." });
     return;
   }
-  channel.methods[processType] = {
+  if (
+    request.body?.definitionRevision !== undefined &&
+    request.body.definitionRevision !== (channel.definitionRevision ?? 0)
+  ) {
+    response.status(409).json({
+      error: "A definição do Canal mudou em outra aba. Recarregue antes de salvar o Método.",
+    });
+    return;
+  }
+  const nextMethod: ProcessMethod = {
     name:
       typeof request.body?.name === "string" && request.body.name.trim()
         ? request.body.name.trim().slice(0, 200)
@@ -5084,10 +6308,24 @@ app.put("/api/channels/:id/methods/:processType", (request, response) => {
     processType,
     blocks: normalizeMethodBlocks(request.body.blocks, processType),
   };
+  const errors = validateProcessDependencies(
+    effectiveProcessOrder(channel),
+    { ...channel.methods, [processType]: nextMethod },
+    PROCESS_ORDER,
+  );
+  if (errors.length) {
+    response.status(422).json({ error: errors[0], errors });
+    return;
+  }
+  channel.methods[processType] = nextMethod;
+  channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
   database
     .prepare("UPDATE channels SET payload = ? WHERE id = ?")
     .run(JSON.stringify(channel), channel.id);
-  response.json(channel.methods[processType]);
+  response.json({
+    method: channel.methods[processType],
+    definitionRevision: channel.definitionRevision,
+  });
 });
 
 app.put("/api/channels/:id/methods", (request, response) => {
@@ -5131,10 +6369,372 @@ app.put("/api/channels/:id/methods", (request, response) => {
       blocks: normalizeMethodBlocks(method.blocks, processType),
     };
   }
+  const errors = validateProcessDependencies(effectiveProcessOrder(channel), channel.methods);
+  if (errors.length) {
+    response.status(422).json({ error: errors[0], errors });
+    return;
+  }
+  channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
   database
     .prepare("UPDATE channels SET payload = ? WHERE id = ?")
     .run(JSON.stringify(channel), channel.id);
   response.json({ methods: channel.methods });
+});
+
+app.put("/api/channels/:id/process-order", (request, response) => {
+  const channel = readPayload<Channel>("channels", request.params.id);
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  const order = request.body?.processOrder;
+  if (!isProcessOrder(order)) {
+    response.status(400).json({ error: "Ordem dos Processos inválida." });
+    return;
+  }
+  if (request.body?.definitionRevision !== (channel.definitionRevision ?? 0)) {
+    response.status(409).json({ error: "A definição do Canal mudou. Recarregue antes de salvar." });
+    return;
+  }
+  const errors = validateProcessDependencies(order, channel.methods);
+  if (errors.length) {
+    response.status(422).json({ error: errors[0], errors });
+    return;
+  }
+  channel.processOrder = [...order];
+  channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
+  database
+    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+    .run(JSON.stringify(channel), channel.id);
+  response.json({
+    processOrder: effectiveProcessOrder(channel),
+    definitionRevision: channel.definitionRevision,
+  });
+});
+
+app.post("/api/method-transfers/apply", (request, response) => {
+  const body = request.body as {
+    targetChannelId?: string;
+    sourceChannelId?: string;
+    newChannel?: { id?: string; name?: string; methodsImageUrl?: string };
+    expectedDefinitionRevision?: number;
+    methods?: ProcessMethod[];
+    collections?: PortableCollectionV2[];
+    itemsIncluded?: boolean;
+    items?: PortableLibraryItemV2[];
+    preferredOrder?: UniversalProcess[];
+    selectedProcesses?: UniversalProcess[];
+    preserveLocalConnections?: boolean;
+  };
+  const selectedProcesses = body.selectedProcesses ?? [];
+  if (
+    !Array.isArray(body.methods) ||
+    !body.methods.length ||
+    !Array.isArray(body.collections) ||
+    (body.items !== undefined && !Array.isArray(body.items)) ||
+    !isProcessOrder(body.preferredOrder) ||
+    !Array.isArray(selectedProcesses) ||
+    selectedProcesses.some((processType) => !PROCESS_ORDER.includes(processType))
+  ) {
+    response.status(400).json({ error: "Plano de importação inválido." });
+    return;
+  }
+  const selected = body.methods.filter((method) => selectedProcesses.includes(method.processType));
+  if (!selected.length || selected.length !== selectedProcesses.length) {
+    response.status(400).json({ error: "Seleção de Métodos inválida." });
+    return;
+  }
+
+  const existing = body.targetChannelId
+    ? readPayload<Channel>("channels", body.targetChannelId)
+    : undefined;
+  if (body.targetChannelId && !existing) {
+    response.status(404).json({ error: "Canal de destino não encontrado." });
+    return;
+  }
+  if (
+    existing &&
+    body.expectedDefinitionRevision !== undefined &&
+    body.expectedDefinitionRevision !== (existing.definitionRevision ?? 0)
+  ) {
+    response
+      .status(409)
+      .json({ error: "A definição do Canal mudou. Revise a importação novamente." });
+    return;
+  }
+  if (!existing && (!body.newChannel?.name?.trim() || !body.newChannel?.id)) {
+    response.status(400).json({ error: "Novo Canal inválido." });
+    return;
+  }
+
+  let portableItems: PortableLibraryItemV2[] = [];
+  try {
+    portableItems = parsePortableLibraryItems(body.items ?? []);
+    if (body.itemsIncluded !== true && portableItems.length) {
+      response.status(400).json({ error: "Itens enviados sem a opção de compartilhamento ativa." });
+      return;
+    }
+  } catch {
+    response.status(400).json({ error: "Itens portáteis inválidos." });
+    return;
+  }
+
+  const channelId = existing?.id ?? body.newChannel!.id!;
+  const createdAt = new Date().toISOString();
+  const sourceItems = body.sourceChannelId
+    ? (
+        database
+          .prepare("SELECT payload FROM library_items WHERE channel_id = ?")
+          .all(body.sourceChannelId) as { payload: string }[]
+      ).map((row) => JSON.parse(row.payload) as ChannelLibraryItem)
+    : [];
+  const allowedSourceAssetUrls = new Set(
+    sourceItems.flatMap((item) =>
+      Object.values(item.values).flatMap((value) =>
+        value && typeof value === "object" && !Array.isArray(value) && "url" in value
+          ? [String((value as StoredFile).url)]
+          : [],
+      ),
+    ),
+  );
+  const collectionIds = new Map<string, string>();
+  const fieldIds = new Map<string, string>();
+  const localCollections: StrategicCollection[] = body.collections.map((collection) => {
+    const id = `collection-${randomUUID()}`;
+    collectionIds.set(collection.key, id);
+    return {
+      id,
+      channelId,
+      name: collection.name,
+      fields: collection.fields.map((field) => {
+        const fieldId = `field-${randomUUID()}`;
+        fieldIds.set(`${collection.key}:${field.key}`, fieldId);
+        return {
+          id: fieldId,
+          label: field.label,
+          type: field.type,
+          required: field.required,
+        };
+      }),
+      createdAt,
+    };
+  });
+
+  const copied = copyImportedMethods(selected, (prefix) => `${prefix}-${randomUUID()}`, {
+    collectionIds,
+    preserveLocalConnections: body.preserveLocalConnections === true,
+  });
+  const finalMethods = existing ? structuredClone(existing.methods) : createEmptyMethods();
+  for (const method of copied) finalMethods[method.processType] = method;
+  const preferredOrder = existing ? effectiveProcessOrder(existing) : body.preferredOrder;
+  const resultOrder = resolveProcessOrderForMethods(preferredOrder, finalMethods);
+  if (!resultOrder) {
+    response.status(422).json({ error: "As dependências dos Métodos formam um ciclo." });
+    return;
+  }
+  const dependencyErrors = validateProcessDependencies(resultOrder, finalMethods);
+  if (dependencyErrors.length) {
+    response.status(422).json({ error: dependencyErrors[0], errors: dependencyErrors });
+    return;
+  }
+
+  const stagedDirectory = mkdtempSync(path.join(dataDirectory, "method-transfer-"));
+  const promotedFiles: string[] = [];
+  const stagedFiles: Array<{ stagedPath: string; finalPath: string }> = [];
+  let stagedBytes = 0;
+  const materializePortableValue = (
+    value: unknown,
+  ): string | number | StoredFile | ThumbnailLayout => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      if (typeof value === "string" || typeof value === "number") return value;
+      throw new Error("ITEM_VALUE_INVALID");
+    }
+    const candidate = value as Partial<StoredFile> & { aspectRatio?: unknown };
+    if (candidate.aspectRatio === "16:9") return structuredClone(value) as ThumbnailLayout;
+    if (
+      typeof candidate.name !== "string" ||
+      typeof candidate.mimeType !== "string" ||
+      typeof candidate.url !== "string"
+    ) {
+      throw new Error("ITEM_VALUE_INVALID");
+    }
+    const match = /^data:([^;,]+);base64,([a-zA-Z0-9+/=]+)$/.exec(candidate.url);
+    const localAssetName = /^\/api\/files\/([a-zA-Z0-9._-]+)$/.exec(candidate.url)?.[1];
+    const localAssetAllowed = Boolean(
+      localAssetName && body.sourceChannelId && allowedSourceAssetUrls.has(candidate.url),
+    );
+    if (!match && !localAssetAllowed) throw new Error("ITEM_ASSET_NOT_STAGED");
+    const mimeType = (match?.[1] ?? candidate.mimeType).trim().toLowerCase();
+    let data: Buffer;
+    try {
+      data = match
+        ? Buffer.from(match[2], "base64")
+        : readFileSync(path.join(uploadsDirectory, localAssetName!));
+    } catch {
+      throw new Error("ITEM_ASSET_NOT_STAGED");
+    }
+    if (!data.length || data.length > maxUploadBytes || activeUploadMimeTypes.has(mimeType)) {
+      throw new Error("ITEM_ASSET_INVALID");
+    }
+    const extension = path
+      .extname(candidate.name)
+      .replace(/[^a-zA-Z0-9.]/g, "")
+      .slice(0, 12)
+      .toLowerCase();
+    if (activeUploadExtensions.has(extension)) throw new Error("ITEM_ASSET_INVALID");
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    if (candidate.sha256 && candidate.sha256 !== sha256) throw new Error("ITEM_ASSET_INTEGRITY");
+    if (typeof candidate.size === "number" && candidate.size !== data.length) {
+      throw new Error("ITEM_ASSET_INTEGRITY");
+    }
+    const id = randomUUID();
+    const storedName = `${id}${extension}`;
+    const stagedPath = path.join(stagedDirectory, storedName);
+    const finalPath = path.join(uploadsDirectory, storedName);
+    writeFileSync(stagedPath, data);
+    stagedBytes += data.length;
+    stagedFiles.push({ stagedPath, finalPath });
+    return {
+      id,
+      name: path.basename(candidate.name),
+      mimeType,
+      size: data.length,
+      sha256,
+      url: `/api/files/${storedName}`,
+    };
+  };
+
+  let localItems: ChannelLibraryItem[] = [];
+  try {
+    if (body.itemsIncluded === true) {
+      localItems = portableItems.map((item) => {
+        const collectionId = collectionIds.get(item.collectionKey);
+        if (!collectionId) throw new Error("ITEM_COLLECTION_MISSING");
+        const values = Object.fromEntries(
+          Object.entries(item.values).map(([portableFieldKey, value]) => {
+            const fieldId = fieldIds.get(`${item.collectionKey}:${portableFieldKey}`);
+            if (!fieldId) throw new Error("ITEM_FIELD_MISSING");
+            return [fieldId, materializePortableValue(value)];
+          }),
+        );
+        return {
+          id: `item-${randomUUID()}`,
+          channelId,
+          collectionId,
+          values,
+          createdAt: item.createdAt ?? createdAt,
+        } as ChannelLibraryItem;
+      });
+      if (uploadDirectorySize() + stagedBytes > maxUploadStorageBytes) {
+        throw new Error("ITEM_ASSET_STORAGE_LIMIT");
+      }
+    }
+  } catch (error) {
+    rmSync(stagedDirectory, { recursive: true, force: true });
+    const code = error instanceof Error ? error.message : "ITEM_IMPORT_INVALID";
+    const messages: Record<string, string> = {
+      TOO_MANY_ITEMS: "O pacote possui itens demais para uma única importação.",
+      ITEM_COLLECTION_MISSING: "Um item referencia uma coleção ausente do pacote.",
+      ITEM_FIELD_MISSING: "Um item referencia um campo ausente do schema portátil.",
+      ITEM_VALUE_INVALID: "Um item contém um valor incompatível com a Biblioteca Estratégica.",
+      ITEM_ASSET_NOT_STAGED: "Um asset do item não foi incorporado ao pacote.",
+      ITEM_ASSET_INVALID: "Um asset do item possui formato ou tamanho não permitido.",
+      ITEM_ASSET_INTEGRITY: "A integridade de um asset do item não confere.",
+      ITEM_ASSET_STORAGE_LIMIT: `O armazenamento local de uploads atingiu o limite de ${maxUploadStorageGb} GB.`,
+    };
+    response.status(422).json({ error: messages[code] ?? "Os itens do pacote são inválidos." });
+    return;
+  }
+  const apply = database.transaction(() => {
+    let channel: Channel;
+    if (existing) {
+      const current = readPayload<Channel>("channels", existing.id);
+      if (!current || (current.definitionRevision ?? 0) !== (existing.definitionRevision ?? 0)) {
+        throw new Error("CHANNEL_REVISION_CONFLICT");
+      }
+      channel = {
+        ...current,
+        methods: finalMethods,
+        processOrder: resultOrder,
+        definitionRevision: (current.definitionRevision ?? 0) + 1,
+      };
+      database
+        .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+        .run(JSON.stringify(channel), channel.id);
+    } else {
+      channel = {
+        id: channelId,
+        name: body.newChannel!.name!.trim().slice(0, 200),
+        handle: "",
+        color: "#2563EB",
+        subscribers: "—",
+        methodsImageUrl: body.newChannel?.methodsImageUrl,
+        description: "",
+        niche: "",
+        language: "PT-BR",
+        activeProjects: 0,
+        frequency: "1x / semana",
+        nextPublish: "",
+        currentProjectProgress: 0,
+        status: "healthy",
+        trend: [],
+        methods: finalMethods,
+        processOrder: resultOrder,
+        definitionRevision: 1,
+        createdAt,
+      };
+      database.prepare("UPDATE channel_order SET position = position + 1").run();
+      database
+        .prepare("INSERT INTO channels (id, payload, created_at) VALUES (?, ?, ?)")
+        .run(channel.id, JSON.stringify(channel), channel.createdAt);
+      database
+        .prepare("INSERT INTO channel_order (channel_id, position) VALUES (?, 0)")
+        .run(channel.id);
+    }
+    const insertCollection = database.prepare(
+      "INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const collection of localCollections) {
+      insertCollection.run(
+        collection.id,
+        collection.channelId,
+        JSON.stringify(collection),
+        collection.createdAt,
+      );
+    }
+    for (const staged of stagedFiles) {
+      renameSync(staged.stagedPath, staged.finalPath);
+      promotedFiles.push(staged.finalPath);
+    }
+    const insertItem = database.prepare(
+      "INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+    );
+    for (const item of localItems) {
+      insertItem.run(item.id, item.channelId, JSON.stringify(item), item.createdAt);
+    }
+    return channel;
+  });
+
+  try {
+    const channel = apply();
+    rmSync(stagedDirectory, { recursive: true, force: true });
+    response.status(existing ? 200 : 201).json({
+      channel,
+      processOrder: resultOrder,
+      collections: localCollections,
+      items: localItems,
+    });
+  } catch (error) {
+    for (const promoted of promotedFiles) rmSync(promoted, { force: true });
+    rmSync(stagedDirectory, { recursive: true, force: true });
+    if (error instanceof Error && error.message === "CHANNEL_REVISION_CONFLICT") {
+      response
+        .status(409)
+        .json({ error: "A definição do Canal mudou. Revise a importação novamente." });
+      return;
+    }
+    throw error;
+  }
 });
 
 app.put("/api/channels/:id", (request, response) => {
@@ -5155,7 +6755,11 @@ app.put("/api/channels/:id", (request, response) => {
     return;
   }
   const current = readPayload<Channel>("channels", channel.id);
-  if (current) channel.methods = current.methods;
+  if (current) {
+    channel.methods = current.methods;
+    channel.processOrder = current.processOrder;
+    channel.definitionRevision = current.definitionRevision;
+  }
   const result = database
     .prepare("UPDATE channels SET payload = ? WHERE id = ?")
     .run(JSON.stringify(channel), channel.id);
@@ -5271,7 +6875,7 @@ app.post("/api/orchestrators/:id/resume", (request, response) => {
     return;
   }
   const otherActive = executionOrchestrators(orchestrator.channelId).find(
-    (item) => item.id !== orchestrator.id && ACTIVE_ORCHESTRATOR_STATUSES.has(item.status),
+    (item) => item.id !== orchestrator.id && executionOrchestratorIsActive(item),
   );
   if (otherActive) {
     response.status(409).json({ error: "Este canal já possui outra orquestração em andamento." });
@@ -5325,7 +6929,19 @@ app.post("/api/orchestrators/:id/stop", (request, response) => {
     stoppedAt,
   });
 
-  if (orchestrator.currentProjectId && orchestrator.currentProcessType) {
+  if (orchestrator.strategyVersion === 5) {
+    for (const projectId of orchestrator.projectIds) {
+      const project = readPayload<Project>("projects", projectId);
+      if (!project) continue;
+      for (const row of database
+        .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
+        .all(projectId) as { payload: string }[]) {
+        const execution = JSON.parse(row.payload) as ProcessExecution;
+        if (execution.status === "completed" || execution.status === "cancelled") continue;
+        cancelStoredProcessExecution(execution, project);
+      }
+    }
+  } else if (orchestrator.currentProjectId && orchestrator.currentProcessType) {
     const project = readPayload<Project>("projects", orchestrator.currentProjectId);
     const execution = project
       ? executionFor(orchestrator.currentProjectId, orchestrator.currentProcessType)
@@ -5365,7 +6981,7 @@ app.post("/api/orchestrators", (request, response) => {
     return;
   }
   const active = executionOrchestrators(channel.id).find((orchestrator) =>
-    ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status),
+    executionOrchestratorIsActive(orchestrator),
   );
   if (active) {
     response.status(409).json({
@@ -5375,47 +6991,114 @@ app.post("/api/orchestrators", (request, response) => {
     return;
   }
 
-  const now = new Date().toISOString();
   const projectPrefix = body.projectPrefix?.trim() || "Produção orquestrada";
-  const projects = Array.from({ length: quantity }, (_, index) =>
-    createOrchestratedProject(channel.id, `${projectPrefix} ${index + 1}`, index),
-  );
-  const steps = buildOrchestratorSteps(
-    projects.map((project) => project.id),
-    body.mode,
-  );
-  const orchestrator: ExecutionOrchestrator = {
-    id: randomUUID(),
-    channelId: channel.id,
+  const prepared = prepareExecutionOrchestration({
+    channel,
     mode: body.mode,
     quantity,
     projectPrefix,
-    projectIds: projects.map((project) => project.id),
-    currentStep: 0,
-    totalSteps: steps.length,
-    status: "running",
-    message: "Preparando a primeira execução.",
-    createdAt: now,
-    updatedAt: now,
-  };
-  channel.activeProjects += quantity;
+  });
 
   database.transaction(() => {
     const insertProject = database.prepare(
       "INSERT INTO projects (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
     );
-    for (const project of projects) {
+    for (const project of prepared.projects) {
       insertProject.run(project.id, project.channelId, JSON.stringify(project), project.createdAt);
     }
     database
       .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(channel), channel.id);
-    persistExecutionOrchestrator(orchestrator, true);
+      .run(JSON.stringify(prepared.channel), prepared.channel.id);
+    persistExecutionOrchestrator(prepared.orchestrator, true);
   })();
-  reconcileExecutionOrchestrator(orchestrator.id);
+  reconcileExecutionOrchestrator(prepared.orchestrator.id);
   response
     .status(201)
-    .json(executionOrchestratorState(executionOrchestratorById(orchestrator.id)!));
+    .json(executionOrchestratorState(executionOrchestratorById(prepared.orchestrator.id)!));
+});
+
+app.post("/api/orchestrators/global", (request, response) => {
+  const body = request.body as {
+    channelIds?: string[];
+    mode?: ExecutionOrchestratorMode;
+    quantity?: number;
+    projectPrefix?: string;
+  };
+  const channelIds = Array.from(
+    new Set((Array.isArray(body.channelIds) ? body.channelIds : []).filter(Boolean)),
+  );
+  const quantity = Math.trunc(Number(body.quantity));
+  if (!channelIds.length) {
+    response.status(400).json({ error: "Selecione pelo menos um canal." });
+    return;
+  }
+  if (body.mode !== "end_to_end" && body.mode !== "batch") {
+    response.status(400).json({ error: "Modo de orquestração inválido." });
+    return;
+  }
+  if (!Number.isFinite(quantity) || quantity < 1 || quantity > 50) {
+    response.status(400).json({ error: "Escolha entre 1 e 50 projetos por canal." });
+    return;
+  }
+
+  const channels = channelIds.map((id) => readPayload<Channel>("channels", id));
+  if (channels.some((channel) => !channel)) {
+    response.status(404).json({ error: "Um dos canais selecionados não existe mais." });
+    return;
+  }
+  const typedChannels = channels as Channel[];
+  const busyChannel = typedChannels.find((channel) =>
+    executionOrchestrators(channel.id).some((orchestrator) =>
+      executionOrchestratorIsActive(orchestrator),
+    ),
+  );
+  if (busyChannel) {
+    response.status(409).json({
+      error: `${busyChannel.name} já possui uma orquestração em andamento.`,
+    });
+    return;
+  }
+
+  const globalBatchId = randomUUID();
+  const projectPrefix = body.projectPrefix?.trim() || "Produção global";
+  const prepared = typedChannels.map((channel) =>
+    prepareExecutionOrchestration({
+      channel,
+      mode: body.mode!,
+      quantity,
+      projectPrefix,
+      globalBatchId,
+      globalChannelCount: typedChannels.length,
+      includeChannelName: true,
+    }),
+  );
+
+  database.transaction(() => {
+    const insertProject = database.prepare(
+      "INSERT INTO projects (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+    );
+    const updateChannel = database.prepare("UPDATE channels SET payload = ? WHERE id = ?");
+    for (const item of prepared) {
+      for (const project of item.projects) {
+        insertProject.run(
+          project.id,
+          project.channelId,
+          JSON.stringify(project),
+          project.createdAt,
+        );
+      }
+      updateChannel.run(JSON.stringify(item.channel), item.channel.id);
+      persistExecutionOrchestrator(item.orchestrator, true);
+    }
+  })();
+
+  for (const item of prepared) reconcileExecutionOrchestrator(item.orchestrator.id);
+  response.status(201).json({
+    globalBatchId,
+    orchestrators: prepared.map(
+      (item) => executionOrchestratorById(item.orchestrator.id) ?? item.orchestrator,
+    ),
+  });
 });
 
 app.get("/api/projects", (request, response) => {
@@ -5432,11 +7115,12 @@ app.get("/api/projects", (request, response) => {
 });
 
 app.post("/api/projects", (request, response) => {
-  const project = request.body as StoredPayload;
+  const project = request.body as Project;
   if (!project?.id || !project.channelId || !project.createdAt) {
     response.status(400).json({ error: "Projeto inválido." });
     return;
   }
+  delete project.strategySnapshot;
   database
     .prepare("INSERT INTO projects (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
     .run(project.id, project.channelId, JSON.stringify(project), project.createdAt);
@@ -5444,11 +7128,14 @@ app.post("/api/projects", (request, response) => {
 });
 
 app.put("/api/projects/:id", (request, response) => {
-  const project = request.body as StoredPayload;
+  const project = request.body as Project;
   if (!project?.id || project.id !== request.params.id || !project.channelId) {
     response.status(400).json({ error: "Projeto inválido." });
     return;
   }
+  const current = readPayload<Project>("projects", project.id);
+  if (current?.strategySnapshot) project.strategySnapshot = current.strategySnapshot;
+  else delete project.strategySnapshot;
   const result = database
     .prepare("UPDATE projects SET channel_id = ?, payload = ? WHERE id = ?")
     .run(project.channelId, JSON.stringify(project), project.id);
@@ -5462,7 +7149,7 @@ app.put("/api/projects/:id", (request, response) => {
 app.delete("/api/projects/:id", (request, response) => {
   const activeOrchestrator = executionOrchestrators().find(
     (orchestrator) =>
-      ACTIVE_ORCHESTRATOR_STATUSES.has(orchestrator.status) &&
+      executionOrchestratorIsActive(orchestrator) &&
       orchestrator.projectIds.includes(request.params.id),
   );
   if (activeOrchestrator) {
@@ -5657,6 +7344,24 @@ app.post("/api/executions", (request, response) => {
     response.status(400).json({ error: "Execução inválida." });
     return;
   }
+  const project = readPayload<Project>("projects", String(execution.projectId));
+  const channel = project && readPayload<Channel>("channels", project.channelId);
+  if (project && channel && !project.strategySnapshot) {
+    captureProjectStrategy(
+      project,
+      channel,
+      Boolean(
+        database
+          .prepare("SELECT 1 FROM process_executions WHERE project_id = ? LIMIT 1")
+          .get(project.id),
+      ),
+    );
+    if (project.strategySnapshot) {
+      database
+        .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+        .run(JSON.stringify(project), project.id);
+    }
+  }
   const existing = executionFor(execution.projectId, execution.processType as UniversalProcess);
   if (existing) {
     response
@@ -5679,6 +7384,359 @@ app.post("/api/executions", (request, response) => {
   scheduleAutomaticPluginBlock(execution as unknown as ProcessExecution);
   queueOrchestratorReconciliationForProject(execution.projectId);
   response.status(201).json(execution);
+});
+
+app.patch("/api/executions/:id/blocks/:blockId/values", (request, response) => {
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  if (!execution || !project) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  const revision = Number(request.body?.revision);
+  if (!Number.isInteger(revision) || revision !== (execution.revision ?? 0)) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de salvar a edição." });
+    return;
+  }
+  const block = execution.methodSnapshot.blocks.find((item) => item.id === request.params.blockId);
+  const blockExecution = execution.blocks.find((item) => item.blockId === request.params.blockId);
+  if (!block || !blockExecution) {
+    response.status(404).json({ error: "Bloco da execução não encontrado." });
+    return;
+  }
+  if (blockExecution.status !== "completed") {
+    response.status(409).json({ error: "Aguarde o bloco terminar antes de editar a entrega." });
+    return;
+  }
+  const submitted = request.body?.values;
+  if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
+    response.status(400).json({ error: "Valores de entrega inválidos." });
+    return;
+  }
+  const allowedKeys = new Set((block.outputs ?? []).map((field) => field.key));
+  const unknownKeys = Object.keys(submitted).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length) {
+    response
+      .status(400)
+      .json({ error: `Campos de entrega desconhecidos: ${unknownKeys.join(", ")}.` });
+    return;
+  }
+  const values = Object.fromEntries(
+    (block.outputs ?? []).map((field) => [field.key, submitted[field.key] ?? null]),
+  ) as Record<string, RuntimeValue>;
+  const missing = (block.outputs ?? [])
+    .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
+    .map((field) => field.label);
+  const restrictionIssues = (block.outputs ?? []).flatMap((field) => {
+    const issue = getPresentationRestrictionIssue(field.presentation, values[field.key]);
+    return issue ? [`${field.label}: ${issue}`] : [];
+  });
+  if (missing.length || restrictionIssues.length) {
+    response.status(400).json({
+      error: [
+        ...(missing.length ? [`Preencha: ${missing.join(", ")}.`] : []),
+        ...restrictionIssues,
+      ].join(" "),
+    });
+    return;
+  }
+  blockExecution.values = structuredClone(values);
+  const now = new Date().toISOString();
+  blockExecution.completedAt = now;
+  recordBlockDeliveries(execution, block, blockExecution.values, "completed", now);
+  if (execution.outputStatus === "completed") {
+    const derived = deriveProcessOutput(execution);
+    if (derived) {
+      execution.output = derived;
+      recordProcessOutputDelivery(execution, derived.values, now);
+    }
+  }
+  persistPluginExecution(execution, project);
+  response.json({ execution, project });
+});
+
+app.patch("/api/executions/:id/blocks/:blockId/items-order", (request, response) => {
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  if (!execution || !project) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  const revision = Number(request.body?.revision);
+  if (!Number.isInteger(revision) || revision !== (execution.revision ?? 0)) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de reorganizar os itens." });
+    return;
+  }
+  const block = execution.methodSnapshot.blocks.find((item) => item.id === request.params.blockId);
+  const blockExecution = execution.blocks.find((item) => item.blockId === request.params.blockId);
+  const executionItems = blockExecution?.items;
+  if (!block || !blockExecution || !executionItems) {
+    response.status(404).json({ error: "Itens da execução não encontrados." });
+    return;
+  }
+  if (blockExecution.status === "in_progress") {
+    response
+      .status(409)
+      .json({ error: "Aguarde a execução atual terminar antes de reorganizar os itens." });
+    return;
+  }
+  const itemIds: string[] = Array.isArray(request.body?.itemIds)
+    ? request.body.itemIds.filter((item: unknown): item is string => typeof item === "string")
+    : [];
+  const existingIds = new Set(executionItems.map((item) => item.id));
+  if (
+    itemIds.length !== executionItems.length ||
+    new Set(itemIds).size !== itemIds.length ||
+    itemIds.some((itemId) => !existingIds.has(itemId))
+  ) {
+    response
+      .status(400)
+      .json({ error: "A nova ordem precisa conter todos os itens uma única vez." });
+    return;
+  }
+
+  const previousOrder = [...executionItems].sort((left, right) => left.order - right.order);
+  const byId = new Map(previousOrder.map((item) => [item.id, item]));
+  const reordered = itemIds.map((itemId, order) => {
+    const item = byId.get(itemId)!;
+    item.order = order;
+    return item;
+  });
+  blockExecution.items = reordered;
+
+  const now = new Date().toISOString();
+  const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
+  if (job?.itemOrchestration) {
+    const outputKey = job.request.outputContract.find(
+      (field) => field.portKey === job.itemOrchestration!.outputPort,
+    )?.key;
+    const combinedOutputKey = job.itemOrchestration.combinedOutputPort
+      ? job.request.outputContract.find(
+          (field) => field.portKey === job.itemOrchestration!.combinedOutputPort,
+        )?.key
+      : undefined;
+    const accumulatedItems = reordered.flatMap((item) => {
+      if (item.status !== "completed" || item.output === undefined) return [];
+      return Array.isArray(item.output)
+        ? (structuredClone(item.output) as RuntimeValue[])
+        : [structuredClone(item.output) as RuntimeValue];
+    });
+    if (outputKey) blockExecution.values[outputKey] = accumulatedItems as RuntimeValue;
+    if (combinedOutputKey) {
+      blockExecution.values[combinedOutputKey] = accumulatedItems
+        .filter((value): value is string => typeof value === "string")
+        .join(job.itemOrchestration.separator ?? "\n\n");
+    }
+    job.itemOrchestration.workItems = structuredClone(reordered);
+    job.itemOrchestration.accumulatedItems = structuredClone(accumulatedItems);
+    job.partialValues = structuredClone(blockExecution.values);
+    job.updatedAt = now;
+    database
+      .prepare(
+        `UPDATE plugin_jobs SET payload = ?, updated_at = ?
+         WHERE id = ? AND status NOT IN ('starting', 'pending', 'cancel_requested')`,
+      )
+      .run(JSON.stringify(job), now, job.id);
+  } else {
+    const oldIndexById = new Map(previousOrder.map((item, index) => [item.id, index]));
+    for (const field of block.outputs ?? []) {
+      const value = blockExecution.values[field.key];
+      if (!Array.isArray(value) || value.length !== previousOrder.length) continue;
+      blockExecution.values[field.key] = reordered.map(
+        (item) => structuredClone(value[oldIndexById.get(item.id)!]) as RuntimeValue,
+      ) as RuntimeValue;
+    }
+  }
+
+  recordBlockDeliveries(
+    execution,
+    block,
+    blockExecution.values,
+    blockExecution.status === "completed" ? "completed" : "partial",
+    now,
+  );
+  if (execution.outputStatus === "completed") {
+    const derived = deriveProcessOutput(execution);
+    if (derived) {
+      execution.output = derived;
+      recordProcessOutputDelivery(execution, derived.values, now);
+    }
+  }
+  persistPluginExecution(execution, project);
+  response.json({ execution, project });
+});
+
+app.patch("/api/executions/:id/blocks/:blockId/items/:itemId", (request, response) => {
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  if (!execution || !project) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  const revision = Number(request.body?.revision);
+  if (!Number.isInteger(revision) || revision !== (execution.revision ?? 0)) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de alterar este item." });
+    return;
+  }
+  const block = execution.methodSnapshot.blocks.find((item) => item.id === request.params.blockId);
+  const blockExecution = execution.blocks.find((item) => item.blockId === request.params.blockId);
+  const executionItems = blockExecution?.items;
+  if (!block || !blockExecution || !executionItems) {
+    response.status(404).json({ error: "Item da execução não encontrado." });
+    return;
+  }
+  const item = executionItems.find((candidate) => candidate.id === request.params.itemId);
+  if (!item) {
+    response.status(404).json({ error: "Item da execução não encontrado." });
+    return;
+  }
+  if (blockExecution.status === "in_progress") {
+    response
+      .status(409)
+      .json({ error: "Aguarde a execução atual terminar antes de alterar o item." });
+    return;
+  }
+
+  const currentOutput = item.output;
+  const submittedOutput = request.body?.output as BlockExecutionItemValue | undefined;
+  const unwrapSingle = (value: BlockExecutionItemValue | undefined) =>
+    Array.isArray(value) && value.length === 1 ? value[0] : value;
+  const currentSingle = unwrapSingle(currentOutput);
+  const submittedSingle = unwrapSingle(submittedOutput);
+  const currentIsText = typeof currentSingle === "string";
+  const currentIsMedia =
+    currentSingle &&
+    typeof currentSingle === "object" &&
+    !Array.isArray(currentSingle) &&
+    "mimeType" in currentSingle &&
+    typeof currentSingle.mimeType === "string" &&
+    /^(image|audio|video)\//.test(currentSingle.mimeType);
+  const submittedIsMedia =
+    submittedSingle &&
+    typeof submittedSingle === "object" &&
+    !Array.isArray(submittedSingle) &&
+    "mimeType" in submittedSingle &&
+    typeof submittedSingle.mimeType === "string" &&
+    /^(image|audio|video)\//.test(submittedSingle.mimeType) &&
+    "url" in submittedSingle &&
+    typeof submittedSingle.url === "string" &&
+    submittedSingle.url.startsWith("/api/files/");
+
+  if (currentIsText && typeof submittedSingle !== "string") {
+    response.status(400).json({ error: "Este item aceita somente texto." });
+    return;
+  }
+  if (currentIsMedia && !submittedIsMedia) {
+    response.status(400).json({ error: "Este item aceita somente imagem, áudio ou vídeo local." });
+    return;
+  }
+  if (!currentIsText && !currentIsMedia) {
+    response
+      .status(400)
+      .json({ error: "Este tipo de item ainda não pode ser alterado manualmente." });
+    return;
+  }
+
+  const normalizedOutput = Array.isArray(currentOutput)
+    ? ([structuredClone(submittedSingle)] as BlockExecutionItemValue)
+    : (structuredClone(submittedSingle) as BlockExecutionItemValue);
+  const now = new Date().toISOString();
+  item.output = normalizedOutput;
+  item.status = "completed";
+  item.error = undefined;
+  const currentAttempt = item.attempts.find((attempt) => attempt.attempt === item.attempt);
+  if (currentAttempt) {
+    currentAttempt.output = structuredClone(normalizedOutput);
+    currentAttempt.status = "completed";
+    currentAttempt.error = undefined;
+    currentAttempt.completedAt = now;
+  } else {
+    item.attempts.push({
+      attempt: item.attempt,
+      status: "completed",
+      input: structuredClone(item.input),
+      output: structuredClone(normalizedOutput),
+      completedAt: now,
+    });
+  }
+
+  const completedItems = executionItems.filter((candidate) => candidate.status === "completed");
+  const failedItem = executionItems.find((candidate) => candidate.status === "failed");
+  const activeItem = executionItems.find((candidate) => candidate.status === "in_progress");
+  blockExecution.itemProgress = {
+    total: executionItems.length,
+    completed: completedItems.length,
+    pending: Math.max(0, executionItems.length - completedItems.length),
+    currentIndex: failedItem?.order ?? activeItem?.order,
+    failedIndex: failedItem?.order,
+  };
+
+  const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
+  if (job?.itemOrchestration) {
+    const outputKey = job.request.outputContract.find(
+      (field) => field.portKey === job.itemOrchestration!.outputPort,
+    )?.key;
+    const combinedOutputKey = job.itemOrchestration.combinedOutputPort
+      ? job.request.outputContract.find(
+          (field) => field.portKey === job.itemOrchestration!.combinedOutputPort,
+        )?.key
+      : undefined;
+    const accumulatedItems = executionItems.flatMap((candidate) => {
+      if (candidate.status !== "completed" || candidate.output === undefined) return [];
+      return Array.isArray(candidate.output)
+        ? (structuredClone(candidate.output) as RuntimeValue[])
+        : [structuredClone(candidate.output) as RuntimeValue];
+    });
+    if (outputKey) blockExecution.values[outputKey] = accumulatedItems as RuntimeValue;
+    if (combinedOutputKey) {
+      blockExecution.values[combinedOutputKey] = accumulatedItems
+        .filter((value): value is string => typeof value === "string")
+        .join(job.itemOrchestration.separator ?? "\n\n");
+    }
+    job.itemOrchestration.workItems = structuredClone(executionItems);
+    job.itemOrchestration.accumulatedItems = structuredClone(accumulatedItems);
+    job.partialValues = structuredClone(blockExecution.values);
+    job.updatedAt = now;
+    database
+      .prepare(
+        `UPDATE plugin_jobs SET payload = ?, updated_at = ?
+         WHERE id = ? AND status NOT IN ('starting', 'pending', 'cancel_requested')`,
+      )
+      .run(JSON.stringify(job), now, job.id);
+  } else {
+    const listOutput = (block.outputs ?? []).find((field) => {
+      const value = blockExecution.values[field.key];
+      return Array.isArray(value) && value.length === executionItems.length;
+    });
+    if (listOutput) {
+      const values = [...(blockExecution.values[listOutput.key] as RuntimeValue[])];
+      values[item.order] = structuredClone(submittedSingle) as RuntimeValue;
+      blockExecution.values[listOutput.key] = values as RuntimeValue;
+    }
+  }
+
+  recordBlockDeliveries(
+    execution,
+    block,
+    blockExecution.values,
+    blockExecution.status === "completed" ? "completed" : "partial",
+    now,
+  );
+  if (execution.outputStatus === "completed") {
+    const derived = deriveProcessOutput(execution);
+    if (derived) {
+      execution.output = derived;
+      recordProcessOutputDelivery(execution, derived.values, now);
+    }
+  }
+  persistPluginExecution(execution, project);
+  response.json({ execution, project });
 });
 
 app.put("/api/executions/:id", (request, response) => {

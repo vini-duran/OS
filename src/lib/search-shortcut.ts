@@ -58,7 +58,7 @@ export function isEditableElement(element: unknown): boolean {
   }
 
   if (typeof el.closest === "function") {
-    if (Boolean(el.closest('[contenteditable="true"], [contenteditable=""]'))) {
+    if (el.closest('[contenteditable="true"], [contenteditable=""]')) {
       return true;
     }
   }

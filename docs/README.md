@@ -10,13 +10,15 @@ Para nosso fork no macOS: [atualização e instalação](DESKTOP_MACOS.md),
 não representa homologação do nosso ecossistema nessa plataforma.
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — visão normativa, domínio e fronteiras do produto.
-2. [`DESKTOP_V0.md`](DESKTOP_V0.md) — referência técnica Windows herdada.
+2. [`DESKTOP.md`](DESKTOP.md) — referência técnica Windows herdada.
 3. [`LEGAL_AND_LICENSING.md`](LEGAL_AND_LICENSING.md) — mapa jurídico e licenciamento.
 
-## Planos futuros
+## Regra de leitura
 
-- [`CHANNEL_STRUCTURE_SHARING_PLAN.md`](CHANNEL_STRUCTURE_SHARING_PLAN.md) — proposta para compartilhar Métodos, Biblioteca Estratégica, plugins e assets como uma Estrutura de Canal completa. Não autoriza implementação.
+`ARCHITECTURE.md` é a fonte normativa do produto. Roadmaps antigos, validações pontuais e documentos de transição não devem competir com ela: decisões já incorporadas à arquitetura são removidas dos documentos de planejamento. Notas históricas de versões permanecem em [`releases`](releases/).
 
-## Materiais de Métodos
+## Desenvolvimento de Métodos e plugins
 
-Os documentos em [`gpt-method-translator`](gpt-method-translator/) preservam o formato de tradução de processos para Métodos. A versão portátil e operacional dessas instruções está na skill [`../ecosystem/skills/contentflow-method-development`](../ecosystem/skills/contentflow-method-development/).
+- Métodos: [`../ecosystem/skills/contentflow-method-development`](../ecosystem/skills/contentflow-method-development/).
+- Plugins: [`../ecosystem/skills/contentflow-plugin-development`](../ecosystem/skills/contentflow-plugin-development/).
+- Protocolo público: [`../ecosystem/docs/protocol.md`](../ecosystem/docs/protocol.md).

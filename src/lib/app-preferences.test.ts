@@ -330,7 +330,7 @@ test("setPluginSection moves plugin between sections and updates sectionOrder", 
   assert.deepEqual(org.sectionOrder.none, ["p2"]);
 
   // Setting invalid section defaults to 'none'
-  org = setPluginSection(org, "p1", "invalid-sec" as any);
+  org = setPluginSection(org, "p1", "invalid-sec" as Parameters<typeof setPluginSection>[2]);
   assert.equal(org.items.p1.section, "none");
   assert.deepEqual(org.sectionOrder.generation, []);
   assert.ok(org.sectionOrder.none.includes("p1"));
@@ -464,4 +464,198 @@ test("organizePluginList organizes favorites, sections, hidden items, and depend
   assert.equal(genOnly.favorites.length, 0);
   assert.equal(genOnly.sections.generation.length, 2);
   assert.equal(genOnly.sections.editing.length, 0);
+});
+
+test("translates process reordering controls and feedback in all interface languages", () => {
+  const phrases = [
+    "Reordenar processo",
+    "Salvando ordem...",
+    "A nova ordem invalida uma dependência entre Métodos.",
+    "Mova o processo que fornece a entrada para uma posição anterior ao processo que depende dele.",
+    "Não foi possível salvar a ordem dos processos. Recarregue e tente novamente.",
+    "O Método mudou em outra aba. Recarregue antes de salvar suas alterações.",
+    "O projeto inicia na primeira etapa configurada do Canal:",
+    "Processos universais",
+    "Recolher processos universais",
+    "Expandir processos universais",
+    "Método principal",
+    "Dependência incluída",
+    "Conjunto do Canal",
+    "Coleções incluídas como estrutura",
+    "campos",
+    "vínculos",
+    "Compartilhar itens",
+    "Compartilhar Método",
+    "Compartilhar pacote de Métodos",
+    "Revise o conteúdo e a preparação antes de baixar o pacote.",
+    "Métodos incluídos no pacote",
+    "Baixar pacote",
+    "Este pacote declara itens incluídos.",
+    "Somente a estrutura das coleções está incluída.",
+    "Ordem resultante",
+    "As dependências selecionadas não formam uma ordem válida.",
+    "Itens incluídos no compartilhamento",
+    "Nenhuma dependência externa foi declarada.",
+    "Preparação necessária",
+    "Processo anterior",
+    "Fonte incluída na importação",
+    "Fonte já disponível no Canal de destino",
+    "Fonte ainda não disponível no Canal de destino",
+    "Abrir editor do Método para corrigir",
+    "Plugin ausente",
+    "Capability ausente",
+    "Plugin desativado ou indisponível",
+    "Conexão local pendente",
+    "Plugin pronto",
+    "Abrir Plugins para corrigir",
+    "Associe uma conexão local no editor do Método antes de executar.",
+    "O editor aceita somente um Método por vez.",
+    "O Método principal não foi identificado.",
+  ];
+  for (const phrase of phrases) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("translates the global orchestrator production controls", () => {
+  const phrases = [
+    "Nova produção global",
+    "Escolha os canais e quantos vídeos deseja gerar em cada um deles.",
+    "Fila em andamento",
+    "Disponível",
+    "Nome base dos projetos",
+    "Vídeos por canal",
+    "Modo de execução",
+    "Ponta a ponta",
+    "Iniciar produção global",
+    "canais selecionados",
+    "vídeos por canal",
+    "projetos no total",
+    "Produção global iniciada",
+    "Os projetos foram criados e as filas dos canais selecionados foram iniciadas.",
+    "Não foi possível iniciar a produção global",
+    "Escolha um canal para acompanhar ou retomar sua fila.",
+    "Acompanhe, interrompa ou retome a fila deste canal. Novas filas são criadas na produção global acima, com um ou vários canais selecionados.",
+    "Esta fila não está ativa no momento.",
+    "Este canal ainda não possui histórico de orquestração.",
+  ];
+  for (const phrase of phrases) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("translates the simplified plugin capability presentation", () => {
+  assert.equal(translate("O que este plugin faz", "en"), "What this plugin does");
+  assert.equal(translate("Recursos disponíveis", "es"), "Funciones disponibles");
+  assert.equal(translate("Detalhes técnicos", "en"), "Technical details");
+});
+
+test("translates completed output editing controls", () => {
+  assert.equal(translate("Editar entrega", "en"), "Edit output");
+  assert.equal(translate("Editar entrega", "es"), "Editar salida");
+  assert.equal(translate("Salvar alterações", "en"), "Save changes");
+  assert.equal(translate("Entrega atualizada", "es"), "Salida actualizada");
+  assert.equal(translate("Não foi possível salvar a edição", "en"), "Could not save the changes");
+});
+
+test("translates universal item delivery recovery controls", () => {
+  assert.equal(translate("Concluídos", "en"), "Completed");
+  assert.equal(translate("Pendentes", "es"), "Pendientes");
+  assert.equal(translate("Falhou no item", "en"), "Failed on item");
+  assert.equal(translate("Continuar pendentes", "es"), "Continuar pendientes");
+  assert.equal(translate("Recomeçar tudo", "en"), "Restart all");
+  assert.equal(
+    translate("O núcleo preservou os itens concluídos deste lote.", "es"),
+    "El núcleo conservó los elementos completados de este lote.",
+  );
+  assert.equal(
+    translate("Itens pendentes preparados para continuar.", "en"),
+    "Pending items are ready to continue.",
+  );
+  assert.equal(translate("Finalizar com entregas atuais", "en"), "Finish with current outputs");
+  assert.equal(
+    translate("Usar entrega atual e continuar", "es"),
+    "Usar la salida actual y continuar",
+  );
+  assert.equal(translate("Refazer este bloco", "en"), "Rerun this block");
+  assert.equal(translate("Reiniciar processo do zero", "es"), "Reiniciar proceso desde cero");
+  assert.equal(
+    translate("O que já foi concluído permanece consolidado. Escolha como continuar.", "en"),
+    "Completed work remains consolidated. Choose how to continue.",
+  );
+  assert.equal(
+    translate("Processo concluído com as entregas atuais.", "es"),
+    "Proceso completado con las salidas actuales.",
+  );
+  assert.equal(translate("Itens da execução", "en"), "Execution items");
+  assert.equal(translate("Editar item", "es"), "Editar elemento");
+  assert.equal(translate("Substituir arquivo", "en"), "Replace file");
+  assert.equal(translate("Item substituído", "es"), "Elemento sustituido");
+  assert.equal(translate("Aplicar importação", "en"), "Apply import");
+  assert.equal(translate("Base reutilizada no Canal", "es"), "Base reutilizada en el Canal");
+  assert.equal(
+    translate(
+      "Revise a estrutura e a prontidão local antes de aplicar o Método neste Canal.",
+      "en",
+    ),
+    "Review the structure and local readiness before applying the Method to this Channel.",
+  );
+  assert.equal(translate("Ordem dos itens atualizada", "en"), "Item order updated");
+  assert.equal(
+    translate("Não foi possível reorganizar os itens", "es"),
+    "No se pudieron reorganizar los elementos",
+  );
+  assert.equal(
+    translate("Edite, substitua ou arraste os itens para reorganizar a sequência.", "en"),
+    "Edit, replace, or drag items to reorder the sequence.",
+  );
+  assert.equal(
+    translate("Edite textos ou substitua mídias sem alterar a posição do item.", "en"),
+    "Edit text or replace media without changing the item's position.",
+  );
+});
+
+test("translates the hybrid batch orchestrator labels", () => {
+  assert.equal(translate("Lote híbrido", "en"), "Hybrid batch");
+  assert.equal(translate("Lote híbrido", "es"), "Lote híbrido");
+  assert.equal(
+    translate(
+      "Agrupa Tema, Título e Thumbnail quando forem a próxima etapa elegível; os demais processos seguem por projeto.",
+      "en",
+    ),
+    "Groups Theme, Title, and Thumbnail when they are the next eligible stage; the other processes continue per project.",
+  );
+  assert.equal(
+    translate(
+      "Agrupa Tema, Título e Thumbnail quando forem a próxima etapa elegível; os demais processos seguem por projeto.",
+      "es",
+    ),
+    "Agrupa Tema, Título y Thumbnail cuando sean la siguiente etapa elegible; los demás procesos continúan por proyecto.",
+  );
+});
+
+test("translates the global orchestrator page in all supported languages", () => {
+  const phrases = [
+    "Orquestrador",
+    "Centralize as filas de produção dos seus canais em um só lugar.",
+    "Canais monitorados",
+    "Filas ativas",
+    "Aguardando ação",
+    "Filas por canal",
+    "Escolha um canal para criar, acompanhar ou retomar sua fila.",
+    "Sem fila",
+    "Produção e fila deste canal",
+    "Nenhum canal disponível",
+    "Crie um canal para começar a organizar filas de produção.",
+    "Com erro",
+  ];
+  for (const phrase of phrases) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
 });

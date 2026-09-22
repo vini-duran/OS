@@ -4,6 +4,7 @@ import {
   PROCESS_META,
   PROCESS_ORDER,
   type ActionBlock,
+  type BlockItemRetryScope,
   type BlockExecution,
   type Channel,
   type ChannelLibraryItem,
@@ -23,8 +24,10 @@ import {
   normalizeMethodBlocks,
 } from "@/lib/human-workflow";
 import { normalizeExecutionDeliveries } from "@/lib/deliveries";
+import { effectiveProcessOrder } from "@/lib/process-order";
+import type { PortableCollectionV2, PortableLibraryItemV2 } from "@/lib/method-file";
 import {
-  ACTIVE_ORCHESTRATOR_STATUSES,
+  executionOrchestratorIsActive,
   type ExecutionOrchestrator,
   type ExecutionOrchestratorMode,
 } from "@/lib/execution-orchestrator";
@@ -230,9 +233,12 @@ export function useChannelExecutionOrchestrator(channelId: string) {
   const storeVersion = useClientStoreVersion();
   if (storeVersion < 0) return undefined;
   const orchestrators = db.orchestrators.filter((item) => item.channelId === channelId);
-  return (
-    orchestrators.find((item) => ACTIVE_ORCHESTRATOR_STATUSES.has(item.status)) ?? orchestrators[0]
-  );
+  return orchestrators.find(executionOrchestratorIsActive) ?? orchestrators[0];
+}
+
+export function useExecutionOrchestrators() {
+  const storeVersion = useClientStoreVersion();
+  return storeVersion >= 0 ? db.orchestrators : [];
 }
 
 type ExecutionOrchestratorState = {
@@ -259,6 +265,29 @@ export async function startExecutionOrchestrator(input: {
   }
   await refreshState(true);
   return body.orchestrator;
+}
+
+export async function startGlobalExecutionOrchestration(input: {
+  channelIds: string[];
+  mode: ExecutionOrchestratorMode;
+  quantity: number;
+  projectPrefix?: string;
+}) {
+  const response = await fetch("/api/orchestrators/global", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = (await response.json()) as {
+    orchestrators?: ExecutionOrchestrator[];
+    globalBatchId?: string;
+    error?: string;
+  };
+  if (!response.ok || !body.orchestrators?.length || !body.globalBatchId) {
+    throw new Error(body.error ?? "Não foi possível iniciar a produção global.");
+  }
+  await refreshState(true);
+  return body;
 }
 
 export async function refreshExecutionOrchestrator(orchestratorId: string) {
@@ -418,6 +447,14 @@ export async function updateChannel(channel: Channel) {
   return db.channels.find((item) => item.id === channel.id);
 }
 
+export async function updateProcessOrder(channel: Channel, processOrder: UniversalProcess[]) {
+  await request(`/api/channels/${encodeURIComponent(channel.id)}/process-order`, "PUT", {
+    processOrder,
+    definitionRevision: channel.definitionRevision ?? 0,
+  });
+  await refreshState(true);
+}
+
 export async function resolveYouTubeChannel(handle: string): Promise<YouTubeChannelProfile> {
   const response = await fetch(`/api/youtube/channel?handle=${encodeURIComponent(handle)}`);
   if (!response.ok) throw new Error(await readApiError(response));
@@ -438,8 +475,7 @@ export async function syncChannelFromYouTube(channelId: string) {
   return updated;
 }
 
-const methodQueues = new Map<string, Promise<void>>();
-const methodTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const methodQueues = new Map<string, Promise<number | undefined>>();
 const methodDraftKey = (channelId: string, processType: UniversalProcess) =>
   `contentflow:method-draft:${channelId}:${processType}`;
 export function readMethodDraft(
@@ -459,23 +495,18 @@ export function rememberMethodDraft(
   channelId: string,
   processType: UniversalProcess,
   method: ProcessMethod,
-  onError: (error: Error) => void,
 ) {
   const key = methodDraftKey(channelId, processType);
   localStorage.setItem(key, JSON.stringify(method));
-  clearTimeout(methodTimers.get(key));
-  methodTimers.set(
-    key,
-    setTimeout(() => {
-      methodTimers.delete(key);
-      void setChannelMethod(channelId, processType, method).catch(onError);
-    }, 700),
-  );
+}
+export function clearMethodDraft(channelId: string, processType: UniversalProcess) {
+  localStorage.removeItem(methodDraftKey(channelId, processType));
 }
 export async function setChannelMethod(
   channelId: string,
   processType: UniversalProcess,
   method: ProcessMethod,
+  definitionRevision?: number,
 ) {
   const key = methodDraftKey(channelId, processType);
   const snapshot = JSON.stringify(method);
@@ -486,13 +517,17 @@ export async function setChannelMethod(
         name: method.name,
         processType,
         blocks: normalizeMethodBlocks(method.blocks, processType),
+        definitionRevision,
       });
       if (localStorage.getItem(key) === snapshot) localStorage.removeItem(key);
       await refreshState(true);
+      return (
+        db.channels.find((item) => item.id === channelId)?.definitionRevision ?? definitionRevision
+      );
     });
   methodQueues.set(key, pending);
   try {
-    await pending;
+    return await pending;
   } finally {
     if (methodQueues.get(key) === pending) methodQueues.delete(key);
   }
@@ -504,6 +539,35 @@ export async function setChannelMethods(
 ) {
   await request(`/api/channels/${channelId}/methods`, "PUT", { methods });
   await refreshState(true);
+}
+
+export async function applyMethodTransfer(input: {
+  targetChannelId?: string;
+  sourceChannelId?: string;
+  newChannel?: { id: string; name: string; methodsImageUrl?: string };
+  expectedDefinitionRevision?: number;
+  methods: ProcessMethod[];
+  collections: PortableCollectionV2[];
+  itemsIncluded?: boolean;
+  items?: PortableLibraryItemV2[];
+  preferredOrder: UniversalProcess[];
+  selectedProcesses: UniversalProcess[];
+  preserveLocalConnections?: boolean;
+}) {
+  const response = await fetch("/api/method-transfers/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(await readApiError(response));
+  const result = (await response.json()) as {
+    channel: Channel;
+    processOrder: UniversalProcess[];
+    collections: StrategicCollection[];
+    items: ChannelLibraryItem[];
+  };
+  await refreshState(true);
+  return result;
 }
 
 export async function removeChannel(id: string) {
@@ -526,7 +590,9 @@ export async function createProject(input: NewProjectInput): Promise<Project> {
     id: crypto.randomUUID(),
     title: input.title.trim(),
     channelId: input.channelId,
-    currentStage: "theme",
+    currentStage: effectiveProcessOrder(
+      db.channels.find((channel) => channel.id === input.channelId) ?? {},
+    )[0],
     state: "not_started",
     progress: 0,
     deadline: input.deadline?.trim() || "Sem prazo",
@@ -667,16 +733,30 @@ export function completeProcessOutput(executionId: string, values: Record<string
     values,
   });
 }
+export function acceptBlockDelivery(executionId: string, blockId: string) {
+  return command<{ ok: true; completedProcess: boolean } | { ok: false; missing: string[] }>(
+    "acceptBlockDelivery",
+    { executionId, blockId },
+  );
+}
 export function retryBlockExecution(
   executionId: string,
   blockId: string,
-  confirmSnapshotRevision?: string,
+  retryScopeOrOptions:
+    | BlockItemRetryScope
+    | { confirmSnapshotRevision?: string; retryScope?: BlockItemRetryScope; itemId?: string }
+    | string = "all",
+  itemId?: string,
 ) {
-  return command<boolean>("retry", {
-    executionId,
-    blockId,
-    ...(confirmSnapshotRevision ? { confirmSnapshotRevision } : {}),
-  });
+  const options =
+    typeof retryScopeOrOptions === "object"
+      ? retryScopeOrOptions
+      : retryScopeOrOptions === "all" ||
+          retryScopeOrOptions === "remaining" ||
+          retryScopeOrOptions === "selected"
+        ? { retryScope: retryScopeOrOptions, itemId }
+        : { confirmSnapshotRevision: retryScopeOrOptions };
+  return command<boolean>("retry", { executionId, blockId, ...options });
 }
 export function resetStage(projectId: string, stage: ProcessId) {
   return command<boolean>("reset", { projectId, processType: stage });
@@ -692,6 +772,47 @@ export async function refreshProcessExecution(
   _processType?: ProcessId,
 ) {
   return refreshState();
+}
+
+export async function updateBlockExecutionValues(
+  executionId: string,
+  blockId: string,
+  revision: number,
+  values: Record<string, RuntimeValue>,
+) {
+  await request(`/api/executions/${executionId}/blocks/${blockId}/values`, "PATCH", {
+    revision,
+    values,
+  });
+  await refreshState(true);
+}
+
+export async function updateBlockExecutionItemOutput(
+  executionId: string,
+  blockId: string,
+  itemId: string,
+  revision: number,
+  output: unknown,
+) {
+  await request(
+    `/api/executions/${executionId}/blocks/${blockId}/items/${encodeURIComponent(itemId)}`,
+    "PATCH",
+    { revision, output },
+  );
+  await refreshState(true);
+}
+
+export async function reorderBlockExecutionItems(
+  executionId: string,
+  blockId: string,
+  revision: number,
+  itemIds: string[],
+) {
+  await request(`/api/executions/${executionId}/blocks/${blockId}/items-order`, "PATCH", {
+    revision,
+    itemIds,
+  });
+  await refreshState(true);
 }
 
 export async function createLibraryItem(
@@ -754,7 +875,7 @@ export async function uploadLocalFile(file: File): Promise<StoredFile> {
   return response.json() as Promise<StoredFile>;
 }
 
-async function request(url: string, method: "POST" | "PUT" | "DELETE", body?: unknown) {
+async function request(url: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) {
   const response = await fetch(url, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
