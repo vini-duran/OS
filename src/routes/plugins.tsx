@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import {
   AlertTriangle,
   ArrowDown,
@@ -181,6 +182,8 @@ function PluginsPage() {
   const [updates, setUpdates] = useState<Record<string, PluginUpdate>>({});
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [search, setSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useFocusSearchShortcut(searchInputRef);
   const [deliveryFilter, setDeliveryFilter] = useState<"all" | PluginDeliveryType>("all");
   const [blockFilter, setBlockFilter] = useState<"all" | BlockType>("all");
   const [processFilter, setProcessFilter] = useState<"all" | UniversalProcess>("all");
@@ -440,10 +443,12 @@ function PluginsPage() {
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                ref={searchInputRef}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Pesquisar plugins por nome..."
                 className="pl-9"
+                aria-keyshortcuts="Meta+F Control+F"
               />
             </div>
             <Select

@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
+import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import { ChannelAvatar } from "@/components/channel-avatar";
 import { ProcessStatus } from "@/components/process-status";
 import { ExecutionOrchestratorPanel } from "@/components/execution-orchestrator-panel";
@@ -69,6 +70,8 @@ function ChannelWorkspace() {
   const executions = useChannelExecutions(channelId);
   const [view, setView] = useState<"cards" | "list">("cards");
   const [search, setSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useFocusSearchShortcut(searchInputRef);
   const [editingChannel, setEditingChannel] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [projectPendingRemoval, setProjectPendingRemoval] = useState<Project | null>(null);
@@ -259,10 +262,12 @@ function ChannelWorkspace() {
             <div className="relative w-full max-w-xs">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
+                ref={searchInputRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar projeto…"
                 className="h-9 border-border/60 bg-background/60 pl-8 text-xs"
+                aria-keyshortcuts="Meta+F Control+F"
               />
             </div>
             <div

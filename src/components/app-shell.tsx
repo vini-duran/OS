@@ -1,8 +1,11 @@
 import { type ReactNode } from "react";
 import { Toaster } from "@/components/ui/sonner";
+import { useGlobalSearchShortcut } from "@/lib/search-shortcut";
 import { AppSidebar } from "./app-sidebar";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  useGlobalSearchShortcut();
+
   return (
     <>
       <div className="flex min-h-screen w-full bg-background">

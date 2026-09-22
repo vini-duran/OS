@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { ChannelAvatar } from "@/components/channel-avatar";
+import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import { MethodAgentCta } from "@/components/method-agent-cta";
 import { TopBar } from "@/components/top-bar";
 import { Badge } from "@/components/ui/badge";
@@ -100,6 +101,8 @@ function MethodsLibraryPage() {
   const collections = useLibraryCollections();
   const { methodsLibraryView: view, setMethodsLibraryView } = useAppPreferences();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  useFocusSearchShortcut(searchInputRef);
   const [query, setQuery] = useState("");
   const [processFilter, setProcessFilter] = useState<UniversalProcess | "all">("all");
   const [transfer, setTransfer] = useState<TransferDraft>();
@@ -395,10 +398,12 @@ function MethodsLibraryPage() {
             <div className="relative min-w-0 flex-1">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                ref={searchInputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Buscar por nome, Canal, processo ou ação..."
                 className="pl-9"
+                aria-keyshortcuts="Meta+F Control+F"
               />
             </div>
             {view === "methods" && (
