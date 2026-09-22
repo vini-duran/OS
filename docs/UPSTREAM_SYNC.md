@@ -7,11 +7,17 @@ Este documento encaminha ao procedimento único; não mantém outra sequência.
 
 1. Identificar upstream ou melhoria própria, comparar impactos e preservar personalizações.
 2. Preparar em checkout/branch isolados; testar fonte, contratos e pacote congelado.
+   No macOS, empacote a candidata com `scripts/package-macos-release.sh`:
+   ele assina uma cópia do bundle, extrai o ZIP resultante e verifica
+   `codesign --verify --deep --strict`. O `electron-builder --mac dir`
+   sozinho não prova que o ZIP poderá ser aceito pelo atualizador.
 3. Ensaiar instalação, atualização, recuperação e abertura com dados isolados.
 4. Validar os mesmos bytes no alvo real autorizado, com pausa, backup e recibo.
 5. Após validação/autorização, publicar fonte por PR e artefato imutável no fork.
 6. Conferir download remoto; promover catálogo/manifestos/rotas/docs no universal
-   por último; verificar main e encaminhar teste de consumo à outra máquina.
+   por último; executar `scripts/check_release_alignment.py` na main
+   universal publicada. Enquanto a release mais recente do fork divergir do
+   manifesto ativo, a distribuição para outras máquinas está pendente.
 
 A [matriz do manual](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/evolucao/README.md)
 obriga atualizar todas as referências afetadas a cada publicação. A versão
