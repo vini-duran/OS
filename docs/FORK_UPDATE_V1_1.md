@@ -14,6 +14,17 @@ Esses testes não comprovam autenticação externa, publicação ou funcionament
 
 ## Atualização em outras máquinas
 
-Use o pacote macOS da release deste fork, faça backup recuperável do `.app` e do diretório de dados local, confirme que não há jobs ativos e teste primeiro com uma cópia do banco. Só então substitua o aplicativo. Compare plugins, projetos, execuções e vínculos antes/depois. Se a candidata falhar, restaure o aplicativo anterior sem sobrescrever automaticamente um banco que já recebeu novos dados.
+**A release `v1.1.0-ecossistema.1` não deve ser usada para atualizar outras
+máquinas pelo atualizador canônico:** o ZIP publicado falha em
+`codesign --verify --deep --strict` após extração. A correção requer novo
+pacote e nova tag imutável. Até a promoção da rota validada no Universal,
+preserve a instalação atual da máquina consumidora.
+
+Depois da promoção, use apenas o pacote e a rota declarados no manifesto
+Universal. Faça backup recuperável do `.app` e do diretório de dados local,
+confirme que não há jobs ativos e teste primeiro com uma cópia do banco. Só
+então substitua o aplicativo. Compare plugins, projetos, execuções e vínculos
+antes/depois. Se a candidata falhar, restaure o aplicativo anterior sem
+sobrescrever automaticamente um banco que já recebeu novos dados.
 
 O local fixo de projetos da equipe é `<base>/projects/<id-estavel>`, conforme o manual de workplace em `ContentFlow_Universal_Integrations`. A conversão de projetos existentes exige inventário, cópia, verificação de referências e um teste com o caminho antigo indisponível; não deve ocorrer como efeito colateral da atualização do aplicativo.
