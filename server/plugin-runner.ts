@@ -376,6 +376,7 @@ export async function executeRegisteredPlugin(
   mkdirSync(outputDirectory, { recursive: true });
   const realWorkspaceDirectory = realpathSync(workspaceDirectory);
   const realProfileDirectory = profileDirectory ? realpathSync(profileDirectory) : undefined;
+  const realOutputDirectory = realpathSync(outputDirectory);
   const shouldOpenCoreBrowser = Boolean(
     realProfileDirectory &&
     plugin.manifest.browserRuntime?.lifecycle === "core" &&
@@ -582,7 +583,7 @@ export async function executeRegisteredPlugin(
                   },
                   partialArtifacts: event.update.artifacts,
                 },
-                outputDirectory,
+                realOutputDirectory,
                 artifactDirectory,
                 plugin.manifest,
                 {
@@ -653,7 +654,7 @@ export async function executeRegisteredPlugin(
               partialArtifacts: update.artifacts,
               logs: update.logs,
             },
-            outputDirectory,
+            realOutputDirectory,
             artifactDirectory,
             plugin.manifest,
             {
@@ -705,7 +706,7 @@ export async function executeRegisteredPlugin(
       void partialChain.then(() =>
         finish(() => {
           if (partialFailure) {
-            rmSync(outputDirectory, { recursive: true, force: true });
+            rmSync(realOutputDirectory, { recursive: true, force: true });
             reject(partialFailure);
             return;
           }
@@ -713,7 +714,7 @@ export async function executeRegisteredPlugin(
             const pluginResponse = JSON.parse(stdout.trim()) as PluginExecutionResponse;
             void importPluginArtifacts(
               pluginResponse,
-              outputDirectory,
+              realOutputDirectory,
               artifactDirectory,
               plugin.manifest,
               {
@@ -722,10 +723,10 @@ export async function executeRegisteredPlugin(
               },
             )
               .then(resolve, reject)
-              .finally(() => rmSync(outputDirectory, { recursive: true, force: true }));
+              .finally(() => rmSync(realOutputDirectory, { recursive: true, force: true }));
           } catch {
             reject(new Error(stderr.trim() || "O plugin devolveu uma resposta inválida."));
-            rmSync(outputDirectory, { recursive: true, force: true });
+            rmSync(realOutputDirectory, { recursive: true, force: true });
           }
         }),
       );
@@ -744,7 +745,7 @@ export async function executeRegisteredPlugin(
           uploadsDirectory,
           workspaceDirectory: realWorkspaceDirectory,
           ...(realProfileDirectory ? { profileDirectory: realProfileDirectory } : {}),
-          outputDirectory,
+          outputDirectory: realOutputDirectory,
           networkEnforced: nodeMajor >= 26,
         },
       })}\n`,

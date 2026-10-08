@@ -567,7 +567,7 @@ test("V10 — retryMode full limpa conversa e materializa feedback/contexto/atta
     name: "full.png",
     mimeType: "image/png",
     size: 42,
-    url: "contentflow://full.png",
+    url: "/api/files/image-full.png",
   };
   Object.assign(execution.blocks[0], {
     status: "completed",
@@ -617,7 +617,7 @@ test("V11 — conversation_feedback preserva conversa e fallback da tentativa re
     name: "conversation.png",
     mimeType: "image/png",
     size: 84,
-    url: "contentflow://conversation.png",
+    url: "/api/files/image-conversation.png",
   };
   const conversation = {
     pluginId: "com.contentflow.characterization",
@@ -845,7 +845,7 @@ test("P03 — humano e plugin aplicam os mesmos modos editoriais de conversa", (
       name: `${retryMode}.png`,
       mimeType: "image/png",
       size: 42,
-      url: `contentflow://${retryMode}.png`,
+      url: `/api/files/${retryMode}.png`,
     };
     const conversation = {
       pluginId: "com.contentflow.characterization",

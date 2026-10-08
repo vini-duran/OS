@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   ActionBlock,
+  Channel,
   ProcessMethod,
   StrategicCollection,
   ValueShape,
@@ -17,6 +18,9 @@ import {
   serializeMethodPackFile,
   serializePortableMethodTransfer,
 } from "../src/lib/method-file";
+import { areInputShapesCompatible } from "../src/lib/data-shape";
+import { validateBuilderMethods, type BuilderPluginContext } from "./builder-methods";
+import type { RegisteredPlugin } from "./plugin-runner";
 
 const textOne: ValueShape = {
   kind: "content",
@@ -302,4 +306,289 @@ test("transferência portátil v3 inclui dependências e omite itens por padrão
   const parsed = parseMethodImportFile(serializePortableMethodTransfer(plan));
   assert.equal(parsed.version, 3);
   assert.ok("methods" in parsed);
+});
+
+function internalReceiptShape(): ValueShape {
+  return {
+    kind: "record",
+    cardinality: "one",
+    fields: [
+      {
+        id: "fld-title",
+        label: "Title",
+        key: "title",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+        required: true,
+      },
+      {
+        id: "fld-count",
+        label: "Count",
+        key: "count",
+        shape: { kind: "control", control: "number", cardinality: "one" },
+        required: true,
+      },
+      {
+        id: "fld-flag",
+        label: "Flag",
+        key: "flag",
+        shape: { kind: "control", control: "boolean", cardinality: "one" },
+        required: false,
+      },
+    ],
+  };
+}
+
+function recordPluginContext(): BuilderPluginContext {
+  const receipt = internalReceiptShape();
+  const plugin: RegisteredPlugin = {
+    id: "test.internal.record",
+    source: "local",
+    directory: "record-test",
+    absoluteDirectory: "record-test",
+    entrypoint: "index.mjs",
+    executable: true,
+    manifest: {
+      apiVersion: "2",
+      id: "test.internal.record",
+      name: "Record test",
+      version: "1.0.0",
+      description: "Fixture",
+      author: "ContentFlow",
+      license: "proprietary",
+      runtime: { kind: "node", version: ">=26", module: "esm" },
+      entrypoint: "index.mjs",
+      permissions: [],
+      capabilities: [
+        {
+          id: "make-receipt",
+          operator: "IA",
+          blockTypes: ["CRIAR"],
+          processTypes: ["script"],
+          inputPorts: [],
+          outputPorts: [
+            {
+              key: "out-receipt",
+              label: "Receipt",
+              shape: structuredClone(receipt),
+              required: true,
+              internal: true,
+            },
+          ],
+          execution: { mode: "immediate" },
+          sideEffects: [],
+          cost: { model: "free", estimateSupported: false },
+          dataPolicy: { sendsDataToThirdParties: false },
+          blockConfigSchema: { type: "object", properties: {}, additionalProperties: false },
+          outputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+        {
+          id: "use-receipt",
+          operator: "IA",
+          blockTypes: ["CRIAR"],
+          processTypes: ["script"],
+          inputPorts: [
+            {
+              key: "in-receipt",
+              label: "Receipt",
+              shape: structuredClone(receipt),
+              required: true,
+              internal: true,
+            },
+          ],
+          outputPorts: [
+            {
+              key: "script",
+              label: "Script",
+              shape: structuredClone(textOne),
+              required: true,
+            },
+          ],
+          execution: { mode: "immediate" },
+          sideEffects: [],
+          cost: { model: "free", estimateSupported: false },
+          dataPolicy: { sendsDataToThirdParties: false },
+          blockConfigSchema: { type: "object", properties: {}, additionalProperties: false },
+          outputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+      ],
+    },
+  };
+  return { plugin, enabled: true, connections: [], profiles: [] };
+}
+
+function recordProducerConsumerBlocks(): ActionBlock[] {
+  const receiptForOutput = internalReceiptShape();
+  const receiptForInput = structuredClone(receiptForOutput);
+  return [
+    {
+      id: "produce",
+      type: "CRIAR",
+      operator: "IA",
+      name: "Produce",
+      order: 0,
+      parameters: [],
+      inputs: [],
+      outputs: [
+        {
+          id: "prod-out",
+          label: "Receipt",
+          key: "receipt",
+          shape: receiptForOutput,
+          required: true,
+          portKey: "out-receipt",
+        },
+      ],
+      plugin: {
+        pluginId: "test.internal.record",
+        capabilityId: "make-receipt",
+        configuration: {},
+      },
+    },
+    {
+      id: "consume",
+      type: "CRIAR",
+      operator: "IA",
+      name: "Consume",
+      order: 1,
+      parameters: [],
+      inputs: [
+        {
+          id: "cons-in",
+          label: "Receipt",
+          shape: receiptForInput,
+          binding: { kind: "previous_block", blockId: "produce", outputKey: "receipt" },
+          portKey: "in-receipt",
+        },
+      ],
+      outputs: [
+        {
+          id: "cons-out",
+          label: "Script",
+          key: "script",
+          shape: structuredClone(textOne),
+          required: true,
+          portKey: "script",
+        },
+      ],
+      plugin: {
+        pluginId: "test.internal.record",
+        capabilityId: "use-receipt",
+        configuration: {},
+      },
+    },
+  ];
+}
+
+test("importação preserva shape record fechado de porta plugin explícita e continua válida", () => {
+  const plugins = [recordPluginContext()];
+  const channel = { id: "channel-1", name: "Canal", handle: "@c", niche: "Edu", language: "pt-BR", methods: {} } as Channel;
+  const source = method(recordProducerConsumerBlocks(), "script");
+  const sourceSnapshot = structuredClone(source.blocks);
+
+  const sourceCheck = validateBuilderMethods({
+    channel,
+    methods: { script: structuredClone(source) },
+    plugins,
+    collections: [],
+  });
+  assert.equal(sourceCheck.ok, true, sourceCheck.errors.join("\n"));
+
+  const parsed = parseMethodFile(serializeMethodFile(source.name, source));
+  let sequence = 0;
+  const copied = copyImportedBlocks(parsed.method.processType, parsed.method.blocks, (prefix) => `${prefix}-${++sequence}`);
+
+  const copiedProducerOutput = copied[0].outputs?.[0];
+  const copiedConsumerInput = copied[1].inputs?.[0];
+  const sourceProducerOutput = sourceSnapshot[0].outputs?.[0];
+  const sourceConsumerInput = sourceSnapshot[1].inputs?.[0];
+  assert.ok(copiedProducerOutput && copiedConsumerInput && sourceProducerOutput && sourceConsumerInput);
+  assert.deepEqual(copiedProducerOutput.shape, sourceProducerOutput.shape);
+  assert.deepEqual(copiedConsumerInput.shape, sourceConsumerInput.shape);
+  assert.deepEqual(copiedProducerOutput.shape, copiedConsumerInput.shape);
+  assert.deepEqual(
+    (copiedProducerOutput.shape as { fields: Array<{ id: string }> }).fields.map((field) => field.id),
+    ["fld-title", "fld-count", "fld-flag"],
+  );
+  assert.notEqual(copied[0].id, sourceSnapshot[0].id);
+  assert.notEqual(copied[1].id, sourceSnapshot[1].id);
+  assert.notEqual(copiedProducerOutput.id, sourceProducerOutput.id);
+  assert.notEqual(copiedConsumerInput.id, sourceConsumerInput.id);
+  assert.notEqual(
+    copied[0].outputs?.[0],
+    source.blocks[0].outputs?.[0],
+  );
+  assert.equal(
+    areInputShapesCompatible(copiedProducerOutput.shape, copiedConsumerInput.shape),
+    true,
+  );
+
+  const copiedMethod = method(copied, "script");
+  const copiedCheck = validateBuilderMethods({
+    channel,
+    methods: { script: copiedMethod },
+    plugins,
+    collections: [],
+  });
+  assert.equal(copiedCheck.ok, true, copiedCheck.errors.join("\n"));
+
+  assert.deepEqual(source.blocks, sourceSnapshot);
+});
+
+test("mesma cópia com field IDs remapeados falha na porta interna exata", () => {
+  const plugins = [recordPluginContext()];
+  const channel = { id: "channel-1", name: "Canal", handle: "@c", niche: "Edu", language: "pt-BR", methods: {} } as Channel;
+  const source = method(recordProducerConsumerBlocks(), "script");
+  const parsed = parseMethodFile(serializeMethodFile(source.name, source));
+  let sequence = 0;
+  const copied = copyImportedBlocks(parsed.method.processType, parsed.method.blocks, (prefix) => `${prefix}-${++sequence}`);
+  const broken = structuredClone(copied);
+  let brokenSequence = 10_000;
+  for (const block of broken) {
+    for (const input of block.inputs ?? []) {
+      if (input.shape.kind === "record") {
+        for (const field of input.shape.fields) field.id = `broken-field-${++brokenSequence}`;
+      }
+    }
+    for (const output of block.outputs ?? []) {
+      if (output.shape.kind === "record") {
+        for (const field of output.shape.fields) field.id = `broken-field-${++brokenSequence}`;
+      }
+    }
+  }
+  const brokenProducerOutput = broken[0].outputs?.[0];
+  const brokenConsumerInput = broken[1].inputs?.[0];
+  assert.ok(brokenProducerOutput && brokenConsumerInput);
+  assert.equal(areInputShapesCompatible(brokenProducerOutput.shape, brokenConsumerInput.shape), true);
+  const brokenCheck = validateBuilderMethods({
+    channel,
+    methods: { script: method(broken, "script") },
+    plugins,
+    collections: [],
+  });
+  assert.equal(brokenCheck.ok, false);
+  assert.match(brokenCheck.errors.join("\n"), /incompatível/);
+});
+
+test("cópia remapeia field IDs de record humano sem porta explícita", () => {
+  const receipt = internalReceiptShape();
+  const human: ActionBlock = {
+    id: "human",
+    type: "CRIAR",
+    operator: "Humano",
+    name: "Human",
+    order: 0,
+    parameters: [],
+    inputs: [{ id: "human-in", label: "Data", shape: structuredClone(receipt), binding: { kind: "runtime" } }],
+    outputs: [{ id: "human-out", label: "Data", key: "data", shape: structuredClone(receipt), required: true }],
+  };
+  const snapshot = structuredClone([human]);
+  let sequence = 0;
+  const copied = copyImportedBlocks("script", [human], (prefix) => `${prefix}-${++sequence}`);
+  const copiedInputFields = (copied[0].inputs?.[0].shape as { fields: Array<{ id: string }> }).fields;
+  const copiedOutputFields = (copied[0].outputs?.[0].shape as { fields: Array<{ id: string }> }).fields;
+  assert.ok(copiedInputFields.length === 3 && copiedOutputFields.length === 3);
+  for (const field of [...copiedInputFields, ...copiedOutputFields]) {
+    assert.ok(!["fld-title", "fld-count", "fld-flag"].includes(field.id));
+  }
+  assert.deepEqual([human], snapshot);
 });

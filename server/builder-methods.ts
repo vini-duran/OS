@@ -15,6 +15,11 @@ import { effectiveProcessOrder, validateProcessDependencies } from "../src/lib/p
 import type { RegisteredPlugin } from "./plugin-runner";
 import { pluginConnectionRequired } from "../src/lib/plugin-contract";
 import { validateLocalProfileExecution } from "./profile-execution-policy";
+import {
+  isNativeHumanDatetimeShape,
+  proveNativeHumanDatetimeGraphs,
+  type NativeHumanDatetimeProof,
+} from "./native-human-datetime-contract";
 const methodSchema = processMethodV3Schema.refine((method) => method.blocks.length > 0, {
   message: "O Método precisa ter pelo menos um bloco.",
   path: ["blocks"],
@@ -32,7 +37,7 @@ export const BUILDER_METHOD_CONTRACT = {
     associations:
       "O plugin produtor fornece IDs canônicos das entradas ao modelo e valida seu formato textual; o plugin consumidor resolve as referências pela proveniência das entregas. O Core não decide associações editoriais. Exemplo: roteiro → personagens → referências → prompts com IDs → cenas consistentes.",
     internalFields:
-      "Preserve contratos internos existentes. Decisão de VALIDAR, identidade de ESCOLHER e Histórico do Canal são mecanismos internos, não campos estratégicos configuráveis.",
+      "Preserve contratos internos existentes. Decisão de VALIDAR, identidade de ESCOLHER e Histórico do Canal são mecanismos internos, não campos estratégicos configuráveis. Recibos internos explícitos de plugin (porta internal:true opt-in, portKey explícita, shape exato fechado, sem approval produzido por plugin) podem transportar proveniência via previous_block ou previous_process com blockId; aprovação humana nativa pode consumir/exibir esses recibos. Sem inferência automática de porta e sem novos controles/registros arbitrários.",
   },
   processOutputs: {
     theme: [
@@ -138,7 +143,13 @@ export const BUILDER_METHOD_CONTRACT = {
   ],
 } as const;
 
-export type BuilderConnection = { id: string; name: string; connected: boolean };
+export type BuilderConnection = {
+  id: string;
+  name: string;
+  // null significa cofre não consultado.
+  connected: boolean | null;
+  credentialStatus?: "not_checked";
+};
 export type BuilderPluginContext = {
   plugin: RegisteredPlugin;
   enabled: boolean;
@@ -152,6 +163,147 @@ export type BuilderValidationResult = {
   errors: string[];
   warnings: string[];
 };
+
+function shapeContainsApproval(shape: unknown): boolean {
+  if (!shape || typeof shape !== "object") return false;
+  const candidate = shape as { kind?: string; control?: string; fields?: Array<{ shape?: unknown }> };
+  if (candidate.kind === "control" && candidate.control === "approval") return true;
+  if (candidate.kind === "record" && Array.isArray(candidate.fields)) {
+    return candidate.fields.some((field) => shapeContainsApproval(field?.shape));
+  }
+  return false;
+}
+
+function isClosedInternalRecordShape(shape: unknown): boolean {
+  if (!shape || typeof shape !== "object") return false;
+  const record = shape as {
+    kind?: string;
+    cardinality?: string;
+    open?: unknown;
+    fields?: Array<{ key?: unknown; shape?: unknown; cardinality?: unknown }>;
+  };
+  if (record.kind !== "record") return false;
+  if (record.open === true) return false;
+  if (!Array.isArray(record.fields) || record.fields.length === 0) return false;
+  if (shapeContainsApproval(shape)) return false;
+  for (const field of record.fields) {
+    if (!field || typeof field.key !== "string" || !field.key.trim()) return false;
+    const inner = field.shape as { kind?: string; open?: unknown; cardinality?: string } | undefined;
+    if (!inner || (inner.kind !== "content" && inner.kind !== "control")) return false;
+    if (inner.open === true) return false;
+    if (!inner.cardinality) return false;
+  }
+  return true;
+}
+
+function isInternalReceiptShape(shape: unknown): boolean {
+  if (!shape || typeof shape !== "object") return false;
+  const candidate = shape as { kind?: string; control?: string; cardinality?: string };
+  if (candidate.kind === "content") return false;
+  if (candidate.kind === "control") {
+    if (candidate.control === "approval") return false;
+    return Boolean(candidate.cardinality);
+  }
+  return isClosedInternalRecordShape(shape);
+}
+
+function isApprovalOneShape(shape: unknown): boolean {
+  return isDeepStrictEqual(shape, { kind: "control", control: "approval", cardinality: "one" });
+}
+
+function capabilityMatchesBlock(
+  capability: { operator?: string; blockTypes?: string[]; processTypes?: string[] },
+  block: { operator?: string; type?: string },
+  processType: string,
+): boolean {
+  if (!capability) return false;
+  if (capability.operator !== block.operator) return false;
+  if (!capability.blockTypes?.includes(block.type ?? "")) return false;
+  if (capability.processTypes && !capability.processTypes.includes(processType)) return false;
+  return true;
+}
+
+function findPluginCapability(
+  plugins: BuilderPluginContext[],
+  pluginId: string | undefined,
+  capabilityId: string | undefined,
+) {
+  if (!pluginId || !capabilityId) return undefined;
+  const entry = plugins.find((candidate) => candidate.plugin.id === pluginId);
+  if (!entry) return undefined;
+  const capability = entry.plugin.manifest.capabilities.find(
+    (candidate) => candidate.id === capabilityId,
+  );
+  if (!capability) return undefined;
+  return { entry, capability };
+}
+
+function isGenuineInternalPluginOutput(args: {
+  processType: string;
+  block: ProcessMethod["blocks"][number];
+  output: { id?: string; shape?: unknown; portKey?: string };
+  plugins: BuilderPluginContext[];
+  originalPortKey: string | undefined;
+}): boolean {
+  const { processType, block, output, plugins, originalPortKey } = args;
+  if (!originalPortKey) return false;
+  if (output.portKey !== originalPortKey) return false;
+  if (!isInternalReceiptShape(output.shape)) return false;
+  if (!block.plugin) return false;
+  const resolved = findPluginCapability(
+    plugins,
+    block.plugin.pluginId,
+    block.plugin.capabilityId,
+  );
+  if (!resolved) return false;
+  if (!resolved.entry.enabled || !resolved.entry.plugin.executable) return false;
+  if (!capabilityMatchesBlock(resolved.capability as never, block as never, processType))
+    return false;
+  const port = (resolved.capability.outputPorts as Array<Record<string, unknown>>).find(
+    (candidate) => candidate.key === originalPortKey,
+  );
+  if (!port || port.internal !== true) return false;
+  return isDeepStrictEqual(port.shape, output.shape);
+}
+
+function isNativeApprovalOutput(args: {
+  sourceMethod: ProcessMethod | undefined;
+  sourceBlock: ProcessMethod["blocks"][number] | undefined;
+  sourceOutput: { key?: string; shape?: unknown } | undefined;
+}): boolean {
+  const { sourceMethod, sourceBlock, sourceOutput } = args;
+  if (!sourceMethod || !sourceBlock || !sourceOutput) return false;
+  if (sourceBlock.type !== "VALIDAR" || sourceBlock.operator !== "Humano") return false;
+  if (sourceBlock.plugin) return false;
+  if (sourceBlock.validation?.mode !== "approval") return false;
+  if (sourceOutput.key !== "decision") return false;
+  if (!isApprovalOneShape(sourceOutput.shape)) return false;
+  const targetId = sourceBlock.validation?.targetBlockId;
+  const targetKey = sourceBlock.validation?.targetOutputKey;
+  if (!targetId || !targetKey) return false;
+  const targetIndex = sourceMethod.blocks.findIndex((candidate) => candidate.id === targetId);
+  const sourceIndex = sourceMethod.blocks.findIndex((candidate) => candidate.id === sourceBlock.id);
+  if (targetIndex < 0 || targetIndex >= sourceIndex) return false;
+  const targetBlock = sourceMethod.blocks[targetIndex];
+  if (targetBlock.type === "VALIDAR") return false;
+  return Boolean(
+    targetBlock.outputs?.some((output) => output.key === targetKey),
+  );
+}
+
+function isProvenNativeHumanDatetimeField(
+  proofs: NativeHumanDatetimeProof[],
+  blockId: string,
+  field: { id?: string; key?: string; shape?: unknown },
+): boolean {
+  if (!isNativeHumanDatetimeShape(field.shape)) return false;
+  return proofs.some(
+    (proof) =>
+      (proof.producerBlockId === blockId && field.key === proof.producerOutputKey) ||
+      (proof.approvalBlockId === blockId && field.id === proof.reviewInputId) ||
+      (proof.consumerBlockId === blockId && field.id === proof.dateInputId),
+  );
+}
 
 function validatePluginConfiguration(
   blockLabel: string,
@@ -212,6 +364,11 @@ function validatePluginConfiguration(
       const selected = compatible.find((port) => port.key === input.portKey);
       if (!selected)
         errors.push(`${blockLabel}: porta da entrada “${input.label}” é incompatível.`);
+      else if (
+        (selected as { internal?: unknown }).internal === true &&
+        !isDeepStrictEqual(selected.shape, input.shape)
+      )
+        errors.push(`${blockLabel}: porta da entrada “${input.label}” é incompatível.`);
       else if (occupiedInputPorts.has(selected.key))
         errors.push(`${blockLabel}: a porta da entrada “${input.label}” já está ocupada.`);
       else {
@@ -219,15 +376,24 @@ function validatePluginConfiguration(
         occupiedInputPorts.add(selected.key);
       }
     } else {
-      const candidates = compatible.filter((port) => !occupiedInputPorts.has(port.key));
+      const candidates = compatible.filter(
+        (port) =>
+          (port as { internal?: unknown }).internal !== true &&
+          !occupiedInputPorts.has(port.key),
+      );
       if (candidates.length === 1) {
         const selected = candidates[0];
         input.portKey = selected.key;
         assignedInputPorts.add(selected.key);
         occupiedInputPorts.add(selected.key);
-      } else if (candidates.length === 0)
-        errors.push(`${blockLabel}: nenhuma porta aceita a entrada “${input.label}”.`);
-      else errors.push(`${blockLabel}: informe portKey para a entrada ambígua “${input.label}”.`);
+      } else if (candidates.length === 0) {
+        const internalExact = (capability.inputPorts as Array<Record<string, unknown>>).some(
+          (port) => port.internal === true && isDeepStrictEqual(port.shape, input.shape),
+        );
+        if (internalExact)
+          errors.push(`${blockLabel}: informe portKey para a entrada ambígua “${input.label}”.`);
+        else errors.push(`${blockLabel}: nenhuma porta aceita a entrada “${input.label}”.`);
+      } else errors.push(`${blockLabel}: informe portKey para a entrada ambígua “${input.label}”.`);
     }
   }
   if (block.type === "VALIDAR") {
@@ -244,14 +410,25 @@ function validatePluginConfiguration(
         const selected = candidates.find((port) => port.key === block.validation?.targetPortKey);
         if (!selected)
           errors.push(`${blockLabel}: porta do alvo de validação é incompatível ou está ocupada.`);
+        else if (
+          (selected as { internal?: unknown }).internal === true &&
+          !isDeepStrictEqual(selected.shape, targetOutput.shape)
+        )
+          errors.push(`${blockLabel}: porta do alvo de validação é incompatível ou está ocupada.`);
         else {
           assignedInputPorts.add(selected.key);
           occupiedInputPorts.add(selected.key);
         }
-      } else if (candidates.length === 1) {
-        block.validation!.targetPortKey = candidates[0].key;
-        assignedInputPorts.add(candidates[0].key);
-        occupiedInputPorts.add(candidates[0].key);
+      } else if (
+        candidates.filter((port) => (port as { internal?: unknown }).internal !== true).length === 1 &&
+        candidates.some((port) => (port as { internal?: unknown }).internal !== true)
+      ) {
+        const selected = candidates.find(
+          (port) => (port as { internal?: unknown }).internal !== true,
+        )!;
+        block.validation!.targetPortKey = selected.key;
+        assignedInputPorts.add(selected.key);
+        occupiedInputPorts.add(selected.key);
       } else if (candidates.length === 0) {
         errors.push(`${blockLabel}: nenhuma porta aceita o alvo de validação.`);
       } else {
@@ -262,16 +439,40 @@ function validatePluginConfiguration(
     }
   }
   for (const output of block.outputs ?? []) {
-    const candidates = capability.outputPorts.filter((port) =>
-      areValueShapesCompatible(port.shape, output.shape),
-    );
     if (output.portKey) {
-      if (!candidates.some((port) => port.key === output.portKey))
+      const port = (capability.outputPorts as Array<Record<string, unknown>>).find(
+        (candidate) => candidate.key === output.portKey,
+      );
+      if (!port) {
         errors.push(`${blockLabel}: porta da saída “${output.label}” é incompatível.`);
-    } else if (candidates.length === 1) output.portKey = candidates[0].key;
-    else if (candidates.length === 0)
-      errors.push(`${blockLabel}: nenhuma porta produz a saída “${output.label}”.`);
-    else errors.push(`${blockLabel}: informe portKey para a saída ambígua “${output.label}”.`);
+      } else if (port.internal === true) {
+        if (!isDeepStrictEqual(port.shape, output.shape))
+          errors.push(`${blockLabel}: porta da saída “${output.label}” é incompatível.`);
+      } else if (
+        !(capability.outputPorts as Array<{ key: string; shape: unknown }>).some(
+          (candidate) =>
+            candidate.key === output.portKey &&
+            areValueShapesCompatible(candidate.shape as never, output.shape as never),
+        )
+      ) {
+        errors.push(`${blockLabel}: porta da saída “${output.label}” é incompatível.`);
+      }
+    } else {
+      const candidates = capability.outputPorts.filter(
+        (port) =>
+          (port as { internal?: unknown }).internal !== true &&
+          areValueShapesCompatible(port.shape, output.shape),
+      );
+      if (candidates.length === 1) output.portKey = candidates[0].key;
+      else if (candidates.length === 0) {
+        const internalExact = (capability.outputPorts as Array<Record<string, unknown>>).some(
+          (port) => port.internal === true && isDeepStrictEqual(port.shape, output.shape),
+        );
+        if (internalExact)
+          errors.push(`${blockLabel}: informe portKey para a saída ambígua “${output.label}”.`);
+        else errors.push(`${blockLabel}: nenhuma porta produz a saída “${output.label}”.`);
+      } else errors.push(`${blockLabel}: informe portKey para a saída ambígua “${output.label}”.`);
+    }
   }
   for (const port of capability.inputPorts.filter((item) => item.required)) {
     if (!assignedInputPorts.has(port.key))
@@ -312,6 +513,37 @@ export function validateBuilderMethods(input: {
   if (!entries.length) return { ok: false, errors: ["Informe pelo menos um Método."], warnings };
   const methods: Partial<Record<UniversalProcess, ProcessMethod>> = {};
   const order = effectiveProcessOrder(input.channel);
+  const positions = new Map(order.map((id, index) => [id, index]));
+  const originalInputPortKeys = new Map<string, string | undefined>();
+  const originalOutputPortKeys = new Map<string, string | undefined>();
+  for (const [proposedKey, proposedMethod] of entries) {
+    for (const proposedBlock of proposedMethod.blocks ?? []) {
+      for (const proposedInput of proposedBlock.inputs ?? []) {
+        originalInputPortKeys.set(
+          `${proposedKey}/${proposedBlock.id}/${proposedInput.id}`,
+          proposedInput.portKey,
+        );
+      }
+      for (const proposedOutput of proposedBlock.outputs ?? []) {
+        originalOutputPortKeys.set(
+          `${proposedKey}/${proposedBlock.id}/${proposedOutput.id}`,
+          proposedOutput.portKey,
+        );
+      }
+    }
+  }
+  const completeNormalizedByProcess: Partial<Record<UniversalProcess, ProcessMethod>> = {};
+  for (const [proposedKey, proposedMethod] of entries) {
+    if (!PROCESS_ORDER.includes(proposedKey as UniversalProcess)) continue;
+    const processType = proposedKey as UniversalProcess;
+    if (proposedMethod.processType !== processType) continue;
+    const normalizedBlocks = normalizeMethodBlocks(proposedMethod.blocks, processType);
+    completeNormalizedByProcess[processType] = { ...proposedMethod, processType, blocks: normalizedBlocks };
+  }
+  const mergedCompleteMethods: Partial<Record<UniversalProcess, ProcessMethod>> = {
+    ...input.channel.methods,
+    ...completeNormalizedByProcess,
+  };
   for (const [key, rawMethod] of entries) {
     if (!PROCESS_ORDER.includes(key as UniversalProcess)) {
       errors.push(`Processo universal desconhecido: “${key}”.`);
@@ -325,6 +557,12 @@ export function validateBuilderMethods(input: {
     const blocks = normalizeMethodBlocks(rawMethod.blocks, processType);
     const method: ProcessMethod = { ...rawMethod, processType, blocks };
     methods[processType] = method;
+    const datetimeProofs: NativeHumanDatetimeProof[] = proveNativeHumanDatetimeGraphs({
+      method,
+      processType,
+      plugins: input.plugins,
+      originalInputPortKeys,
+    });
     const ids = new Set<string>();
     for (const [index, block] of blocks.entries()) {
       const label = `${processType}/${block.name ?? block.type}`;
@@ -358,7 +596,260 @@ export function validateBuilderMethods(input: {
           "binding" in field &&
           field.binding.kind === "channel_history" &&
           field.shape.kind === "record";
+        let internalException = false;
         if (!preserved && !nativeDecision && !nativeHistory) {
+          const isOutput = !("binding" in field);
+          if (isOutput) {
+            const originalPortKey = originalOutputPortKeys.get(
+              `${processType}/${block.id}/${field.id}`,
+            );
+            internalException = isGenuineInternalPluginOutput({
+              processType,
+              block,
+              output: field as { id?: string; shape?: unknown; portKey?: string },
+              plugins: input.plugins,
+              originalPortKey,
+            });
+          } else {
+            const inputField = field as unknown as {
+              id?: string;
+              shape?: unknown;
+              portKey?: string;
+              binding?: { kind?: string; blockId?: string; outputKey?: string; processType?: string };
+              label?: string;
+            };
+            const binding = inputField.binding as
+              | { kind: string; blockId?: string; outputKey?: string; processType?: string }
+              | undefined;
+            const bindingKind = binding?.kind;
+            if (bindingKind === "previous_block" || bindingKind === "previous_process") {
+              const consumerOriginalPortKey = originalInputPortKeys.get(
+                `${processType}/${block.id}/${(inputField as { id?: string }).id}`,
+              );
+              const consumerHasPlugin = Boolean(block.plugin);
+              const consumerIsHumanReview =
+                block.type === "VALIDAR" &&
+                block.operator === "Humano" &&
+                !block.plugin &&
+                block.validation?.mode === "approval";
+              if (consumerIsHumanReview && !consumerOriginalPortKey && !(inputField as { portKey?: string }).portKey) {
+                if (
+                  bindingKind === "previous_block" &&
+                  isInternalReceiptShape((inputField as { shape?: unknown }).shape)
+                ) {
+                  const sourceBlockId =
+                    bindingKind === "previous_block"
+                      ? (binding as { blockId?: string }).blockId
+                      : undefined;
+                  const sourceOutputKey = (binding as { outputKey?: string }).outputKey;
+                  const sourceIndex = blocks.findIndex(
+                    (candidate) => candidate.id === sourceBlockId,
+                  );
+                  const sourceBlock = sourceIndex >= 0 ? blocks[sourceIndex] : undefined;
+                  const sourceOutput = sourceBlock?.outputs?.find(
+                    (item) => item.key === sourceOutputKey,
+                  );
+                  if (
+                    sourceIndex >= 0 &&
+                    sourceIndex < index &&
+                    sourceBlock &&
+                    sourceOutput &&
+                    isDeepStrictEqual(
+                      sourceOutput.shape,
+                      (inputField as { shape?: unknown }).shape,
+                    )
+                  ) {
+                    const sourceOriginalKey = originalOutputPortKeys.get(
+                      `${processType}/${sourceBlock.id}/${sourceOutput.id}`,
+                    );
+                    if (
+                      isGenuineInternalPluginOutput({
+                        processType,
+                        block: sourceBlock,
+                        output: sourceOutput as { id?: string; shape?: unknown; portKey?: string },
+                        plugins: input.plugins,
+                        originalPortKey: sourceOriginalKey,
+                      }) &&
+                      block.validation?.targetBlockId === sourceBlock.id &&
+                      block.validation?.targetOutputKey === sourceOutput.key
+                    ) {
+                      internalException = true;
+                    }
+                  }
+                }
+              } else if (consumerHasPlugin && consumerOriginalPortKey) {
+                const resolvedConsumer = findPluginCapability(
+                  input.plugins,
+                  block.plugin?.pluginId,
+                  block.plugin?.capabilityId,
+                );
+                const consumerPort = resolvedConsumer?.capability.inputPorts.find(
+                  (candidate) => candidate.key === consumerOriginalPortKey,
+                ) as unknown as Record<string, unknown> | undefined;
+                const consumerCapable =
+                  Boolean(resolvedConsumer) &&
+                  resolvedConsumer!.entry.enabled &&
+                  Boolean(resolvedConsumer!.entry.plugin.executable) &&
+                  capabilityMatchesBlock(
+                    resolvedConsumer!.capability as never,
+                    block as never,
+                    processType,
+                  ) &&
+                  Boolean(consumerPort) &&
+                  consumerPort!.internal === true &&
+                  isDeepStrictEqual(
+                    consumerPort!.shape,
+                    (inputField as { shape?: unknown }).shape,
+                  ) &&
+                  (inputField as { portKey?: string }).portKey === consumerOriginalPortKey;
+                if (consumerCapable) {
+                  const inputShape = (inputField as { shape?: unknown }).shape;
+                  if (isApprovalOneShape(inputShape)) {
+                    let sourceMethod: ProcessMethod | undefined;
+                    let sourceBlock: ProcessMethod["blocks"][number] | undefined;
+                    let sourceOutput:
+                      | { key?: string; shape?: unknown }
+                      | undefined;
+                    if (bindingKind === "previous_block") {
+                      const sourceBlockId = (binding as { blockId?: string }).blockId;
+                      const sourceOutputKey = (binding as { outputKey?: string }).outputKey;
+                      const sourceIndex = blocks.findIndex(
+                        (candidate) => candidate.id === sourceBlockId,
+                      );
+                      if (sourceIndex >= 0 && sourceIndex < index) {
+                        sourceMethod = mergedCompleteMethods[processType];
+                        sourceBlock = blocks[sourceIndex];
+                        sourceOutput = sourceBlock?.outputs?.find(
+                          (item) => item.key === sourceOutputKey,
+                        );
+                      }
+                    } else {
+                      const sourceProcess = (binding as { processType?: string }).processType as
+                        | UniversalProcess
+                        | undefined;
+                      const sourceBlockId = (binding as { blockId?: string }).blockId;
+                      const sourceOutputKey = (binding as { outputKey?: string }).outputKey;
+                      if (
+                        sourceProcess &&
+                        sourceBlockId &&
+                        (positions.get(sourceProcess) ?? Infinity) <
+                          (positions.get(processType) ?? -1)
+                      ) {
+                        sourceMethod = mergedCompleteMethods[sourceProcess];
+                        sourceBlock = sourceMethod?.blocks.find(
+                          (candidate) => candidate.id === sourceBlockId,
+                        );
+                        sourceOutput = sourceBlock?.outputs?.find(
+                          (item) => item.key === sourceOutputKey,
+                        );
+                      }
+                    }
+                    if (
+                      isNativeApprovalOutput({ sourceMethod, sourceBlock, sourceOutput }) &&
+                      sourceOutput &&
+                      isDeepStrictEqual(sourceOutput.shape, inputShape)
+                    ) {
+                      internalException = true;
+                    }
+                  } else if (isInternalReceiptShape(inputShape)) {
+                    if (bindingKind === "previous_block") {
+                      const sourceBlockId = (binding as { blockId?: string }).blockId;
+                      const sourceOutputKey = (binding as { outputKey?: string }).outputKey;
+                      const sourceIndex = blocks.findIndex(
+                        (candidate) => candidate.id === sourceBlockId,
+                      );
+                      const sourceBlock = sourceIndex >= 0 ? blocks[sourceIndex] : undefined;
+                      const sourceOutput = sourceBlock?.outputs?.find(
+                        (item) => item.key === sourceOutputKey,
+                      );
+                      if (
+                        sourceIndex >= 0 &&
+                        sourceIndex < index &&
+                        sourceBlock &&
+                        sourceOutput &&
+                        isDeepStrictEqual(sourceOutput.shape, inputShape)
+                      ) {
+                        const sourceOriginalKey = originalOutputPortKeys.get(
+                          `${processType}/${sourceBlock.id}/${sourceOutput.id}`,
+                        );
+                        if (
+                          isGenuineInternalPluginOutput({
+                            processType,
+                            block: sourceBlock,
+                            output: sourceOutput as {
+                              id?: string;
+                              shape?: unknown;
+                              portKey?: string;
+                            },
+                            plugins: input.plugins,
+                            originalPortKey: sourceOriginalKey,
+                          })
+                        ) {
+                          internalException = true;
+                        }
+                      }
+                    } else {
+                      const sourceProcess = (binding as { processType?: string }).processType as
+                        | UniversalProcess
+                        | undefined;
+                      const sourceBlockId = (binding as { blockId?: string }).blockId;
+                      const sourceOutputKey = (binding as { outputKey?: string }).outputKey;
+                      if (
+                        sourceProcess &&
+                        sourceBlockId &&
+                        sourceOutputKey &&
+                        (positions.get(sourceProcess) ?? Infinity) <
+                          (positions.get(processType) ?? -1)
+                      ) {
+                        const sourceMethod = mergedCompleteMethods[sourceProcess];
+                        const sourceBlock = sourceMethod?.blocks.find(
+                          (candidate) => candidate.id === sourceBlockId,
+                        );
+                        const sourceOutput = sourceBlock?.outputs?.find(
+                          (item) => item.key === sourceOutputKey,
+                        );
+                        if (sourceBlock && sourceOutput && sourceMethod) {
+                          const proposedSourceKey = originalOutputPortKeys.get(
+                            `${sourceProcess}/${sourceBlock.id}/${sourceOutput.id}`,
+                          );
+                          const sourceOriginalKey =
+                            proposedSourceKey !== undefined
+                              ? proposedSourceKey
+                              : (sourceOutput as { portKey?: string }).portKey;
+                          if (
+                            isDeepStrictEqual(sourceOutput.shape, inputShape) &&
+                            isGenuineInternalPluginOutput({
+                              processType: sourceProcess,
+                              block: sourceBlock,
+                              output: sourceOutput as {
+                                id?: string;
+                                shape?: unknown;
+                                portKey?: string;
+                              },
+                              plugins: input.plugins,
+                              originalPortKey: sourceOriginalKey,
+                            })
+                          ) {
+                            internalException = true;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        let datetimeException = false;
+        if (!preserved && !nativeDecision && !nativeHistory && !internalException) {
+          datetimeException = isProvenNativeHumanDatetimeField(
+            datetimeProofs,
+            block.id,
+            field as { id?: string; key?: string; shape?: unknown },
+          );
+        }
+        if (!preserved && !nativeDecision && !nativeHistory && !internalException && !datetimeException) {
           errors.push(
             `${label}: entradas e entregas estratégicas devem ser conteúdo (text, image, audio, video); preserve contratos internos existentes sem criar controles ou registros novos.`,
           );

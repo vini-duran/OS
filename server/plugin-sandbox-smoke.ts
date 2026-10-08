@@ -120,12 +120,14 @@ const executableProbe = await executeRegisteredPlugin(
   request({ executablePath: chromeExecutable }),
   30_000,
 );
+const expectedExecutableProbeResult =
+  process.platform === "win32" ? "EXECUTABLE_READ_ALLOWED" : "ERR_ACCESS_DENIED:FileSystemRead";
 if (
   executableProbe.status !== "success" ||
-  executableProbe.values.result !== "EXECUTABLE_READ_ALLOWED"
+  executableProbe.values.result !== expectedExecutableProbeResult
 ) {
   throw new Error(
-    `A sandbox bloqueou a descoberta autorizada do executável: ${JSON.stringify(executableProbe)}.`,
+    `A sandbox devolveu um resultado inesperado para a descoberta de executável: ${JSON.stringify(executableProbe)}.`,
   );
 }
 

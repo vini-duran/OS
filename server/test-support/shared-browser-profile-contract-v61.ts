@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -30,7 +30,9 @@ export type SharedBrowserProfileFixture = {
 };
 
 export async function createSharedBrowserProfileFixture(): Promise<SharedBrowserProfileFixture> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-profile-contract-v61-"));
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "contentflow-profile-contract-v61-")),
+  );
   const database = new Database(path.join(root, "contentflow.sqlite"));
   database.pragma("foreign_keys = ON");
   await runSchemaMigrations(database, undefined, {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { execute } from "./handler.mjs";
 
 test("declares the manual tool for every human block and process", async () => {
@@ -20,8 +21,8 @@ test("rejects a non-HTTPS browser URL before launching a process", async () => {
       execute({
         configuration: {
           destinationType: "browser",
-          browserExecutablePath: "C:\\browser.exe",
-          browserProfilePath: "C:\\profile",
+          browserExecutablePath: path.resolve("browser.exe"),
+          browserProfilePath: path.resolve("profile"),
           url: "http://example.test",
         },
       }),

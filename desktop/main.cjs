@@ -15,6 +15,14 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
 const {
+  applyDataIsolation,
+  getEffectiveMacOSAppDataDir,
+  resolveNodeExecutable,
+  selectDataCandidateByIndex,
+  shouldUsePersistedDataSelection,
+} = require("./macos-platform.cjs");
+const { resolveDataLocation } = require("./data-selection.cjs");
+const {
   createDiagnostics,
   exportDiagnostics,
   createApiDiagnosticReader,
@@ -23,9 +31,7 @@ const { safeError, safeConsoleError } = require("./diagnostic-contract.cjs");
 
 app.setName("ContentFlow");
 app.setAppUserModelId("com.contentflow.app");
-if (process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR) {
-  app.setPath("userData", path.resolve(process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR));
-}
+applyDataIsolation(app);
 
 const singleInstance = app.requestSingleInstanceLock();
 if (!singleInstance) app.quit();
@@ -47,7 +53,7 @@ const HUMAN_TASK_ROUTE =
   /^\/project\/[^/]+\/(theme|title|thumbnail|script|narration|assets|edit|publish)$/;
 
 app.on("second-instance", () => {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
 });
@@ -88,16 +94,18 @@ app.on("before-quit", (event) => {
 });
 
 async function startDesktop() {
-  const logDirectory = path.join(app.getPath("userData"), "logs");
-  diagnostics = createDiagnostics(logDirectory);
-  diagnostics.record({ area: "desktop", code: "APP_STARTED", version: app.getVersion() });
-  configureSupportDiagnostics(logDirectory);
   const appRoot = app.getAppPath();
   const resourcesRoot = app.isPackaged ? process.resourcesPath : path.resolve(appRoot);
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
-  const dataRoot = path.join(app.getPath("userData"), "data");
+  const dataSelection = resolveDesktopDataSelection(app);
+  if (!dataSelection) return;
+  const dataRoot = dataSelection.dataDir;
+  const logDirectory = path.join(app.getPath("userData"), "logs");
+  diagnostics = createDiagnostics(logDirectory);
+  diagnostics.record({ area: "desktop", code: "APP_STARTED", version: app.getVersion() });
+  configureSupportDiagnostics(logDirectory);
   const apiPort = await reservePort();
 
   process.env.CONTENTFLOW_API_PORT = String(apiPort);
@@ -109,7 +117,7 @@ async function startDesktop() {
   process.env.CONTENTFLOW_PLUGIN_WORKER_DIR = app.isPackaged
     ? path.join(runtimeRoot, "workers")
     : path.join(appRoot, "server");
-  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, "node.exe");
+  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = resolveNodeExecutable(runtimeRoot);
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
   process.env.NODE_ENV = "production";
   process.env.CONTENTFLOW_SUPPORT_DIAGNOSTICS = "1";
@@ -394,6 +402,59 @@ function notifyHumanTask(task, preferences) {
     mainWindow.webContents.send(HUMAN_TASKS_NAVIGATE_CHANNEL, task.route);
   });
   notification.show();
+}
+
+function resolveDesktopDataSelection(targetApp) {
+  if (!shouldUsePersistedDataSelection(process.platform)) {
+    return {
+      userData: targetApp.getPath("userData"),
+      dataDir: path.join(targetApp.getPath("userData"), "data"),
+    };
+  }
+  const env = process.env;
+  const appDataDir = getEffectiveMacOSAppDataDir(targetApp, env);
+  let userCancelled = false;
+  const promptCallback = (candidates) => {
+    const labels = candidates.map((candidate) => candidate.label);
+    const chosenIndex = dialog.showMessageBoxSync({
+      type: "question",
+      buttons: [...labels, "Cancelar"],
+      defaultId: 0,
+      cancelId: labels.length,
+      title: "ContentFlow — Escolher dados",
+      message:
+        "Foram encontrados bancos de dados distintos em múltiplos caminhos. Escolha qual preservar.",
+      detail: candidates
+        .map((candidate) => `- ${candidate.label}: ${candidate.dataDir}`)
+        .join("\n"),
+    });
+    if (chosenIndex === null || chosenIndex === undefined || chosenIndex >= candidates.length) {
+      userCancelled = true;
+      return null;
+    }
+    return selectDataCandidateByIndex(candidates, chosenIndex);
+  };
+  let selected = null;
+  try {
+    selected = resolveDataLocation({
+      appDataDir,
+      appRoot: app.getAppPath(),
+      env,
+      promptCallback,
+    });
+  } catch (error) {
+    if (userCancelled) {
+      targetApp.quit();
+      return null;
+    }
+    throw error;
+  }
+  if (!selected) {
+    targetApp.quit();
+    return null;
+  }
+  targetApp.setPath("userData", selected.userData);
+  return selected;
 }
 
 async function startWebServer(appRoot, apiPort) {

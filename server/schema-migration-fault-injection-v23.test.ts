@@ -8,10 +8,11 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import Database from "better-sqlite3";
 import {
   listMigrationJournal,
@@ -21,9 +22,28 @@ import {
   type SchemaMigrationCheckpoint,
 } from "./schema-migrations";
 
-const fixtureRoot = path.resolve(
-  "tests/fixtures/shared-browser-upgrade-v14/02-single-profile-ready",
-);
+let generatedFixtureRoot = "";
+let generatedFixtureParent = "";
+
+before(() => {
+  generatedFixtureParent = mkdtempSync(path.join(os.tmpdir(), "contentflow-v23-fixture-"));
+  const result = spawnSync(
+    process.execPath,
+    ["scripts/generate-shared-browser-upgrade-v14.mjs", generatedFixtureParent],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  generatedFixtureRoot = path.join(generatedFixtureParent, "02-single-profile-ready");
+});
+
+after(() => {
+  if (generatedFixtureParent) {
+    rmSync(generatedFixtureParent, { recursive: true, force: true });
+  }
+});
 
 function treeHash(root: string) {
   const hash = createHash("sha256");
@@ -178,7 +198,7 @@ for (const failureCase of cases) {
   test(`pacote 2.3 retoma sem duplicatas após interrupção ${failureCase.name}`, async () => {
     const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "contentflow-v23-"));
     const isolatedFixture = path.join(temporaryDirectory, "fixture");
-    cpSync(fixtureRoot, isolatedFixture, { recursive: true });
+    cpSync(generatedFixtureRoot, isolatedFixture, { recursive: true });
     const databasePath = path.join(isolatedFixture, "data", "contentflow.sqlite");
     const profileRoot = path.join(isolatedFixture, "plugin-workspaces", "profiles");
     const backupDirectory = path.join(isolatedFixture, "data", "migration-backups");

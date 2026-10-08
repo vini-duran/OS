@@ -129,6 +129,7 @@
         "description": { "type": "string" },
         "shape": { "$ref": "#/$defs/valueShape" },
         "required": { "type": "boolean" },
+        "internal": { "const": true },
         "presentation": { "$ref": "#/$defs/presentation" }
       }
     },

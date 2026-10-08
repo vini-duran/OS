@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,7 +37,7 @@ test("limits a work-item update to the artifacts declared by that update", () =>
 });
 
 test("imports and forwards partial plugin snapshots before the final response", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-")));
   const entrypoint = path.join(root, "handler.mjs");
   await writeFile(
     entrypoint,
@@ -131,7 +131,9 @@ test("imports and forwards partial plugin snapshots before the final response", 
 });
 
 test("a rejected partial callback fails the plugin execution without becoming an unhandled rejection", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-rejection-"));
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-rejection-")),
+  );
   const entrypoint = path.join(root, "handler.mjs");
   await writeFile(
     entrypoint,

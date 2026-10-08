@@ -1,3 +1,4 @@
+import { validateCompletedDeliveryEdit } from "./completed-delivery-edit";
 import {
   UserDataUpgrade,
   UpgradeError,
@@ -43,6 +44,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -290,6 +292,51 @@ const developmentLinksDirectory = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ??
     path.join(dataDirectory, "plugins", "development"),
 );
+
+function physicalPathAllowingMissing(resolved: string): string {
+  try {
+    return realpathSync(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    let current = resolved;
+    const segments: string[] = [];
+    for (;;) {
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      segments.unshift(path.basename(current));
+      try {
+        const physicalParent = realpathSync(parent);
+        return path.join(physicalParent, ...segments);
+      } catch (parentError) {
+        if ((parentError as NodeJS.ErrnoException)?.code !== "ENOENT") throw parentError;
+        current = parent;
+      }
+    }
+  }
+}
+
+function installedPluginsPhysicalRoot() {
+  return physicalPathAllowingMissing(path.resolve(installedPluginsDirectory));
+}
+
+function isWithinInstalledPlugins(directory: string) {
+  let root: string;
+  let physical: string;
+  try {
+    root = installedPluginsPhysicalRoot();
+    physical = physicalPathAllowingMissing(path.resolve(directory));
+  } catch {
+    return false;
+  }
+  if (physical === root) return true;
+  const relative = path.relative(root, physical);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
 const pluginCatalogUrl =
   process.env.CONTENTFLOW_PLUGIN_CATALOG_URL ??
   "https://raw.githubusercontent.com/andremjr/plugins-contentflow/main/catalog.json";
@@ -336,15 +383,24 @@ const builderMcpSessionPath = path.join(dataDirectory, "builder-mcp-session.json
 const builderMcpToken = randomBytes(32).toString("base64url");
 
 function builderMcpLaunch(channelId?: string) {
-  const bundledEntry = path.join(applicationRoot, "desktop-dist", "mcp.mjs");
+  const bundledCandidates = [
+    path.join(applicationRoot, "app", "desktop-dist", "mcp.mjs"),
+    path.join(applicationRoot, "desktop-dist", "mcp.mjs"),
+  ];
   const sourceEntry = path.join(applicationRoot, "server", "mcp.ts");
   const tsxEntry = path.join(applicationRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const sourceAvailable = existsSync(sourceEntry) && existsSync(tsxEntry);
-  const bundled = !sourceAvailable && existsSync(bundledEntry);
   const command = process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE ?? process.execPath;
-  const args = bundled
-    ? [bundledEntry, "--session", builderMcpSessionPath]
-    : [tsxEntry, sourceEntry, "--session", builderMcpSessionPath];
+  if (sourceAvailable) {
+    const args = [tsxEntry, sourceEntry, "--session", builderMcpSessionPath];
+    if (channelId) args.push("--channel", channelId);
+    return { command, args };
+  }
+  const bundledEntry = bundledCandidates.find((candidate) => existsSync(candidate));
+  if (!bundledEntry) {
+    throw new Error("O servidor MCP empacotado não foi encontrado.");
+  }
+  const args = [bundledEntry, "--session", builderMcpSessionPath];
   if (channelId) args.push("--channel", channelId);
   return { command, args };
 }
@@ -4896,7 +4952,7 @@ app.get("/api/plugins/updates", async (request, response) => {
 });
 
 function replaceInstalledPluginFromDirectory(plugin: ManagedPlugin, sourceDirectory: string) {
-  const installedRoot = path.resolve(installedPluginsDirectory);
+  const installedRoot = installedPluginsPhysicalRoot();
   const destination = path.resolve(plugin.absoluteDirectory);
   const updateBackupsDirectory = path.resolve(dataDirectory, "plugins", "update-backups");
   let temporaryDestination: string | undefined;
@@ -4905,7 +4961,7 @@ function replaceInstalledPluginFromDirectory(plugin: ManagedPlugin, sourceDirect
   try {
     if (!existsSync(sourceDirectory) || !statSync(sourceDirectory).isDirectory())
       throw new Error("A pasta informada não existe.");
-    if (!destination.startsWith(`${installedRoot}${path.sep}`))
+    if (!isWithinInstalledPlugins(destination))
       throw new Error("A instalação atual não está dentro do armazenamento autorizado.");
     const source = validatePluginDirectory(sourceDirectory, true);
     if (pluginCatalogCompatibility(source.manifest).status !== "compatible")
@@ -5070,8 +5126,7 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
     const connections = pluginConnections.list(plugin.id, true);
     const secretKeys = "secretKeys" in plugin.manifest ? (plugin.manifest.secretKeys ?? []) : [];
     if (plugin.source === "installed") {
-      const installedRoot = path.resolve(installedPluginsDirectory);
-      if (!plugin.absoluteDirectory.startsWith(`${installedRoot}${path.sep}`)) {
+      if (!isWithinInstalledPlugins(plugin.absoluteDirectory)) {
         throw new Error("A pasta instalada não está dentro do armazenamento autorizado.");
       }
       rmSync(plugin.absoluteDirectory, { recursive: true, force: true });
@@ -5466,7 +5521,10 @@ function requireBuilderMcp(request: Request, response: Response, next: NextFunct
   next();
 }
 
-async function builderPluginContexts(): Promise<BuilderPluginContext[]> {
+async function builderPluginContexts(
+  options: { verifyCredentials?: boolean } = {},
+): Promise<BuilderPluginContext[]> {
+  const verifyCredentials = options.verifyCredentials !== false;
   const registry = initializePluginRunner();
   return Promise.all(
     registry.plugins.map(async (plugin) => {
@@ -5476,6 +5534,14 @@ async function builderPluginContexts(): Promise<BuilderPluginContext[]> {
         enabled: pluginConsentIsCurrent(plugin),
         connections: await Promise.all(
           pluginConnections.list(plugin.id).map(async (connection) => {
+            if (!verifyCredentials) {
+              return {
+                id: connection.id,
+                name: connection.name,
+                connected: null,
+                credentialStatus: "not_checked",
+              };
+            }
             const publicConnection = await publicPluginConnection(plugin, connection);
             return {
               id: publicConnection.id,
@@ -5713,7 +5779,7 @@ app.get(
       response.status(404).json({ error: "Canal não encontrado." });
       return;
     }
-    const plugins = await builderPluginContexts();
+    const plugins = await builderPluginContexts({ verifyCredentials: false });
     response.json({
       channel: {
         id: channel.id,
@@ -8575,42 +8641,15 @@ app.patch("/api/executions/:id/blocks/:blockId/values", (request, response) => {
     response.status(409).json({ error: "Aguarde o bloco terminar antes de editar a entrega." });
     return;
   }
-  const submitted = request.body?.values;
-  if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
-    response.status(400).json({ error: "Valores de entrega inválidos." });
-    return;
-  }
-  const allowedKeys = new Set((block.outputs ?? []).map((field) => field.key));
-  const unknownKeys = Object.keys(submitted).filter((key) => !allowedKeys.has(key));
-  if (unknownKeys.length) {
-    response
-      .status(400)
-      .json({ error: `Campos de entrega desconhecidos: ${unknownKeys.join(", ")}.` });
-    return;
-  }
-  const values = Object.fromEntries(
-    (block.outputs ?? []).map((field) => [field.key, submitted[field.key] ?? null]),
-  ) as Record<string, RuntimeValue>;
-  const missing = (block.outputs ?? [])
-    .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
-    .map((field) => field.label);
-  const restrictionIssues = (block.outputs ?? []).flatMap((field) => {
-    const issue = getPresentationRestrictionIssue(
-      field.shape,
-      field.presentation,
-      values[field.key],
-    );
-    return issue ? [`${field.label}: ${issue}`] : [];
+  const edit = validateCompletedDeliveryEdit(block, blockExecution.values ?? {}, request.body?.values, {
+    methodSnapshot: execution.methodSnapshot,
+    blocks: execution.blocks,
   });
-  if (missing.length || restrictionIssues.length) {
-    response.status(400).json({
-      error: [
-        ...(missing.length ? [`Preencha: ${missing.join(", ")}.`] : []),
-        ...restrictionIssues,
-      ].join(" "),
-    });
+  if (!edit.ok) {
+    response.status(edit.status).json({ error: edit.error });
     return;
   }
+  const values = edit.values;
   blockExecution.values = structuredClone(values);
   const now = new Date().toISOString();
   blockExecution.completedAt = now;

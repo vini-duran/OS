@@ -54,6 +54,20 @@ test("o Electron inicia fechado, isolado e sem bloquear no stdout da API", () =>
   assert.match(desktopMain, /ready-to-show/);
 });
 
+test("isolamento de dados precede diagnósticos e usa diretório selecionado", () => {
+  assert.match(desktopMain, /applyDataIsolation\(app\)/);
+  const isolationIndex = desktopMain.indexOf("applyDataIsolation(app)");
+  const lockIndex = desktopMain.indexOf("requestSingleInstanceLock");
+  assert.ok(isolationIndex !== -1 && lockIndex !== -1 && isolationIndex < lockIndex);
+  const selectionIndex = desktopMain.indexOf("resolveDesktopDataSelection(app)");
+  const logDirIndex = desktopMain.indexOf('path.join(app.getPath("userData"), "logs")');
+  const diagnosticsIndex = desktopMain.indexOf("createDiagnostics(logDirectory)");
+  assert.ok(selectionIndex !== -1 && logDirIndex !== -1 && diagnosticsIndex !== -1);
+  assert.ok(selectionIndex < logDirIndex);
+  assert.ok(logDirIndex < diagnosticsIndex);
+  assert.match(desktopMain, /const dataRoot = dataSelection\.dataDir/);
+});
+
 test("a API inesperadamente encerrada também fecha o Electron quando retorna código zero", () => {
   assert.match(desktopMain, /if\s*\(!quitting\s*&&\s*apiReady\)/);
   assert.doesNotMatch(desktopMain, /if\s*\(code\s*&&\s*!quitting\)/);

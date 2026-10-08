@@ -20,7 +20,7 @@
 - [ ] Todo input tem `binding` canônico e proveniência explícita.
 - [ ] `channel_history` usa `shape` de registro, está em `ESCOLHER`/`CRIAR` e possui origem/limite válidos.
 - [ ] Cada output conectado possui `ValueShape` compatível com o input.
-- [ ] `shape.kind: "record"` declara campos compatíveis e chaves únicas.
+- [ ] `shape.kind: "record"` declara campos compatíveis e chaves únicas, salvo a exceção de compatibilidade de porta preservada `{kind: "record", fields: [], open: true}` somente com plugin no Bloco e `portKey` não vazia (sem criar novos campos `control`/`record`; a porta do plugin responde pelo payload).
 - [ ] Contratos de controle declaram `kind: "control"`; opções continuam metadados do campo.
 - [ ] A cardinalidade `one`/`many` é preservada explicitamente.
 - [ ] Arquivos são representação de `image`/`audio`/`video`, com MIME validado.

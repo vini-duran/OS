@@ -134,6 +134,6 @@ const imageGallerySource = rendererSource.slice(
   rendererSource.indexOf("function ImageGalleryRenderer"),
   rendererSource.indexOf("function AudioRenderer"),
 );
-assert.match(imageGallerySource, /lg:grid-cols-4/);
+assert.match(imageGallerySource, /<ImageGallery images=\{images\} compact=\{compact\} \/>/);
 
 console.log("Presentation contract smoke test passed.");

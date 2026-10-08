@@ -18,6 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { ImageGallery } from "@/components/image-gallery";
 import type {
   FieldPresentation,
   PresentationRendererId,
@@ -372,33 +373,7 @@ function ImageGalleryRenderer({ value, compact }: PresentationRendererProps) {
       ? [{ id: value, name: "Imagem", mimeType: "image/*", size: 0, url: value }]
       : [];
   const images = files.length ? files : stringValues;
-  return (
-    <div
-      className={
-        compact ? "grid grid-cols-2 gap-2 lg:grid-cols-4" : "grid grid-cols-2 gap-3 lg:grid-cols-4"
-      }
-    >
-      {images.map((file) => (
-        <figure
-          key={file.id}
-          className="overflow-hidden rounded-lg border border-border/60 bg-background/40"
-        >
-          <img
-            src={file.url}
-            alt={file.name}
-            className={
-              compact ? "max-h-44 w-full object-contain" : "max-h-[32rem] w-full object-contain"
-            }
-            loading="lazy"
-          />
-          <figcaption className="flex items-center gap-2 border-t border-border/60 px-3 py-2 text-[10px] text-muted-foreground">
-            <FileImage className="size-3.5" />
-            <span className="truncate">{file.name}</span>
-          </figcaption>
-        </figure>
-      ))}
-    </div>
-  );
+  return <ImageGallery images={images} compact={compact} />;
 }
 
 function AudioRenderer({ value }: PresentationRendererProps) {

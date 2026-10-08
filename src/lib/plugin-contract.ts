@@ -72,6 +72,8 @@ export type PluginInputPort = {
   description?: string;
   shape: ValueShape;
   required: boolean;
+  /** Opt-in de recibo interno: somente `true` explícito autoriza proveniência interna limitada. */
+  internal?: true;
   /** Optional request for a renderer owned and validated by the core. */
   presentation?: FieldPresentation;
 };
@@ -82,6 +84,8 @@ export type PluginOutputPort = {
   description?: string;
   shape: ValueShape;
   required: boolean;
+  /** Opt-in de recibo interno: somente `true` explícito autoriza proveniência interna limitada. */
+  internal?: true;
   /** Optional request for a renderer owned and validated by the core. */
   presentation?: FieldPresentation;
 };

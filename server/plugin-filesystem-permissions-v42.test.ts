@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,7 +38,8 @@ function request(pluginId: string, action: string): PluginExecutionRequest {
 
 async function pluginFixture(permissions: PluginManifest["permissions"]) {
   const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-fs-v42-plugin-"));
-  const entrypoint = path.join(root, "handler.mjs");
+  const absoluteRoot = await realpath(root);
+  const entrypoint = path.join(absoluteRoot, "handler.mjs");
   await writeFile(
     entrypoint,
     `import { readFile, symlink, writeFile } from "node:fs/promises";
@@ -90,7 +91,7 @@ async function pluginFixture(permissions: PluginManifest["permissions"]) {
       id: manifest.id,
       source: "local",
       directory: root,
-      absoluteDirectory: root,
+      absoluteDirectory: absoluteRoot,
       entrypoint,
       manifest,
       executable: true,

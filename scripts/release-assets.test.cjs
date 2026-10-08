@@ -29,7 +29,8 @@ test("a release do aplicativo fornece todos os downloads da interface sem republ
     ]);
     const links = readFileSync(path.join(root, "src/lib/ecosystem-downloads.ts"), "utf8");
     for (const name of names) assert.ok(links.includes(name), name);
-    const verified = spawnSync("python", ["scripts/verify-release-assets-test.py", output], {
+    const python = process.platform === "win32" ? "python" : "python3";
+    const verified = spawnSync(python, ["scripts/verify-release-assets-test.py", output], {
       cwd: root,
       encoding: "utf8",
       windowsHide: true,

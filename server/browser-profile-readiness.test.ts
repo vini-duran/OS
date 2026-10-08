@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,7 +42,7 @@ test("distingue uma Bridge existente de um vínculo antigo quebrado", async () =
 });
 
 test("copia a Bridge para uma pasta estável de dados", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "contentflow-bridge-stage-"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "contentflow-bridge-stage-")));
   try {
     const source = path.join(root, "app", "ecosystem", "browser-bridge");
     const data = path.join(root, "data");

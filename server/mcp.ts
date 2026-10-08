@@ -114,7 +114,7 @@ server.registerTool(
   {
     title: "Inspect ContentFlow channel",
     description:
-      "Reads one channel, its Methods, strategic collections, installed plugin capabilities, profiles, and connection summaries. Secrets are never returned.",
+      "Reads one channel, its Methods, strategic collections, installed plugin capabilities, profiles, and connection summaries. Inspection does not access the credential vault and connections report connected:null/credentialStatus:not_checked, which is not proof of operational readiness. Secrets are never returned.",
     inputSchema: { channelId: z.string().optional().describe("Existing ContentFlow channel ID") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },

@@ -412,10 +412,13 @@ function createPortableImportedMethod(
             input.shape.kind === "record"
               ? {
                   ...input.shape,
-                  fields: input.shape.fields.map((field, fieldIndex) => ({
-                    ...field,
-                    id: `${blockKey}:input:${inputIndex + 1}:field:${fieldIndex + 1}`,
-                  })),
+                  fields:
+                    block.plugin && input.portKey
+                      ? input.shape.fields.map((field) => ({ ...field }))
+                      : input.shape.fields.map((field, fieldIndex) => ({
+                          ...field,
+                          id: `${blockKey}:input:${inputIndex + 1}:field:${fieldIndex + 1}`,
+                        })),
                 }
               : input.shape,
           binding:
@@ -448,10 +451,13 @@ function createPortableImportedMethod(
             output.shape.kind === "record"
               ? {
                   ...output.shape,
-                  fields: output.shape.fields.map((field, fieldIndex) => ({
-                    ...field,
-                    id: `${blockKey}:output:${outputIndex + 1}:field:${fieldIndex + 1}`,
-                  })),
+                  fields:
+                    block.plugin && output.portKey
+                      ? output.shape.fields.map((field) => ({ ...field }))
+                      : output.shape.fields.map((field, fieldIndex) => ({
+                          ...field,
+                          id: `${blockKey}:output:${outputIndex + 1}:field:${fieldIndex + 1}`,
+                        })),
                 }
               : output.shape,
         })),
@@ -919,10 +925,13 @@ function copyBlocksWithIds(
         input.shape.kind === "record"
           ? {
               ...input.shape,
-              fields: input.shape.fields.map((field) => ({
-                ...field,
-                id: createId(`${processType}-record-field`),
-              })),
+              fields:
+                block.plugin && input.portKey
+                  ? input.shape.fields.map((field) => ({ ...field }))
+                  : input.shape.fields.map((field) => ({
+                      ...field,
+                      id: createId(`${processType}-record-field`),
+                    })),
             }
           : input.shape,
       binding:
@@ -957,10 +966,13 @@ function copyBlocksWithIds(
         output.shape.kind === "record"
           ? {
               ...output.shape,
-              fields: output.shape.fields.map((field) => ({
-                ...field,
-                id: createId(`${processType}-record-field`),
-              })),
+              fields:
+                block.plugin && output.portKey
+                  ? output.shape.fields.map((field) => ({ ...field }))
+                  : output.shape.fields.map((field) => ({
+                      ...field,
+                      id: createId(`${processType}-record-field`),
+                    })),
             }
           : output.shape,
       optionsSourceBlockId: output.optionsSourceBlockId

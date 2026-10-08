@@ -2,6 +2,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import path from "node:path";
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
+import macosPlatform from "./macos-platform.cjs";
+
+const { getNodeBinaryName, ensureExecutableBit } = macosPlatform;
 
 const projectRoot = process.cwd();
 const runtimeDirectory = path.join(projectRoot, "desktop-runtime");
@@ -14,12 +17,15 @@ if (nodeMajor !== 26) {
 
 mkdirSync(runtimeDirectory, { recursive: true });
 mkdirSync(desktopBuildDirectory, { recursive: true });
-const bundledNodePath = path.join(runtimeDirectory, "node.exe");
+const nodeBinaryName = getNodeBinaryName();
+const bundledNodePath = path.join(runtimeDirectory, nodeBinaryName);
 const bundledNodeVersion = existsSync(bundledNodePath)
   ? execFileSync(bundledNodePath, ["--version"], { encoding: "utf8" }).trim()
   : undefined;
-if (bundledNodeVersion !== `v${process.versions.node}`)
+if (bundledNodeVersion !== `v${process.versions.node}`) {
   copyFileSync(process.execPath, bundledNodePath);
+}
+ensureExecutableBit(bundledNodePath);
 
 const nodeLicenseCandidates = [
   path.join(path.dirname(process.execPath), "LICENSE"),

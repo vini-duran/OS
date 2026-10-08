@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { ProcessMethod } from "../src/lib/domain";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -420,6 +420,82 @@ test(
           maxRetries: 30,
           retryDelay: 100,
         });
+      }
+    }
+  },
+);
+
+test(
+  "points the packaged MCP config at the bundled app/desktop-dist entry",
+  { timeout: 30_000 },
+  async () => {
+    const packagedRoot = mkdtempSync(path.join(os.tmpdir(), "contentflow-packaged-root-"));
+    const testDirectory = mkdtempSync(path.join(os.tmpdir(), "contentflow-packaged-mcp-"));
+    const expectedEntry = path.join(packagedRoot, "app", "desktop-dist", "mcp.mjs");
+    mkdirSync(path.dirname(expectedEntry), { recursive: true });
+    writeFileSync(expectedEntry, "export {};\n");
+    // Packaged mode: no development sources exist under the fake app root.
+    assert.equal(existsSync(path.join(packagedRoot, "server", "mcp.ts")), false);
+    assert.equal(
+      existsSync(path.join(packagedRoot, "node_modules", "tsx", "dist", "cli.mjs")),
+      false,
+    );
+    const port = await availablePort();
+    const apiUrl = `http://127.0.0.1:${port}`;
+    const tsxEntry = path.resolve("node_modules", "tsx", "dist", "cli.mjs");
+    const apiProcess = spawn(process.execPath, [tsxEntry, path.resolve("server", "index.ts")], {
+      cwd: process.cwd(),
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CONTENTFLOW_API_PORT: String(port),
+        CONTENTFLOW_APP_ROOT: packagedRoot,
+        CONTENTFLOW_DATA_DIR: testDirectory,
+        CONTENTFLOW_LOCAL_PLUGINS_DIR: path.join(testDirectory, "plugins", "local"),
+        CONTENTFLOW_INSTALLED_PLUGINS_DIR: path.join(testDirectory, "plugins", "installed"),
+        CONTENTFLOW_DEVELOPMENT_LINKS_DIR: path.join(testDirectory, "plugins", "development"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let diagnostics = "";
+    apiProcess.stdout.on("data", (chunk) => (diagnostics += chunk.toString("utf8")));
+    apiProcess.stderr.on("data", (chunk) => (diagnostics += chunk.toString("utf8")));
+    try {
+      await waitForApi(apiUrl, () => diagnostics);
+      const infoResponse = await fetch(`${apiUrl}/api/builder/mcp-info`);
+      assert.equal(infoResponse.status, 200);
+      const info = (await infoResponse.json()) as { config: string };
+      const launch = JSON.parse(info.config).mcpServers.contentflow as {
+        command: string;
+        args: string[];
+      };
+      assert.equal(launch.args[0], expectedEntry);
+      assert.ok(existsSync(launch.args[0]));
+      assert.ok(!launch.args.join(" ").includes(path.join("server", "mcp.ts")));
+      assert.ok(!launch.args.join(" ").includes(path.join("node_modules", "tsx")));
+    } finally {
+      if (process.platform === "win32" && apiProcess.pid) {
+        spawnSync("taskkill", ["/PID", String(apiProcess.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        });
+      } else {
+        apiProcess.kill();
+      }
+      await new Promise<void>((resolve) => {
+        if (apiProcess.exitCode !== null) resolve();
+        else apiProcess.once("exit", () => resolve());
+      });
+      for (const directory of [testDirectory, packagedRoot]) {
+        const resolved = path.resolve(directory);
+        if (resolved.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`)) {
+          rmSync(resolved, {
+            recursive: true,
+            force: true,
+            maxRetries: 30,
+            retryDelay: 100,
+          });
+        }
       }
     }
   },

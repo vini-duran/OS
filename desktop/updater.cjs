@@ -45,7 +45,7 @@ function safeErrorMessage(error) {
   return "Não foi possível concluir a atualização. Tente novamente mais tarde.";
 }
 
-function createInitialState(app, distribution) {
+function createInitialState(app, distribution, platform) {
   if (distribution === "portable") {
     return {
       status: "unsupported",
@@ -66,6 +66,16 @@ function createInitialState(app, distribution) {
       message: "A verificação de atualizações funciona somente no aplicativo instalado.",
     };
   }
+  if (platform === "darwin") {
+    return {
+      status: "unsupported",
+      distribution,
+      currentVersion: app.getVersion(),
+      availableVersion: null,
+      progress: null,
+      message: "A verificação de atualizações funciona somente no aplicativo instalado.",
+    };
+  }
   return {
     status: "idle",
     distribution,
@@ -76,9 +86,19 @@ function createInitialState(app, distribution) {
   };
 }
 
-function configureDesktopUpdater({ app, ipcMain, shell, getWindow, updater, logger, supportLog }) {
+function configureDesktopUpdater({
+  app,
+  ipcMain,
+  shell,
+  getWindow,
+  updater,
+  logger,
+  supportLog,
+  platform = process.platform,
+}) {
   const distribution = updaterDistribution(app);
-  let state = createInitialState(app, distribution);
+  const isDarwin = platform === "darwin";
+  let state = createInitialState(app, distribution, platform);
   let autoUpdater;
   let log;
 
@@ -93,7 +113,7 @@ function configureDesktopUpdater({ app, ipcMain, shell, getWindow, updater, logg
     return state;
   }
 
-  if (distribution === "installer") {
+  if (distribution === "installer" && !isDarwin) {
     autoUpdater = updater ?? require("electron-updater").autoUpdater;
     log = supportLog
       ? {

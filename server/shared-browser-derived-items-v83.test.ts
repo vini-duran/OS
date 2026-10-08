@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -100,7 +100,7 @@ test("registra filhos e reaproveita IDs pela chave semântica na mesma tentativa
 });
 
 test("plugin divide texto em trechos e só continua depois que o núcleo devolve IDs persistidos", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-v83-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "contentflow-v83-")));
   const entrypoint = path.join(root, "handler.mjs");
   const effectPath = path.join(root, "effect.json");
   await writeFile(

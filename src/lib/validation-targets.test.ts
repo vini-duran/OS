@@ -150,3 +150,88 @@ test("approval validates the block as a unit and does not require targetOutputKe
   assert.equal(normalized[1].validation?.targetOutputKey, undefined);
   assert.equal(getMethodConfigurationIssue(method(normalized)), undefined);
 });
+
+function pluginBlock(
+  id: string,
+  order: number,
+  outputs: ActionBlock["outputs"] = [],
+  inputs: ActionBlock["inputs"] = [],
+): ActionBlock {
+  return {
+    id,
+    type: "CRIAR",
+    operator: "IA",
+    name: id,
+    inputs,
+    outputs,
+    plugin: {
+      pluginId: "dev.contentflow.test-plugin",
+      capabilityId: "generate",
+      configuration: {},
+    },
+    parameters: [],
+    order,
+  };
+}
+
+test("permits empty open records only when they are bound to plugin ports", () => {
+  const producer = pluginBlock("plugin-producer", 0, [
+    {
+      id: "out-records",
+      label: "Registros gerados",
+      key: "items",
+      shape: { kind: "record", cardinality: "many", fields: [], open: true },
+      required: true,
+      portKey: "records_out",
+    },
+  ]);
+  const consumer = pluginBlock(
+    "plugin-consumer",
+    1,
+    [],
+    [
+      {
+        id: "in-records",
+        label: "Registros de entrada",
+        shape: { kind: "record", cardinality: "many", fields: [], open: true },
+        binding: { kind: "previous_block", blockId: producer.id, outputKey: "items" },
+        portKey: "records_in",
+      },
+    ],
+  );
+
+  assert.equal(getMethodConfigurationIssue(method([producer, consumer])), undefined);
+
+  producer.plugin = undefined;
+  assert.match(getMethodConfigurationIssue(method([producer])) ?? "", /Defina a chave/);
+});
+
+test("continues rejecting closed records and invalid keys on plugin ports", () => {
+  const closed = pluginBlock("plugin-closed", 0, [
+    {
+      id: "closed-records",
+      label: "Lista fechada",
+      key: "items",
+      shape: { kind: "record", cardinality: "many", fields: [] },
+      required: true,
+      portKey: "records_out",
+    },
+  ]);
+  assert.match(getMethodConfigurationIssue(method([closed])) ?? "", /Defina a chave/);
+
+  closed.outputs![0].shape = {
+    kind: "record",
+    cardinality: "many",
+    open: true,
+    fields: [
+      {
+        id: "missing-key",
+        label: "Sem chave",
+        key: "",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+        required: true,
+      },
+    ],
+  };
+  assert.match(getMethodConfigurationIssue(method([closed])) ?? "", /Defina a chave/);
+});

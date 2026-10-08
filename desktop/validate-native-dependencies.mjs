@@ -1,16 +1,31 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import macosPlatform from "./macos-platform.cjs";
 
+const { getKeyringPackageInfo } = macosPlatform;
 const require = createRequire(import.meta.url);
-const nativePackage = "@napi-rs/keyring-win32-x64-msvc";
-const packageJsonPath = require.resolve(`${nativePackage}/package.json`);
-const bindingPath = path.join(path.dirname(packageJsonPath), "keyring.win32-x64-msvc.node");
 
-if (!existsSync(bindingPath)) {
+const targetPlatform = process.env.TARGET_PLATFORM || process.platform;
+const targetArch = process.env.TARGET_ARCH || process.arch;
+
+const { packageName, bindingFile, label } = getKeyringPackageInfo(targetPlatform, targetArch);
+
+let packageJsonPath;
+try {
+  packageJsonPath = require.resolve(`${packageName}/package.json`);
+} catch {
   throw new Error(
-    `Dependência nativa obrigatória ausente: ${nativePackage}. A release Windows seria incapaz de iniciar a API local.`,
+    `Dependência nativa obrigatória ausente: ${packageName}. A release ${label} seria incapaz de iniciar a API local.`,
   );
 }
 
-console.log(`Dependência nativa Windows validada: ${bindingPath}`);
+const bindingPath = path.join(path.dirname(packageJsonPath), bindingFile);
+
+if (!existsSync(bindingPath)) {
+  throw new Error(
+    `Dependência nativa obrigatória ausente: ${packageName}. A release ${label} seria incapaz de iniciar a API local.`,
+  );
+}
+
+console.log(`Dependência nativa ${label} validada: ${bindingPath}`);

@@ -51,9 +51,23 @@ export function getMethodConfigurationIssue(method?: ProcessMethod) {
       (field) => field.shape.kind === "record",
     )) {
       const recordFields =
-        structuredField.shape.kind === "record" ? structuredField.shape.fields : [];
+        structuredField.shape.kind === "record" && Array.isArray(structuredField.shape.fields)
+          ? structuredField.shape.fields
+          : [];
+      const isPluginBoundOpenRecord = Boolean(
+        block.plugin &&
+        structuredField.portKey?.trim() &&
+        structuredField.shape.kind === "record" &&
+        structuredField.shape.open === true,
+      );
+      if (!recordFields.length) {
+        if (!isPluginBoundOpenRecord) {
+          return `Defina a chave de todos os campos da lista de registros “${structuredField.label}”.`;
+        }
+        continue;
+      }
       const recordKeys = recordFields.map((field) => field.key.trim()).filter(Boolean);
-      if (!recordKeys.length || recordKeys.length !== recordFields.length) {
+      if (recordKeys.length !== recordFields.length) {
         return `Defina a chave de todos os campos da lista de registros “${structuredField.label}”.`;
       }
       if (new Set(recordKeys).size !== recordKeys.length) {

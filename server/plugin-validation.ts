@@ -40,6 +40,7 @@ const portBase = {
   label: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   required: z.boolean(),
+  internal: z.literal(true).optional(),
   presentation: presentationSchema.optional(),
 };
 const inputPortSchema = z

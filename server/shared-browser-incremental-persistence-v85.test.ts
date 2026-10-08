@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -119,7 +119,7 @@ test("publishItemUpdate incrementa revisão e submitted não volta a pending ap�
 });
 
 test("worker importa artifact antes de confirmar publishItemUpdate", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-v85-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "contentflow-v85-")));
   const entrypoint = path.join(root, "handler.mjs");
   await writeFile(
     entrypoint,

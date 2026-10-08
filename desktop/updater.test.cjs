@@ -98,6 +98,7 @@ test("percorre o fluxo IPC de verificar, baixar e instalar", async () => {
     getWindow,
     updater,
     logger: log,
+    platform: "win32",
   });
 
   await handlers.get("contentflow:updater:check")();
