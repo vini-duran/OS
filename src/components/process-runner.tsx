@@ -181,8 +181,15 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
   );
   const hasActiveDelivery = Boolean(
     activeExecution &&
+    activeBlock &&
+    activeBlock.type !== "VALIDAR" &&
+    activeBlock.type !== "ESCOLHER" &&
     Object.values(activeExecution.values).some((value) => !isEmptyDisplayValue(value)),
   );
+  const pausedNonHumanValidation =
+    activeExecution?.status === "awaiting_human" &&
+    activeBlock?.type === "VALIDAR" &&
+    activeBlock?.operator !== "Humano";
   const waitingForHumanAction =
     activeExecution?.status === "awaiting_human" && activeBlock?.operator === "Humano";
   const waitingForHumanChoice =
@@ -437,6 +444,13 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
             ) : (
               <MissingPluginGate block={activeBlock} />
             )
+          ) : pausedNonHumanValidation && activeBlock && activeExecution ? (
+            <PausedValidationGate
+              key={`${execution.id}:${activeExecution.blockId}:${activeExecution.attempt ?? 1}`}
+              block={activeBlock}
+              blockExecution={activeExecution}
+              onCancel={() => void cancel()}
+            />
           ) : execution.status === "failed" && activeBlock && activeExecution ? (
             <FailedExecutionGate
               block={activeBlock}
@@ -718,10 +732,12 @@ function MethodExecution({
                       />
                     ))}
                   </div>
-                ) : (
+                ) : blockExecution.status === "completed" ? (
                   <p className="text-xs text-muted-foreground">
                     Esta ação foi concluída sem uma entrega visual.
                   </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Entrega ainda não disponível.</p>
                 )}
               </div>
             </details>
@@ -739,6 +755,7 @@ function ResultValue({
   value,
   source,
   showCharacterCount = true,
+  compact = true,
 }: {
   label: string;
   shape: Parameters<typeof RuntimeValueViewer>[0]["shape"];
@@ -746,6 +763,7 @@ function ResultValue({
   value: RuntimeValue | undefined;
   source?: string;
   showCharacterCount?: boolean;
+  compact?: boolean;
 }) {
   return (
     <div className="min-w-0 rounded-lg border border-border/50 bg-card/60 p-3">
@@ -763,7 +781,7 @@ function ResultValue({
         shape={shape}
         presentation={presentation}
         value={value}
-        compact
+        compact={compact}
         showCharacterCount={showCharacterCount}
       />
     </div>
@@ -1331,6 +1349,79 @@ function MethodPreview({ method }: { method: ActionBlock[] }) {
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+function PausedValidationGate({
+  block,
+  blockExecution,
+  onCancel,
+}: {
+  block: ActionBlock;
+  blockExecution: BlockExecution;
+  onCancel: () => void;
+}) {
+  const recordedOutputs = (block.outputs ?? []).filter(
+    (output) => !isEmptyDisplayValue(blockExecution.values[output.key]),
+  );
+  return (
+    <section className="rounded-xl border border-warning/40 bg-warning/5 p-5 sm:p-6">
+      <div className="text-center">
+        <Badge variant="outline" className="border-warning/40 text-warning">
+          Aguardando ação
+        </Badge>
+        <h3 className="mt-3 text-base font-semibold">
+          Validação pausada: <span data-i18n-ignore>{block.name ?? block.type}</span>
+        </h3>
+        <p className="mx-auto mt-1 max-w-2xl whitespace-pre-wrap text-sm text-muted-foreground">
+          A validação reprovou a entrega e a execução está pausada. Nenhum bloco está em execução.
+        </p>
+      </div>
+
+      {recordedOutputs.length ? (
+        <div className="mt-5 rounded-xl border border-border/70 bg-background/30 p-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Decisão registrada pela validação
+          </h4>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {recordedOutputs.map((output) => (
+              <ResultValue
+                key={output.id}
+                label={output.label}
+                shape={output.shape}
+                presentation={output.presentation}
+                value={blockExecution.values[output.key]}
+                showCharacterCount
+                compact={false}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mx-auto mt-5 max-w-2xl rounded-xl border border-border/70 bg-background/30 p-4 text-left">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Como continuar
+        </h4>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          O bloco validado já concluído pode ser expandido acima e corrigido com Editar entrega.
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          Para repetir apenas esta validação, cancele a execução pausada e depois use Refazer este
+          bloco na tela de cancelamento. O cancelamento preserva os blocos já concluídos e não refaz
+          as etapas anteriores.
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          A próxima validação pode acionar novamente o provedor do validador.
+        </p>
+      </div>
+
+      <div className="mt-5 flex justify-center">
+        <Button variant="outline" onClick={onCancel}>
+          <Square className="mr-1.5 size-3.5 fill-current" /> Cancelar para refazer a validação
+        </Button>
+      </div>
     </section>
   );
 }
