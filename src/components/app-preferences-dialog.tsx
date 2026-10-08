@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 const THEMES: Array<{ value: AppTheme; label: string; icon: typeof Sun }> = [
   { value: "light", label: "Claro", icon: Sun },
-  { value: "dark", label: "Escuro", icon: Moon },
+  { value: "dark", label: "Escuro · Dracula", icon: Moon },
 ];
 
 const LANGUAGES: Array<{ value: AppLanguage; label: string; detail: string }> = [
@@ -110,7 +110,7 @@ export function AppPreferencesDialog() {
                   aria-pressed={selected}
                 >
                   <Icon className={cn("size-4", selected && "text-brand")} />
-                  {option.label}
+                  {t(option.label)}
                   {selected && <Check className="ml-auto size-4 text-brand" />}
                 </button>
               );

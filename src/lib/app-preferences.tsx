@@ -765,6 +765,7 @@ const PHRASES: Record<string, Translation> = {
   "Escolher opção": ["Choose an option", "Elegir una opción"],
   Escolher: ["Choose", "Elegir"],
   Escuro: ["Dark", "Oscuro"],
+  "Escuro · Dracula": ["Dark · Dracula", "Oscuro · Dracula"],
   "Estas preferências são globais e ficam salvas neste dispositivo.": [
     "These preferences are global and saved on this device.",
     "Estas preferencias son globales y se guardan en este dispositivo.",
@@ -2348,7 +2349,7 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     document.documentElement.classList.toggle("dark", preferences.theme === "dark");
     document.documentElement.lang = preferences.language;
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#18191B");
+    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#282a36");
   }, [preferences]);
 
   useEffect(() => {

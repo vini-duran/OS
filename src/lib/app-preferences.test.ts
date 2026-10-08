@@ -605,3 +605,10 @@ test("strategic library usage and batch interface translate in all languages", (
     assert.ok(translate(phrase, "es").length);
   }
 });
+
+test("translates the dark Dracula theme label in all interface languages", () => {
+  const phrase = "Escuro · Dracula";
+  assert.equal(translate(phrase, "pt-BR"), phrase);
+  assert.equal(translate(phrase, "en"), "Dark · Dracula");
+  assert.equal(translate(phrase, "es"), "Oscuro · Dracula");
+});
