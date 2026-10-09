@@ -97,6 +97,13 @@ Como regra, dois shapes são compatíveis somente quando:
 
 Não há promoção implícita, inferência por label, coerção de escalar para coleção, seleção da primeira porta nem conversão automática de arquivo.
 
+Na execução por plugin, um binding explícito `previous_block` pode transportar
+`[]` quando a saída `many` foi realmente concluída e declarada opcional, e a
+porta consumidora também é opcional e possui shape `many` compatível. O núcleo
+não cria itens para essa coleção. Ausência de saída, origem pendente, shape
+incompatível ou porta obrigatória continuam bloqueando a execução. Essa regra
+não preenche entradas humanas ou de runtime vazias, nem contrai `[]` em escalar.
+
 ### Contração explícita de texto na entrada
 
 Existe uma única operação de consumo entre cardinalidades: uma entrada `text/one/inline` (ou `either`) pode ligar-se a uma saída `text/many/inline`. Nesse caso, a saída continua sendo uma delivery `many`, com um ID por item, mas o runtime apresenta ao executor um único texto, unindo os itens em ordem com uma linha em branco. Para aquele Bloco, o valor recebido é uma unidade escalar; isso não reescreve a delivery de origem nem apaga seus IDs, e os itens completos continuam disponíveis em `inputDeliveries` para correlação estruturada.

@@ -54,6 +54,7 @@ export function resolveBlockInputs({
   channelProjects = [project],
   collections,
   libraryItems,
+  optionalEmptyInputIds = [],
 }: {
   block: ActionBlock;
   execution: ProcessExecution;
@@ -63,6 +64,7 @@ export function resolveBlockInputs({
   channelProjects?: Project[];
   collections: StrategicCollection[];
   libraryItems: ChannelLibraryItem[];
+  optionalEmptyInputIds?: readonly string[];
 }): ResolvedBlockInput[] {
   const candidates = collectCandidates({
     block,
@@ -71,6 +73,7 @@ export function resolveBlockInputs({
     processOrder: projectProcessOrder(project),
     collections,
     libraryItems,
+    includeEmptyCollections: optionalEmptyInputIds.length > 0,
   });
   const usedCandidateIds = new Set<string>();
 
@@ -96,6 +99,17 @@ export function resolveBlockInputs({
       context,
     );
     if (explicit) {
+      if (
+        binding.kind === "previous_block" &&
+        isEmptyRuntimeValue(explicit.result.value) &&
+        !(
+          input.shape.cardinality === "many" &&
+          Array.isArray(explicit.result.value) &&
+          explicit.result.value.length === 0 &&
+          optionalEmptyInputIds.includes(input.id)
+        )
+      )
+        return { input, resolved: false };
       if (explicit.candidateId) usedCandidateIds.add(explicit.candidateId);
       return { input, ...explicit.result };
     }
@@ -110,6 +124,7 @@ function collectCandidates({
   processOrder,
   collections,
   libraryItems,
+  includeEmptyCollections = false,
 }: {
   block: ActionBlock;
   execution: ProcessExecution;
@@ -117,6 +132,7 @@ function collectCandidates({
   processOrder: ProcessExecution["processType"][];
   collections: StrategicCollection[];
   libraryItems: ChannelLibraryItem[];
+  includeEmptyCollections?: boolean;
 }) {
   const candidates: RuntimeCandidate[] = [];
   const normalizedCurrentExecution = normalizeExecutionDeliveries(execution);
@@ -161,7 +177,17 @@ function collectCandidates({
 
     for (const output of definition.outputs ?? []) {
       const value = completed.values[output.key];
-      if (isEmptyRuntimeValue(value)) continue;
+      if (
+        isEmptyRuntimeValue(value) &&
+        !(
+          includeEmptyCollections &&
+          output.required === false &&
+          output.shape.cardinality === "many" &&
+          Array.isArray(value) &&
+          value.length === 0
+        )
+      )
+        continue;
       const delivery = activeDeliveryFor(
         normalizedCurrentExecution.deliveries,
         completed.blockId,

@@ -6438,6 +6438,18 @@ async function executePluginBlockInternal(
     channelProjects,
     collections,
     libraryItems,
+    optionalEmptyInputIds: (block.inputs ?? [])
+      .filter((input) => {
+        const port = capability.inputPorts.find((candidate) => candidate.key === input.portKey);
+        return (
+          port &&
+          !port.required &&
+          port.shape.cardinality === "many" &&
+          input.shape.cardinality === "many" &&
+          areValueShapesCompatible(input.shape, port.shape)
+        );
+      })
+      .map((input) => input.id),
   });
   const missingInputs = resolvedInputs.filter((item) => !item.resolved);
   if (missingInputs.length) {

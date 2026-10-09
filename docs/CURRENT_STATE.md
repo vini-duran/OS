@@ -1,5 +1,12 @@
 # Estado atual e limites de validação
 
+Candidata local em 09/10/2026: a resolução para plugin aceita coleção `many`
+vazia produzida por saída opcional concluída e ligada explicitamente a porta
+opcional compatível. Porta obrigatória, fonte pendente/ausente e contração
+escalar permanecem bloqueadas. Regressão e API isolada usam fixtures sintéticas,
+sem fornecedor, App instalado ou migração. Esta correção ainda não foi instalada
+nem publicada; veja `docs/validation/optional-empty-collections-2026-10-09.md`.
+
 Em 06/10/2026, a preparação da v1.3.7 inclui inclusão/preservação do rascunho de VALIDAR, diagnóstico local de suporte e correção da distribuição dos downloads da interface. A v1.3.6 não publicou a extensão nem as duas skills, provocando HTTP 404 nos links `latest/download`; o empacotamento agora gera os três e a publicação exige sua presença. A revisão também corrigiu erro 500 ao persistir resultado de plugin em Canal sem mapa de Métodos e alinhou regressões antigas ao contrato vigente de Métodos vivos. A formatação preexistente foi corrigida. A rodada final passou check/build, 35 testes i18n, 53 web, seis desktop e seis cenários adicionais de VALIDAR/logs no executável. O aviso de hidratação #419 permanece; uma rodada concorrente excedeu o prazo de startup, e a repetição isolada concluiu. Isto não declara publicação nem ausência de limitações. Plugins e Métodos independentes mantêm versões e catálogos publicados. Consulte [evidências, limites e autorização pendente da 1.3.7](validation/release-1.3.7-2026-10-06.md).
 
 Implementação local em 06/10/2026: Preferências inclui Suporte e diagnóstico no desktop, com abertura da pasta e exportação manual de ZIP. Arquivos de suporte possuem retenção de até 24 horas, teto de 4 MiB, fila limitada e gravação assíncrona; não registram payloads privados nem polling bem-sucedido. O diagnóstico não substitui o histórico operacional. Consulte [validação e limites](validation/support-diagnostics-2026-10-06.md). Não é uma release publicada.
