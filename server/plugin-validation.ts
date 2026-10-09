@@ -55,6 +55,44 @@ const outputPortSchema = z
     shape: valueShapeSchema,
   })
   .strict();
+const literalHost =
+  /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+const namedUrlsSchema = z
+  .object({
+    allowedHosts: z
+      .array(z.string().min(1).max(255).regex(literalHost, "host literal inválido"))
+      .min(1)
+      .max(20)
+      .refine(
+        (values) => unique(values.map((value) => value.toLowerCase())),
+        "não pode conter duplicatas",
+      )
+      .refine(
+        (values) => values.every((value) => !value.includes("*")),
+        "wildcards não são permitidos",
+      ),
+    pathnamePattern: z
+      .string()
+      .min(1)
+      .max(500)
+      .refine(
+        (pattern) => pattern.startsWith("^") && pattern.endsWith("$"),
+        "precisa ser uma regex ancorada (^...$)",
+      )
+      .refine(
+        (pattern) => {
+          try {
+            new RegExp(pattern);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        "regex inválida",
+      )
+      .optional(),
+  })
+  .strict();
 const profileSetupSchema = z
   .object({
     configurationKey: z
@@ -71,6 +109,7 @@ const profileSetupSchema = z
     label: z.string().min(1).max(100),
     description: z.string().max(500).optional(),
     prepareTimeoutMs: z.number().int().min(30_000).max(900_000).optional(),
+    namedUrls: namedUrlsSchema.optional(),
   })
   .strict();
 const browserRuntimeSchema = z.object({ lifecycle: z.literal("core") }).strict();

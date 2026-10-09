@@ -39,7 +39,7 @@
     "branding": { "type": "object" },
     "localizations": { "type": "object" },
     "settingsSchema": { "type": "object" },
-    "profileSetup": { "type": "object" },
+    "profileSetup": { "$ref": "#/$defs/profileSetup" },
     "browserRuntime": { "type": "object" },
     "supportsConversationContinuation": { "type": "boolean" },
     "capabilities": {
@@ -131,6 +131,34 @@
         "required": { "type": "boolean" },
         "internal": { "const": true },
         "presentation": { "$ref": "#/$defs/presentation" }
+      }
+    },
+    "profileSetup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configurationKey", "label"],
+      "properties": {
+        "configurationKey": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "fallbackConfigurationKey": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "prepareTimeoutMs": { "type": "integer", "minimum": 30000, "maximum": 900000 },
+        "namedUrls": { "$ref": "#/$defs/profileSetupNamedUrls" }
+      }
+    },
+    "profileSetupNamedUrls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedHosts"],
+      "properties": {
+        "allowedHosts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$" }
+        },
+        "pathnamePattern": { "type": "string", "minLength": 1, "maxLength": 500 }
       }
     },
     "capability": {

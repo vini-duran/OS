@@ -217,6 +217,12 @@ A Browser Bridge negocia versão/capabilities antes do primeiro efeito, usa coma
 
 `presentation` solicita apenas renderer seguro do núcleo. Ele não altera shape. A interface funcional da capability vem de `blockConfigSchema`; plugins não injetam React, HTML, CSS ou scripts.
 
+## Catálogo local de URLs por perfil (opt-in)
+
+Um manifesto pode declarar `profileSetup.namedUrls` com `allowedHosts` (1–20 hosts literais, sem wildcards, únicos) e `pathnamePattern` opcional (regex ancorada `^...$`, até 500 caracteres). Essa declaração é genérica do Core: hosts e padrões específicos da ferramenta permanecem exclusivamente no manifesto externo, sem constantes ou IDs de ferramenta no núcleo.
+
+Quando declarado, o núcleo oferece CRUD local `GET/POST /api/plugins/:pluginId/profile-bindings/:profileId/named-urls` e `PATCH/DELETE .../named-urls/:urlId`, com resposta `{entries, revision}`. Cada entrada possui `{id,name,url,createdAt,updatedAt}`; o `id` é UUID estável gerado pelo núcleo e preservado em renomeação/edição. O escopo é estrito a plugin + perfil físico, com FK composta para `plugin_profile_bindings` e `ON DELETE CASCADE`; readiness, atributos do perfil físico, Método, configurações globais e `localStorage` não são afetados. O núcleo valida HTTPS, ausência de userinfo, até 2048 caracteres, host exato e regex de pathname declarada; URLs duplicadas (canônicas) são rejeitadas com 409. Escritas exigem `revision` (SHA-256 do JSON ordenado) com CAS atômico em transação; revisão obsoleta retorna 409 sem mutação. Não há execução de plugin nem abertura de navegador neste estágio, e nenhuma seleção de runtime/Método/geração é alterada.
+
 Localizações podem traduzir nome, descrição, labels, ajuda e opções. IDs técnicos, port keys e valores não são traduzidos.
 
 ## Versionamento

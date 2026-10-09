@@ -82,7 +82,7 @@ type JournalRow = {
   failed_at: string | null;
 };
 
-export const CONTENTFLOW_SCHEMA_VERSION = 4;
+export const CONTENTFLOW_SCHEMA_VERSION = 5;
 
 type LegacyPluginProfileRow = {
   id: string;
@@ -250,6 +250,36 @@ export const CONTENTFLOW_SCHEMA_MIGRATIONS: SchemaMigration[] = [
               ON browser_profile_leases(expires_at);
             CREATE INDEX IF NOT EXISTS browser_profile_leases_owner
               ON browser_profile_leases(owner_type, owner_id);
+          `);
+        },
+      },
+    ],
+  },
+  {
+    version: 5,
+    name: "plugin-profile-named-urls-v5.0",
+    backupBeforeStructuralWrite: true,
+    steps: [
+      {
+        id: "create-plugin-profile-named-urls",
+        run: (database) => {
+          database.exec(`
+            CREATE TABLE IF NOT EXISTS plugin_profile_named_urls (
+              id TEXT PRIMARY KEY CHECK (length(trim(id)) > 0),
+              plugin_id TEXT NOT NULL CHECK (length(trim(plugin_id)) > 0),
+              profile_id TEXT NOT NULL CHECK (length(trim(profile_id)) > 0),
+              name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+              url TEXT NOT NULL CHECK (length(url) BETWEEN 1 AND 2048),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (plugin_id, profile_id)
+                REFERENCES plugin_profile_bindings(plugin_id, profile_id)
+                ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS plugin_profile_named_urls_binding
+              ON plugin_profile_named_urls(plugin_id, profile_id, created_at, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS plugin_profile_named_urls_binding_url
+              ON plugin_profile_named_urls(plugin_id, profile_id, url);
           `);
         },
       },

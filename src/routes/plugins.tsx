@@ -85,6 +85,7 @@ import {
   type PluginOrganization,
 } from "@/lib/plugin-organization";
 import { pluginOrganizationText } from "@/lib/plugin-organization-localization";
+import { PluginProfileNamedUrls } from "@/components/plugin-profile-named-urls";
 import type { AppLanguage } from "@/lib/app-preferences";
 
 export const Route = createFileRoute("/plugins")({
@@ -2064,6 +2065,9 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
                     <p className="mt-2 text-[10px] text-muted-foreground">
                       Este perfil ainda não é utilizado por nenhum Método.
                     </p>
+                  )}
+                  {plugin.manifest.profileSetup?.namedUrls && (
+                    <PluginProfileNamedUrls key={`${plugin.id}:${profile.id}`} pluginId={plugin.id} profileId={profile.id} />
                   )}
                 </article>
               );

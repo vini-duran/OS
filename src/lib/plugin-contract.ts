@@ -202,6 +202,13 @@ export type PluginCapability = {
   outputSchema: JsonSchema;
 };
 
+export type PluginProfileSetupNamedUrls = {
+  /** Literal HTTPS hosts allowed for user-managed project URLs. No wildcards. */
+  allowedHosts: string[];
+  /** Optional anchored RegExp source tested against the URL pathname. */
+  pathnamePattern?: string;
+};
+
 export type PluginProfileSetup = {
   configurationKey: string;
   /** Ordered aliases used only after retryable technical failures. */
@@ -209,6 +216,8 @@ export type PluginProfileSetup = {
   label: string;
   description?: string;
   prepareTimeoutMs?: number;
+  /** Opt-in local catalog of user-managed named project URLs scoped to plugin+profile. */
+  namedUrls?: PluginProfileSetupNamedUrls;
 };
 
 export type PluginBranding = {

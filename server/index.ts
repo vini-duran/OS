@@ -277,6 +277,7 @@ import {
 import { materializeProfileLanePool } from "./profile-lane-pool";
 import { profileLaneProgressForJob } from "./profile-lane-progress";
 import { executeParallelProfileLanes } from "./parallel-profile-executor";
+import { registerPluginProfileNamedUrlRoutes } from "./plugin-profile-named-urls";
 
 const port = Number(process.env.CONTENTFLOW_API_PORT ?? 8787);
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
@@ -3943,6 +3944,11 @@ function registeredProfilePlugin(pluginId: string) {
   if (!plugin?.manifest.profileSetup) return undefined;
   return plugin;
 }
+
+registerPluginProfileNamedUrlRoutes(app, {
+  database,
+  resolveProfilePlugin: (pluginId) => registeredProfilePlugin(pluginId),
+});
 
 app.get("/api/plugins/:pluginId/profiles", (request, response) => {
   const plugin = registeredProfilePlugin(request.params.pluginId);
