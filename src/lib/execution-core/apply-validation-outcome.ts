@@ -132,6 +132,7 @@ export function applyValidationOutcome(
     blockExecution.attempt = attemptAfterRetryInvalidation(blockExecution);
     blockExecution.values = {};
     blockExecution.error = undefined;
+    blockExecution.errorCode = undefined;
     blockExecution.logs = undefined;
     blockExecution.completedAt = undefined;
     blockExecution.jobId = undefined;
@@ -169,6 +170,7 @@ export function applyValidationOutcome(
   execution.output = undefined;
   execution.outputStatus = "pending";
   execution.error = undefined;
+  execution.errorCode = undefined;
   execution.status =
     targetExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
 

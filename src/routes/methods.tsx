@@ -58,12 +58,14 @@ import { pluginRequirementReadiness } from "@/lib/method-transfer-readiness";
 import {
   parseMethodImportFile,
   planPortableMethodTransfer,
+  sanitizePortableTransferPlan,
   serializePortableMethodTransfer,
   type MethodRequirement,
   type PortableCollection,
   type PortableLibraryItem,
   type PortableMethodRole,
 } from "@/lib/method-file";
+import type { PluginProfileSetup } from "@/lib/plugin-contract";
 import {
   applyMethodTransfer,
   setChannelMethods,
@@ -89,7 +91,11 @@ type ReadinessPlugin = {
   id: string;
   enabled: boolean;
   executable: boolean;
-  manifest: { name: string; capabilities: Array<{ id: string }> };
+  manifest: {
+    name: string;
+    capabilities: Array<{ id: string }>;
+    profileSetup?: PluginProfileSetup;
+  };
 };
 
 type TransferDraft = {
@@ -225,6 +231,13 @@ function MethodsLibraryPage() {
     isPack: boolean,
     mode: "share" | "reuse" = "reuse",
   ) {
+    // Portable share/reuse preview source: reuse the canonical method-file
+    // sanitizer with real plugin metadata. Share strips IDs + managed raw
+    // URLs before preview/transmission; local reuse preserves its own clone.
+    const profileSetupForPlugin = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const plan = planPortableMethodTransfer({
       name,
       channelName: channel.name,
@@ -238,6 +251,7 @@ function MethodsLibraryPage() {
         : [methods[0].processType],
       includeAllMethods: isPack,
       preserveLocalConnections: mode === "reuse",
+      ...(mode === "share" ? { profileSetupForPlugin } : {}),
     });
     const plannedMethods = plan.methods.map((entry) => entry.method);
     const requirements = Object.fromEntries(
@@ -377,6 +391,10 @@ function MethodsLibraryPage() {
       : transfer.methods
           .filter((method) => transfer.roles?.[method.processType] === "primary")
           .map((method) => method.processType);
+    const profileSetupForPlugin = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const plan = planPortableMethodTransfer({
       name: transfer.name,
       channelName: channel.name,
@@ -389,6 +407,7 @@ function MethodsLibraryPage() {
       processOrder: effectiveProcessOrder(channel),
       primaryProcessTypes,
       includeAllMethods: transfer.isPack,
+      ...(transfer.mode === "share" ? { profileSetupForPlugin } : {}),
     });
     setTransfer((current) =>
       current
@@ -409,7 +428,11 @@ function MethodsLibraryPage() {
         const primaryProcessType = transfer.methods.find(
           (method) => transfer.roles?.[method.processType] === "primary",
         )?.processType;
-        const plan = {
+        const profileSetupForPlugin = (pluginId: string) => {
+          const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+          return found ? (found.manifest.profileSetup ?? null) : undefined;
+        };
+        const rawPlan = {
           format: transfer.isPack
             ? ("contentflow-method-pack" as const)
             : ("contentflow-method" as const),
@@ -429,8 +452,12 @@ function MethodsLibraryPage() {
           itemsIncluded: transfer.itemsIncluded === true,
           items: transfer.items ?? [],
         };
+        // Re-sanitize at transmission time with current metadata: physical /
+        // catalog IDs and every managed raw URL are absent before export even
+        // if the preview was built before plugins finished loading.
+        const plan = sanitizePortableTransferPlan(rawPlan, profileSetupForPlugin);
         await downloadMethodPackage(
-          serializePortableMethodTransfer(plan),
+          serializePortableMethodTransfer(plan, profileSetupForPlugin),
           transfer.isPack
             ? `metodos-${slug(transfer.channelName)}.contentflow-method-pack.zip`
             : `${slug(transfer.name)}.contentflow-method.zip`,

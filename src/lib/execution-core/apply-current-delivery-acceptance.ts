@@ -54,12 +54,14 @@ export function applyCurrentBlockDeliveryAcceptance(
   blockExecution.status = "completed";
   blockExecution.completedAt = fact.now;
   blockExecution.error = undefined;
+  blockExecution.errorCode = undefined;
   blockExecution.progress = 1;
   blockExecution.progressMessage = undefined;
   blockExecution.itemProgress = undefined;
   blockExecution.itemRetryScope = undefined;
   blockExecution.itemRetryId = undefined;
   execution.error = undefined;
+  execution.errorCode = undefined;
 
   return { ok: true, outcome: "completed", blockId: fact.blockId };
 }

@@ -304,6 +304,7 @@ test("V03 — retry_target reativa o alvo e reprojeta execução e Projeto", () 
     values: { target_value: "resultado antigo" },
     attempt: 1,
     completedAt: "2026-09-28T01:00:00.000Z",
+    errorCode: "PROJECT_DESTINATION_CHANGED",
   });
   Object.assign(execution.blocks[1], {
     status: "awaiting_human",
@@ -318,6 +319,7 @@ test("V03 — retry_target reativa o alvo e reprojeta execução e Projeto", () 
   };
   execution.outputStatus = "completed";
   execution.error = "erro antigo";
+  execution.errorCode = "PROJECT_DESTINATION_CHANGED";
 
   const result = commands.completeHumanBlock(execution.id, review.id, {
     decision: "rejected",
@@ -326,6 +328,7 @@ test("V03 — retry_target reativa o alvo e reprojeta execução e Projeto", () 
 
   assert.deepEqual(result, { ok: true, completedProcess: false, retriedBlock: "target" });
   assert.equal(execution.blocks[0].status, "blocked_executor");
+  assert.equal(execution.blocks[0].errorCode, undefined);
   assert.equal(execution.blocks[0].attempt, 2);
   assert.deepEqual(execution.blocks[0].values, {});
   assert.equal(execution.blocks[1].status, "pending");
@@ -334,6 +337,7 @@ test("V03 — retry_target reativa o alvo e reprojeta execução e Projeto", () 
   assert.equal(execution.output, undefined);
   assert.equal(execution.outputStatus, "pending");
   assert.equal(execution.error, undefined);
+  assert.equal(execution.errorCode, undefined);
   assert.equal(execution.status, "blocked_executor");
   assert.equal(project.stages.theme, "blocked");
   assert.equal(project.currentStage, "theme");
@@ -660,6 +664,7 @@ test("V12 — nova rodada limpa integralmente o estado antigo do VALIDAR", () =>
   Object.assign(execution.blocks[1], {
     values: { decision: "approved", feedback: "feedback velho" },
     error: "erro velho",
+    errorCode: "PROJECT_DESTINATION_CHANGED",
     logs: ["log velho"],
     completedAt: "2026-09-28T02:30:00.000Z",
     jobId: "job-validation",
@@ -683,6 +688,7 @@ test("V12 — nova rodada limpa integralmente o estado antigo do VALIDAR", () =>
     attempt: 2,
     startedAt: undefined,
     error: undefined,
+    errorCode: undefined,
     logs: undefined,
     completedAt: undefined,
     jobId: undefined,

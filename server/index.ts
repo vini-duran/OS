@@ -269,6 +269,7 @@ import {
   type BuilderPluginContext,
 } from "./builder-methods";
 import {
+  authorizeLocalBlockCopy,
   clearImportedProfileAssociations,
   materializeLocalProfileExecution,
   resolveProfileExecutionSnapshot,
@@ -278,6 +279,11 @@ import { materializeProfileLanePool } from "./profile-lane-pool";
 import { profileLaneProgressForJob } from "./profile-lane-progress";
 import { executeParallelProfileLanes } from "./parallel-profile-executor";
 import { registerPluginProfileNamedUrlRoutes } from "./plugin-profile-named-urls";
+import {
+  attachProjectUrlsToSnapshot,
+  ProjectSelectionError,
+  refreshActiveProjectUrl,
+} from "./profile-project-selection";
 
 const port = Number(process.env.CONTENTFLOW_API_PORT ?? 8787);
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
@@ -930,11 +936,17 @@ function executionBrowserProfileForPluginRequest(
   });
 }
 
+function portableProfileSetupForPlugin(pluginId: string) {
+  const plugin = getRegisteredPlugin(pluginId);
+  if (!plugin) return undefined;
+  return plugin.manifest.profileSetup ?? null;
+}
+
 function persistLocalProfileExecution(blocks: ActionBlock[]) {
   initializePluginRunner();
   const materialized = materializeLocalProfileExecution({
     blocks,
-    profileSetupForPlugin: (pluginId) => getRegisteredPlugin(pluginId)?.manifest.profileSetup,
+    profileSetupForPlugin: portableProfileSetupForPlugin,
     resolveAlias: (pluginId, alias) => {
       try {
         return {
@@ -973,9 +985,13 @@ function resolvedProfileExecutionForBlock(plugin: RegisteredPlugin, block: Actio
   const setup = plugin.manifest.profileSetup;
   if (!setup)
     throw new Error("Este plugin não declara perfis de navegador para esta política local.");
-  return resolveProfileExecutionSnapshot({
+  const projectKey = setup.namedUrls?.configurationKey?.trim() || undefined;
+  const snapshot = resolveProfileExecutionSnapshot({
     policy,
     configurationKey: setup.configurationKey,
+    ...(projectKey
+      ? { projectConfigurationKey: projectKey, projectSelections: policy.projectSelections }
+      : {}),
     resolveProfile: (profileId) => {
       try {
         const resolved = resolveBoundBrowserProfile(database, {
@@ -992,6 +1008,12 @@ function resolvedProfileExecutionForBlock(plugin: RegisteredPlugin, block: Actio
         return undefined;
       }
     },
+  });
+  return attachProjectUrlsToSnapshot({
+    database,
+    plugin,
+    snapshot,
+    isBoundProfile: (profileId) => Boolean(pluginProfileBindings.get(plugin.id, profileId)),
   });
 }
 
@@ -1179,6 +1201,7 @@ function finishPluginBlock(
   if (block.operator === "Humano") {
     blockExecution.status = "awaiting_human";
     blockExecution.error = undefined;
+    blockExecution.errorCode = undefined;
     blockExecution.progress = undefined;
     blockExecution.progressMessage = undefined;
     execution.status = "awaiting_human";
@@ -1348,9 +1371,11 @@ function failAutomaticPluginStart(executionId: string, blockId: string, message:
   }
   blockExecution.status = "failed";
   blockExecution.error = message;
+  blockExecution.errorCode = undefined;
   blockExecution.logs = [...(blockExecution.logs ?? []), message];
   execution.status = "failed";
   execution.error = message;
+  execution.errorCode = undefined;
   persistPluginExecution(execution, project);
 }
 
@@ -2233,9 +2258,11 @@ function markPluginJobFailed(
         blockExecution.items = blockExecutionItemsForJob(saved, blockExecution.items);
         blockExecution.status = "failed";
         blockExecution.error = message;
+        blockExecution.errorCode = reasonCode;
         blockExecution.progressMessage = message;
         execution.status = "failed";
         execution.error = message;
+        execution.errorCode = reasonCode;
         persistPluginExecution(execution, project);
       }
     },
@@ -2581,6 +2608,32 @@ async function processPluginJobClaimed(
       job.status === "starting"
         ? ({ mode: "start" } as const)
         : ({ mode: "resume", jobId: job.jobId! } as const);
+    // Frozen-destination guard for EXISTING jobs before any provider/browser
+    // effect. Deleted/foreign/unbound/invalid selections block here with a
+    // setup diagnostic; a stable catalog-ID rename (same URL) passes; a catalog
+    // URL edit for the same ID blocks with PROJECT_DESTINATION_CHANGED and
+    // never rewrites projectUrls in the active job (NEW jobs use the new URL).
+    // Completed media/workunits are preserved by markPluginJobFailed partials.
+    if (job.profileExecution?.projectConfigurationKey) {
+      try {
+        refreshActiveProjectUrl({
+          database,
+          plugin,
+          snapshot: job.profileExecution,
+          activeIndex: job.profileFallback?.activeIndex ?? 0,
+          isBoundProfile: (profileId) => Boolean(pluginProfileBindings.get(plugin.id, profileId)),
+        });
+      } catch (error) {
+        return markPluginJobFailed(
+          claim,
+          execution,
+          project,
+          error instanceof Error ? error.message : "Selecione um projeto nomeado para este perfil.",
+          "failed",
+          error instanceof ProjectSelectionError ? error.code : "PROJECT_SELECTION_REQUIRED",
+        );
+      }
+    }
     const parallelExecution = Boolean(job.profileLanePool);
     const parallelResult = parallelExecution
       ? await runActivePluginInvocation(job, (signal) =>
@@ -2789,6 +2842,8 @@ async function processPluginJobClaimed(
                   });
                   claim.job = job;
                   latestBlockExecution.status = "in_progress";
+                  latestBlockExecution.error = undefined;
+                  latestBlockExecution.errorCode = undefined;
                   latestBlockExecution.values = structuredClone(partialValues);
                   latestBlockExecution.progress = job.progress;
                   latestBlockExecution.progressMessage = job.message;
@@ -2800,6 +2855,7 @@ async function processPluginJobClaimed(
                   );
                   latestExecution.status = "running";
                   latestExecution.error = undefined;
+                  latestExecution.errorCode = undefined;
                   recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
                   persistPluginExecution(latestExecution, latestProject);
                 });
@@ -2891,6 +2947,8 @@ async function processPluginJobClaimed(
             });
             claim.job = job;
             latestBlockExecution.status = "in_progress";
+            latestBlockExecution.error = undefined;
+            latestBlockExecution.errorCode = undefined;
             latestBlockExecution.values = structuredClone(partialValues);
             latestBlockExecution.progress = job.progress;
             latestBlockExecution.progressMessage = job.message;
@@ -2900,6 +2958,7 @@ async function processPluginJobClaimed(
             latestBlockExecution.logs = update.logs ?? latestBlockExecution.logs;
             latestExecution.status = "running";
             latestExecution.error = undefined;
+            latestExecution.errorCode = undefined;
             recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
             persistPluginExecution(latestExecution, latestProject);
           });
@@ -3003,6 +3062,8 @@ async function processPluginJobClaimed(
         });
         if (saved.status === "cancel_requested") return saved;
         blockExecution!.status = "in_progress";
+        blockExecution!.error = undefined;
+        blockExecution!.errorCode = undefined;
         blockExecution!.values = structuredClone(partialValues);
         blockExecution!.jobId = saved.jobId;
         blockExecution!.traceId = saved.traceId;
@@ -3014,6 +3075,7 @@ async function processPluginJobClaimed(
         blockExecution!.logs = pluginResponse.logs;
         execution!.status = "running";
         execution!.error = undefined;
+        execution!.errorCode = undefined;
         recordBlockDeliveries(execution!, block!, partialValues, "partial");
         persistPluginExecution(execution!, project!);
         return saved;
@@ -3081,6 +3143,8 @@ async function processPluginJobClaimed(
           });
           if (saved.status === "cancel_requested") return saved;
           blockExecution!.status = "in_progress";
+          blockExecution!.error = undefined;
+          blockExecution!.errorCode = undefined;
           blockExecution!.values = structuredClone(partialValues);
           blockExecution!.progressMessage = saved.message;
           blockExecution!.itemProgress = itemProgressForJob(saved);
@@ -3088,6 +3152,8 @@ async function processPluginJobClaimed(
           blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
           blockExecution!.logs = pluginResponse.logs;
           execution!.status = "running";
+          execution!.error = undefined;
+          execution!.errorCode = undefined;
           recordBlockDeliveries(execution!, block!, partialValues, "partial");
           persistPluginExecution(execution!, project!);
           return saved;
@@ -3325,6 +3391,8 @@ async function processPluginJobClaimed(
         if (saved.status === "cancel_requested") return;
         if (!execution || !project || !block || !blockExecution) return;
         finishPluginBlock(execution, block, blockExecution, values);
+        execution.error = undefined;
+        execution.errorCode = undefined;
         if (completedConversationId) {
           const activeProfile = activeProfileAliasForJob(plugin, job);
           blockExecution.pluginConversation = {
@@ -3777,11 +3845,15 @@ app.post("/api/method-packages/export", async (request, response) => {
       response.status(400).json({ error: "Manifesto ausente." });
       return;
     }
-    const archive = await createMethodPackage(request.body.manifest, (url) => {
-      const storedName = url.slice("/api/files/".length);
-      if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Capa local inválida.");
-      return readFileSync(path.join(uploadsDirectory, storedName));
-    });
+    const archive = await createMethodPackage(
+      request.body.manifest,
+      (url) => {
+        const storedName = url.slice("/api/files/".length);
+        if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Capa local inválida.");
+        return readFileSync(path.join(uploadsDirectory, storedName));
+      },
+      portableProfileSetupForPlugin,
+    );
     response.type("application/zip").send(archive);
   } catch (error) {
     response.status(400).json({
@@ -3801,7 +3873,12 @@ app.post(
       }
       // Abrir um pacote serve apenas para pré-visualização. Os assets permanecem
       // embutidos no manifesto como data URLs até a aplicação/importação efetiva.
-      const manifest = await readMethodPackage(request.body);
+      // IDs forjados e URLs gerenciadas são descartados aqui via metadados reais.
+      const manifest = await readMethodPackage(
+        request.body,
+        undefined,
+        portableProfileSetupForPlugin,
+      );
       response.json({ manifest });
     } catch (error) {
       response.status(400).json({
@@ -6729,6 +6806,12 @@ async function executePluginBlockInternal(
     delete requestConfiguration[resolvedProfileExecution.configurationKey];
     const fallbackConfigurationKey = plugin.manifest.profileSetup?.fallbackConfigurationKey;
     if (fallbackConfigurationKey) delete requestConfiguration[fallbackConfigurationKey];
+    // The managed project URL is resolved per active profile at invocation;
+    // a stale typed value must never reach the plugin or leak into a fallback.
+    const managedProjectKey =
+      resolvedProfileExecution.projectConfigurationKey ??
+      plugin.manifest.profileSetup?.namedUrls?.configurationKey?.trim();
+    if (managedProjectKey) delete requestConfiguration[managedProjectKey];
   }
   const pluginRequest: PluginExecutionRequest = {
     executionId: execution.id,
@@ -7744,7 +7827,15 @@ app.post("/api/method-transfers/apply", (request, response) => {
     };
   });
 
-  const localCopy = Boolean(body.sourceChannelId);
+  // Local trust must be proven against actual server channel/method bindings,
+  // never from the requester-supplied boolean alone. A forged sourceChannelId
+  // (unknown channel) or supplied methods not owned by that channel cannot
+  // import bound profileExecution/projectSelections or managed raw URLs.
+  const sourceChannel =
+    typeof body.sourceChannelId === "string" && body.sourceChannelId
+      ? readPayload<Channel>("channels", body.sourceChannelId)
+      : undefined;
+  const localCopy = Boolean(sourceChannel);
   const copied: ProcessMethod[] = copyImportedMethods(
     adaptedSelected,
     (prefix) => `${prefix}-${randomUUID()}`,
@@ -7767,24 +7858,38 @@ app.post("/api/method-transfers/apply", (request, response) => {
   );
   if (!localCopy) {
     for (const method of copied) {
-      method.blocks = clearImportedProfileAssociations({
+      const stripped = clearImportedProfileAssociations({
         blocks: method.blocks,
-        profileSetupForPlugin: (pluginId) => getRegisteredPlugin(pluginId)?.manifest.profileSetup,
+        profileSetupForPlugin: portableProfileSetupForPlugin,
       });
+      // Non-local imports never carry local connection handles either.
+      method.blocks = stripped.map((block) =>
+        block.plugin?.connectionId
+          ? { ...block, plugin: { ...block.plugin, connectionId: undefined } }
+          : block,
+      );
     }
   } else {
+    // Legitimate internal copy: per-block authority rederived from the ACTUAL
+    // source channel at the same process/index with matching plugin/capability.
+    // Proven blocks adopt the authoritative connectionId; every unproven block
+    // (no policy, mismatched identity, dropped invalid policy, forged) is
+    // stripped of profileExecution + connectionId + managed URL. Wired to the
+    // pure authorizeLocalBlockCopy helper (tested directly).
     for (const method of copied) {
-      const sourceMethod = adaptedSelected.find(
+      const actualSourceMethod = sourceChannel?.methods?.[method.processType];
+      const suppliedMethod = adaptedSelected.find(
         (candidate) => candidate.processType === method.processType,
       );
-      method.blocks = method.blocks.map((block, index) => {
-        const sourceBlock = sourceMethod?.blocks[index];
-        if (!sourceBlock?.plugin?.profileExecution || block.plugin?.profileExecution) return block;
-        return clearImportedProfileAssociations({
-          blocks: [block],
-          profileSetupForPlugin: (pluginId) => getRegisteredPlugin(pluginId)?.manifest.profileSetup,
-        })[0];
-      });
+      method.blocks = method.blocks.map((block, index) =>
+        authorizeLocalBlockCopy({
+          actualBlock: actualSourceMethod?.blocks[index],
+          suppliedBlock: suppliedMethod?.blocks[index],
+          copiedBlock: block,
+          expectedPortableBlockId: `${method.processType}:block:${index + 1}`,
+          profileSetupForPlugin: portableProfileSetupForPlugin,
+        }),
+      );
     }
   }
   const finalMethods = existing ? structuredClone(existing.methods) : createEmptyMethods();
@@ -8665,10 +8770,15 @@ app.patch("/api/executions/:id/blocks/:blockId/values", (request, response) => {
     response.status(409).json({ error: "Aguarde o bloco terminar antes de editar a entrega." });
     return;
   }
-  const edit = validateCompletedDeliveryEdit(block, blockExecution.values ?? {}, request.body?.values, {
-    methodSnapshot: execution.methodSnapshot,
-    blocks: execution.blocks,
-  });
+  const edit = validateCompletedDeliveryEdit(
+    block,
+    blockExecution.values ?? {},
+    request.body?.values,
+    {
+      methodSnapshot: execution.methodSnapshot,
+      blocks: execution.blocks,
+    },
+  );
   if (!edit.ok) {
     response.status(edit.status).json({ error: edit.error });
     return;
@@ -8960,6 +9070,36 @@ app.post(
     if (!outputPort) {
       response.status(422).json({ error: "Não foi possível resolver a saída original do item." });
       return;
+    }
+
+    // Canonical frozen-destination guard BEFORE any provider/browser effect.
+    // Every regeneration effect uses the same safety check as
+    // start/resume/continuation/fallback. Deleted/foreign/invalid/unbound or a
+    // catalog URL edit blocks here with a structured non-retryable setup
+    // diagnostic; no cached projectUrls URI escapes to the plugin.
+    if (job.profileExecution?.projectConfigurationKey) {
+      try {
+        refreshActiveProjectUrl({
+          database,
+          plugin: declared.plugin,
+          snapshot: job.profileExecution,
+          activeIndex: job.profileFallback?.activeIndex ?? 0,
+          isBoundProfile: (profileId) =>
+            Boolean(pluginProfileBindings.get(declared.plugin.id, profileId)),
+        });
+      } catch (guardError) {
+        response.status(422).json({
+          error:
+            guardError instanceof Error
+              ? guardError.message
+              : "Selecione um projeto nomeado para este perfil.",
+          code:
+            guardError instanceof ProjectSelectionError
+              ? guardError.code
+              : "PROJECT_SELECTION_REQUIRED",
+        });
+        return;
+      }
     }
 
     try {

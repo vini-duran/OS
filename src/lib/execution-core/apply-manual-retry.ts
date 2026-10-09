@@ -86,6 +86,7 @@ export function applyManualBlockRetry(
     now,
   );
   retryBlockExecution.error = undefined;
+  retryBlockExecution.errorCode = undefined;
   retryBlockExecution.pluginConversation = undefined;
   retryBlockExecution.jobId = undefined;
   retryBlockExecution.traceId = undefined;
@@ -115,6 +116,7 @@ export function applyManualBlockRetry(
     // for the newly reopened work.
     suffixBlock.attempt = (suffixBlock.attempt ?? 1) + 1;
     suffixBlock.error = undefined;
+    suffixBlock.errorCode = undefined;
     suffixBlock.jobId = undefined;
     suffixBlock.traceId = undefined;
     suffixBlock.completedAt = undefined;
@@ -132,6 +134,7 @@ export function applyManualBlockRetry(
     retryBlock.operator === "Humano" && !retryBlock.plugin ? "awaiting_human" : "blocked_executor";
   retryBlockExecution.status = retryStatus;
   execution.error = undefined;
+  execution.errorCode = undefined;
   execution.status = retryStatus;
 
   return {

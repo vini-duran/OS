@@ -58,6 +58,7 @@ export function applyCompletedBlockTransition(
     nextExecution.startedAt = now;
     nextExecution.attempt = Math.max(1, nextExecution.attempt ?? 1);
     nextExecution.error = undefined;
+    nextExecution.errorCode = undefined;
     nextExecution.status = transition.decision.blockStatus;
     execution.status = transition.decision.executionStatus;
     return {

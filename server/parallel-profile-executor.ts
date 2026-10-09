@@ -162,6 +162,21 @@ export async function executeParallelProfileLanes(input: {
           }
           const request = continuousInvocationRequestForJob(latest, { mode: "start" });
           request.configuration = { ...request.configuration, [configurationKey]: lane.alias };
+          const projectKey = latest.profileExecution?.projectConfigurationKey;
+          if (projectKey) {
+            const laneUrl = latest.profileExecution?.projectUrls?.[lane.profileId];
+            if (!laneUrl) {
+              failProfileLane({
+                store: dependencies.pluginJobs,
+                jobId: latest.id,
+                laneId: lane.laneId,
+                invocationId,
+                reasonCode: "PROJECT_SELECTION_REQUIRED",
+              });
+              return;
+            }
+            request.configuration = { ...request.configuration, [projectKey]: laneUrl };
+          }
           const response = await dependencies.executePlugin(
             input.plugin,
             request,

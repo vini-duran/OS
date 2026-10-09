@@ -79,17 +79,20 @@ const namedUrlsSchema = z
         (pattern) => pattern.startsWith("^") && pattern.endsWith("$"),
         "precisa ser uma regex ancorada (^...$)",
       )
-      .refine(
-        (pattern) => {
-          try {
-            new RegExp(pattern);
-            return true;
-          } catch {
-            return false;
-          }
-        },
-        "regex inválida",
-      )
+      .refine((pattern) => {
+        try {
+          new RegExp(pattern);
+          return true;
+        } catch {
+          return false;
+        }
+      }, "regex inválida")
+      .optional(),
+    configurationKey: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(configurationKey, "chave de configuração inválida")
       .optional(),
   })
   .strict();
@@ -556,6 +559,39 @@ export const pluginManifestSchema = z
               code: "custom",
               path: ["capabilities", index, "blockConfigSchema", "properties"],
               message: `precisa declarar ${manifest.profileSetup.fallbackConfigurationKey} para fallback de perfis`,
+            });
+          }
+        }
+      }
+      const projectKey = manifest.profileSetup.namedUrls?.configurationKey;
+      if (projectKey) {
+        if (
+          projectKey === manifest.profileSetup.configurationKey ||
+          projectKey === manifest.profileSetup.fallbackConfigurationKey
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["profileSetup", "namedUrls", "configurationKey"],
+            message: "precisa ser diferente das chaves de perfil",
+          });
+        }
+        for (const [index, capability] of manifest.capabilities.entries()) {
+          const properties = (capability.blockConfigSchema?.properties ?? {}) as Record<
+            string,
+            unknown
+          >;
+          const target = properties[projectKey] as { type?: unknown; format?: unknown } | undefined;
+          if (!target || typeof target !== "object") {
+            context.addIssue({
+              code: "custom",
+              path: ["capabilities", index, "blockConfigSchema", "properties"],
+              message: `precisa declarar ${projectKey} para o projeto nomeado do perfil`,
+            });
+          } else if (target.type !== undefined && target.type !== "string") {
+            context.addIssue({
+              code: "custom",
+              path: ["capabilities", index, "blockConfigSchema", "properties", projectKey, "type"],
+              message: "a URL gerenciada do projeto precisa aceitar texto",
             });
           }
         }

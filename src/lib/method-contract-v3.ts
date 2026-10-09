@@ -144,6 +144,9 @@ const actionBlockSchema = z
             mode: z.enum(["single", "fallback", "parallel"]),
             profileIds: z.array(z.string().min(1)).min(1),
             maxParallel: z.number().int().min(1).optional(),
+            projectSelections: z
+              .record(z.string().min(1).max(160), z.string().min(1).max(160))
+              .optional(),
           })
           .strict()
           .optional(),

@@ -63,6 +63,11 @@ import {
 } from "@/lib/data-shape";
 import { ChannelAvatar } from "@/components/channel-avatar";
 import { PluginConfigurationRenderer } from "@/components/plugin-configuration-renderer";
+import { ProfileProjectSelection } from "@/components/profile-project-selection";
+import {
+  managedProjectUrlConfigurationKey,
+  normalizeProjectSelections,
+} from "@/lib/profile-project-selection";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
 import { isMethodContentField, replaceMethodContentFields } from "@/lib/method-content-fields";
 import {
@@ -592,10 +597,16 @@ export function MethodBuilder({
     const processLabel = PROCESS_META[processType].label;
     const fileName = `metodo-${processType}.contentflow-method.zip`;
     const methodName = draftName.trim() || `Método de ${processLabel}`;
+    // Portable exports never carry local profile/project IDs or the managed URL value.
+    const profileSetupForExport = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const contents = serializeMethodFile(
       methodName,
       { contractVersion: 3, name: methodName, imageUrl: draftImageUrl, processType, blocks },
       collections,
+      profileSetupForExport,
     );
     const packageResponse = await fetch("/api/method-packages/export", {
       method: "POST",
@@ -2525,6 +2536,7 @@ function BlockEditor({
                           const commit = preparePluginConfigurationCommit(
                             selectedCapability,
                             pluginDraft,
+                            profileSetup,
                           );
                           if (!commit.ok) {
                             setPluginDraftInvalid(true);
@@ -3326,6 +3338,12 @@ function ManagedProfileSelector({
       return;
     }
     const normalizedMode = mode === "parallel" ? "parallel" : "fallback";
+    // Preserve per-profile named project selections for the remaining profiles only.
+    // No default, no inheritance from the primary profile, no first-entry fallback.
+    const preservedSelections = normalizeProjectSelections(
+      profileExecution?.projectSelections,
+      uniqueProfileIds,
+    );
     const nextPolicy: ProfileExecutionPolicy =
       normalizedMode === "parallel"
         ? {
@@ -3335,10 +3353,12 @@ function ManagedProfileSelector({
               1,
               Math.min(maxParallel ?? uniqueProfileIds.length, uniqueProfileIds.length),
             ),
+            ...(preservedSelections ? { projectSelections: preservedSelections } : {}),
           }
         : {
             mode: normalizedMode,
             profileIds: uniqueProfileIds,
+            ...(preservedSelections ? { projectSelections: preservedSelections } : {}),
           };
     const aliases = aliasesForProfileIds(nextPolicy.profileIds);
     onProfileExecutionChange(
@@ -3608,6 +3628,57 @@ function ManagedProfileSelector({
                 </p>
               )}
             </div>
+          )}
+
+          {managedProjectUrlConfigurationKey(profileSetup) && selectedProfiles.length > 0 && (
+            <ProfileProjectSelection
+              pluginId={plugin.id}
+              profileSetup={profileSetup}
+              profiles={selectedProfiles.map((profile) => ({
+                id: profile.id,
+                name: profile.name,
+              }))}
+              projectSelections={profileExecution?.projectSelections}
+              onProjectSelectionsChange={(projectSelections) => {
+                if (!selectedProfileIds.length) {
+                  onProfileExecutionChange(undefined);
+                  return;
+                }
+                const normalizedMode = selectedMode === "parallel" ? "parallel" : "fallback";
+                const nextPolicy: ProfileExecutionPolicy =
+                  normalizedMode === "parallel"
+                    ? {
+                        mode: "parallel",
+                        profileIds: [...selectedProfileIds],
+                        maxParallel: Math.max(
+                          1,
+                          Math.min(
+                            profileExecution?.maxParallel ?? selectedProfileIds.length,
+                            selectedProfileIds.length,
+                          ),
+                        ),
+                        ...(projectSelections ? { projectSelections } : {}),
+                      }
+                    : {
+                        mode: normalizedMode,
+                        profileIds: [...selectedProfileIds],
+                        ...(projectSelections ? { projectSelections } : {}),
+                      };
+                const aliases = aliasesForProfileIds(nextPolicy.profileIds);
+                onProfileExecutionChange(
+                  nextPolicy,
+                  aliases.length
+                    ? {
+                        ...configuration,
+                        [profileSetup.configurationKey]: aliases[0],
+                        ...(profileSetup.fallbackConfigurationKey
+                          ? { [profileSetup.fallbackConfigurationKey]: aliases.slice(1).join("\n") }
+                          : {}),
+                      }
+                    : undefined,
+                );
+              }}
+            />
           )}
 
           <div

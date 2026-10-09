@@ -74,12 +74,14 @@ function complete(state: ProcessExecution, blockId: string, values: Record<strin
 test("E01 — active executor completion stores values, explicit now and clears error", () => {
   const state = execution();
   state.blocks[0].error = "previous technical error";
+  state.blocks[0].errorCode = "PROJECT_DESTINATION_CHANGED";
   const result = complete(state, "executor", { answer: "done" });
   assert.equal(result.ok, true);
   assert.deepEqual(state.blocks[0].values, { answer: "done" });
   assert.equal(state.blocks[0].status, "completed");
   assert.equal(state.blocks[0].completedAt, NOW);
   assert.equal(state.blocks[0].error, undefined);
+  assert.equal(state.blocks[0].errorCode, undefined);
 });
 
 test("E02 — executor completion clones caller values", () => {

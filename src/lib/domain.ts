@@ -216,6 +216,12 @@ export type ProfileExecutionPolicy = {
   mode: "single" | "fallback" | "parallel";
   profileIds: string[];
   maxParallel?: number;
+  /**
+   * Opt-in named project selection per physical profile (local only).
+   * Maps physical profile id -> stable catalog entry id. Never portable,
+   * never sent to plugins; the core resolves the ordinary URL at invocation.
+   */
+  projectSelections?: Record<string, string>;
 };
 
 export type BlockPluginBinding = {
@@ -551,6 +557,8 @@ export type BlockExecution = {
   attempt?: number;
   retryFeedback?: Record<string, RuntimeValue>;
   error?: string;
+  /** Structured project-selection failure code (e.g. PROJECT_DESTINATION_CHANGED); legacy errors omit it. */
+  errorCode?: string;
   logs?: string[];
   jobId?: string;
   traceId?: string;
@@ -623,6 +631,8 @@ export type ProcessExecution = {
   outputStatus: "pending" | "awaiting_human" | "completed";
   output?: ProcessOutput;
   error?: string;
+  /** Structured project-selection failure code mirrored from the failed block; legacy errors omit it. */
+  errorCode?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -76,6 +76,26 @@ export const pluginProfileNamedUrlsMessages = {
     "Could not complete the operation. Try again.",
     "No se pudo completar la operación. Inténtalo de nuevo.",
   ],
+  selectProject: [
+    "Selecione um projeto nomeado para cada perfil na configuração do Bloco.",
+    "Select a named project for each profile in the Block configuration.",
+    "Selecciona un proyecto nombrado para cada perfil en la configuración del Bloque.",
+  ],
+  projectRemoved: [
+    "O projeto selecionado foi removido. Escolha outro projeto.",
+    "The selected project was removed. Choose another project.",
+    "El proyecto seleccionado fue eliminado. Elige otro proyecto.",
+  ],
+  projectEmpty: [
+    "Nenhum projeto cadastrado neste perfil. Cadastre URLs em Plugins, na seção Projetos deste perfil.",
+    "No projects saved on this profile. Register URLs in Plugins, under Projects on this profile.",
+    "No hay proyectos guardados en este perfil. Registra URLs en Plugins, en la sección Proyectos de este perfil.",
+  ],
+  projectChanged: [
+    "O destino deste projeto mudou no catálogo. Escolha novamente o projeto antes de executar.",
+    "This project's destination changed in the catalog. Choose the project again before running.",
+    "El destino de este proyecto cambió en el catálogo. Elige de nuevo el proyecto antes de ejecutar.",
+  ],
 } as const;
 
 export type PluginProfileNamedUrlsMessageKey = keyof typeof pluginProfileNamedUrlsMessages;
@@ -85,6 +105,32 @@ export function pluginProfileNamedUrlsText(
   language: AppLanguage,
 ) {
   return pluginProfileNamedUrlsMessages[key][language === "en" ? 1 : language === "es" ? 2 : 0];
+}
+
+/**
+ * User-visible text for new project-selection execution failures.
+ * Scope is limited to these codes; legacy failure strings pass through
+ * untouched. Returns undefined when the code is not a project-selection
+ * failure so callers keep the legacy server message.
+ */
+export function projectSelectionFailureTextForCode(
+  code: string | undefined,
+  language: AppLanguage,
+): string | undefined {
+  switch (code) {
+    case "PROJECT_DESTINATION_CHANGED":
+      return pluginProfileNamedUrlsText("projectChanged", language);
+    case "PROJECT_SELECTION_REQUIRED":
+      return pluginProfileNamedUrlsText("selectProject", language);
+    case "PROJECT_NOT_FOUND":
+    case "PROJECT_FOREIGN":
+      return pluginProfileNamedUrlsText("projectRemoved", language);
+    case "PROJECT_PROFILE_UNBOUND":
+    case "PROJECT_URL_INVALID":
+      return pluginProfileNamedUrlsText("projectEmpty", language);
+    default:
+      return undefined;
+  }
 }
 
 export type PluginProfileNamedUrlApiCode =

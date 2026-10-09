@@ -110,6 +110,8 @@ function executionWithBlock(
 
 test("applies failed + all as a canonical manual retry", () => {
   const execution = executionWithBlock("Código");
+  execution.blocks[0].errorCode = "PROJECT_DESTINATION_CHANGED";
+  execution.errorCode = "PROJECT_DESTINATION_CHANGED";
 
   const result = applyManualBlockRetry(
     execution,
@@ -132,6 +134,7 @@ test("applies failed + all as a canonical manual retry", () => {
   assert.equal(execution.blocks[0].itemRetryScope, "all");
   assert.equal(execution.blocks[0].itemRetryId, undefined);
   assert.equal(execution.blocks[0].error, undefined);
+  assert.equal(execution.blocks[0].errorCode, undefined);
   assert.equal(execution.blocks[0].pluginConversation, undefined);
   assert.equal(execution.blocks[0].jobId, undefined);
   assert.equal(execution.blocks[0].traceId, undefined);
@@ -141,7 +144,30 @@ test("applies failed + all as a canonical manual retry", () => {
   assert.equal(execution.deliveries?.[0].status, "invalidated");
   assert.equal(execution.deliveries?.[0].updatedAt, NOW);
   assert.equal(execution.error, undefined);
+  assert.equal(execution.errorCode, undefined);
   assert.equal(execution.status, "blocked_executor");
+});
+
+test("manual retry clears structured failure code so a later legacy failure stays legacy", async () => {
+  const execution = executionWithBlock("Código");
+  execution.blocks[0].errorCode = "PROJECT_DESTINATION_CHANGED";
+
+  const result = applyManualBlockRetry(
+    execution,
+    { type: "manual_block_retry_requested", blockId: "images", scope: "all" },
+    NOW,
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(execution.blocks[0].errorCode, undefined);
+
+  // A subsequent unrelated failure has no structured code and therefore
+  // must continue to render its own legacy server message.
+  const { resolveFailedExecutionVisibleError } = await import("@/components/process-runner");
+  assert.equal(
+    resolveFailedExecutionVisibleError("Falha posterior sem relação", execution.blocks[0].errorCode, "pt-BR"),
+    "Falha posterior sem relação",
+  );
 });
 
 test("reopens cancelled downstream blocks when retrying a block", () => {
@@ -176,6 +202,7 @@ test("reopens cancelled downstream blocks when retrying a block", () => {
     values: {},
     attempt: 5,
     error: undefined,
+    errorCode: undefined,
     jobId: undefined,
     traceId: undefined,
     completedAt: undefined,

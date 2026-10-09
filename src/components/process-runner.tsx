@@ -100,6 +100,7 @@ import {
 } from "@/lib/store";
 import { useAppPreferences } from "@/lib/app-preferences";
 import { localizePluginManifest } from "@/lib/plugin-localization";
+import { projectSelectionFailureTextForCode } from "@/lib/plugin-profile-named-urls-localization";
 import { isLocalStoredFileUrl } from "@/lib/plugin-item-actions";
 import type {
   PluginItemAction,
@@ -455,6 +456,7 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
             <FailedExecutionGate
               block={activeBlock}
               error={activeExecution.error ?? execution.error}
+              errorCode={activeExecution.errorCode}
               itemProgress={activeExecution.itemProgress}
               canAcceptCurrent={hasActiveDelivery}
               isLastBlock={activeBlockIsLast}
@@ -2369,9 +2371,22 @@ function ExecutionCancelled({
   );
 }
 
+export function resolveFailedExecutionVisibleError(
+  error: string | undefined,
+  errorCode: string | undefined,
+  language: "pt-BR" | "en" | "es",
+): string {
+  return (
+    projectSelectionFailureTextForCode(errorCode, language) ??
+    error ??
+    "A execução não pôde ser concluída."
+  );
+}
+
 function FailedExecutionGate({
   block,
   error,
+  errorCode,
   itemProgress,
   canAcceptCurrent,
   isLastBlock,
@@ -2381,6 +2396,7 @@ function FailedExecutionGate({
 }: {
   block: ActionBlock;
   error?: string;
+  errorCode?: string;
   itemProgress?: BlockItemProgress;
   canAcceptCurrent: boolean;
   isLastBlock: boolean;
@@ -2388,6 +2404,10 @@ function FailedExecutionGate({
   onRetry: (retryScope: BlockItemRetryScope) => void;
   onRestartProcess: () => void;
 }) {
+  const { language } = useAppPreferences();
+  // Only new project-selection failures map the structured code to localized
+  // text; all legacy errors render the server message unchanged.
+  const visibleError = resolveFailedExecutionVisibleError(error, errorCode, language);
   const canContinuePending = Boolean(
     itemProgress && itemProgress.completed > 0 && itemProgress.pending > 0,
   );
@@ -2396,7 +2416,7 @@ function FailedExecutionGate({
       <AlertTriangle className="mx-auto size-7 text-destructive" />
       <h3 className="mt-3 text-base font-semibold">O bloco “{block.name ?? block.type}” falhou</h3>
       <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">
-        {error ?? "A execução não pôde ser concluída."}
+        {visibleError}
       </p>
       {itemProgress && <ItemProgressSummary itemProgress={itemProgress} showFailure />}
       {canAcceptCurrent && (

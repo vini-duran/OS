@@ -207,6 +207,13 @@ export type PluginProfileSetupNamedUrls = {
   allowedHosts: string[];
   /** Optional anchored RegExp source tested against the URL pathname. */
   pathnamePattern?: string;
+  /**
+   * Optional generic runtime configuration field receiving the resolved URL
+   * for the active physical profile. When present, the Method selects a named
+   * catalog entry per profile and the core injects the resolved ordinary URL
+   * value at invocation; without it the declaration is catalog-only (Stage 1).
+   */
+  configurationKey?: string;
 };
 
 export type PluginProfileSetup = {

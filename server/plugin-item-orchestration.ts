@@ -16,6 +16,7 @@ import type {
 } from "../src/lib/domain";
 import type { PersistentPluginJob } from "./plugin-job-store";
 import { workUnitAttemptIdFor } from "../src/lib/work-units";
+import { ProjectSelectionError } from "./profile-project-selection";
 
 export function supportsIncrementalItemCorrelation(capability: PluginCapability) {
   return Boolean(capability.execution.itemOrchestration);
@@ -652,13 +653,43 @@ export function failCurrentOrchestratedItem(job: PersistentPluginJob, error: str
 export function invocationRequestForJob(job: PersistentPluginJob, invocation: PluginInvocation) {
   const configuration = { ...job.request.configuration };
   const fallback = job.profileFallback;
+  const profileIndex = fallback ? fallback.activeIndex : 0;
   const activeProfile = job.profileExecution
-    ? job.profileExecution.profiles[fallback ? fallback.activeIndex : 0]?.alias
+    ? job.profileExecution.profiles[profileIndex]?.alias
     : fallback?.candidates[fallback.activeIndex];
   if (job.profileExecution && activeProfile) {
     configuration[job.profileExecution.configurationKey] = activeProfile;
   } else if (fallback) {
     configuration[fallback.configurationKey] = fallback.candidates[fallback.activeIndex];
+  }
+  // Per-active-profile managed project URL: resolved ordinary value only.
+  // The saved request never carries a stale primary URL into a fallback lane.
+  // Developer log (PT) + structured code: user-visible presentation must map
+  // PROJECT_SELECTION_REQUIRED via existing UI strings (t()/named-urls text),
+  // not this message. Legacy wording preserved; no new recovery policy.
+  if (job.profileExecution?.projectConfigurationKey) {
+    if (invocation.mode === "cancel") {
+      delete configuration[job.profileExecution.projectConfigurationKey];
+    } else {
+      const activeProfileId = job.profileExecution.profiles[profileIndex]?.profileId;
+      const activeUrl = activeProfileId
+        ? job.profileExecution.projectUrls?.[activeProfileId]
+        : undefined;
+      if (!activeProfileId || !activeUrl) {
+        const alias = job.profileExecution.profiles[profileIndex]?.alias;
+        throw new ProjectSelectionError(
+          "PROJECT_SELECTION_REQUIRED",
+          422,
+          alias
+            ? `Selecione um projeto nomeado para o perfil ${alias} na configuração do Bloco. Cadastre URLs em Plugins, na seção Projetos deste perfil.`
+            : "Selecione um projeto nomeado para cada perfil na configuração do Bloco. Cadastre URLs em Plugins, na seção Projetos deste perfil.",
+        );
+      }
+      configuration[job.profileExecution.projectConfigurationKey] = activeUrl;
+    }
+  } else if (job.profileExecution) {
+    // No stale managed value may survive without a snapshot; request creation
+    // already strips it, but invocation stays defensive for older jobs.
   }
   const conversation =
     job.request.conversation?.mode === "reuse" &&
@@ -1066,13 +1097,32 @@ export function itemActionRequestForJob(input: {
     : undefined;
   const configuration = { ...input.job.request.configuration };
   const fallback = input.job.profileFallback;
+  const profileIndex = fallback ? fallback.activeIndex : 0;
   const activeProfile = input.job.profileExecution
-    ? input.job.profileExecution.profiles[fallback ? fallback.activeIndex : 0]?.alias
+    ? input.job.profileExecution.profiles[profileIndex]?.alias
     : fallback?.candidates[fallback.activeIndex];
   if (input.job.profileExecution && activeProfile) {
     configuration[input.job.profileExecution.configurationKey] = activeProfile;
   } else if (fallback) {
     configuration[fallback.configurationKey] = fallback.candidates[fallback.activeIndex];
+  }
+  // Developer log (PT) + structured code; UI localizes via existing strings.
+  if (input.job.profileExecution?.projectConfigurationKey) {
+    const activeProfileId = input.job.profileExecution.profiles[profileIndex]?.profileId;
+    const activeUrl = activeProfileId
+      ? input.job.profileExecution.projectUrls?.[activeProfileId]
+      : undefined;
+    if (!activeProfileId || !activeUrl) {
+      const alias = input.job.profileExecution.profiles[profileIndex]?.alias;
+      throw new ProjectSelectionError(
+        "PROJECT_SELECTION_REQUIRED",
+        422,
+        alias
+          ? `Selecione um projeto nomeado para o perfil ${alias} na configuração do Bloco. Cadastre URLs em Plugins, na seção Projetos deste perfil.`
+          : "Selecione um projeto nomeado para cada perfil na configuração do Bloco. Cadastre URLs em Plugins, na seção Projetos deste perfil.",
+      );
+    }
+    configuration[input.job.profileExecution.projectConfigurationKey] = activeUrl;
   }
   return {
     ...structuredClone(input.job.request),

@@ -1,5 +1,6 @@
 import type { BlockPluginBinding } from "@/lib/domain";
-import type { JsonSchema, PluginCapability } from "@/lib/plugin-contract";
+import type { JsonSchema, PluginCapability, PluginProfileSetup } from "@/lib/plugin-contract";
+import { managedProjectUrlConfigurationKey } from "@/lib/profile-project-selection";
 
 export type PluginConfigurationDraftIssue = {
   field: string;
@@ -14,6 +15,9 @@ export function clonePluginConfigurationDraft(binding: BlockPluginBinding): Bloc
       ? {
           ...binding.profileExecution,
           profileIds: [...binding.profileExecution.profileIds],
+          ...(binding.profileExecution.projectSelections
+            ? { projectSelections: { ...binding.profileExecution.projectSelections } }
+            : {}),
         }
       : undefined,
     conversation: binding.conversation ? { ...binding.conversation } : undefined,
@@ -32,12 +36,17 @@ function matchesSchemaType(value: string | number | boolean, schema: JsonSchema)
 export function validatePluginConfigurationDraft(
   capability: PluginCapability,
   binding: BlockPluginBinding,
+  profileSetup?: PluginProfileSetup,
 ): PluginConfigurationDraftIssue[] {
   const schema = capability.blockConfigSchema;
   const properties = schema.properties ?? {};
   const issues: PluginConfigurationDraftIssue[] = [];
+  // The runtime-managed project URL is resolved per active profile at
+  // invocation and never typed in the Method interface.
+  const managedKey = managedProjectUrlConfigurationKey(profileSetup);
 
   for (const key of schema.required ?? []) {
+    if (key === managedKey) continue;
     const value = binding.configuration[key];
     if (value === undefined || value === "") issues.push({ field: key, code: "required" });
   }
@@ -92,10 +101,14 @@ export function validatePluginConfigurationDraft(
 export function preparePluginConfigurationCommit(
   capability: PluginCapability,
   draft: BlockPluginBinding,
+  profileSetup?: PluginProfileSetup,
 ):
   { ok: true; value: BlockPluginBinding } | { ok: false; issues: PluginConfigurationDraftIssue[] } {
-  const issues = validatePluginConfigurationDraft(capability, draft);
-  return issues.length
-    ? { ok: false, issues }
-    : { ok: true, value: clonePluginConfigurationDraft(draft) };
+  const issues = validatePluginConfigurationDraft(capability, draft, profileSetup);
+  if (issues.length) return { ok: false, issues };
+  const committed = clonePluginConfigurationDraft(draft);
+  // A stale typed value must never survive as portable configuration.
+  const managedKey = managedProjectUrlConfigurationKey(profileSetup);
+  if (managedKey) delete committed.configuration[managedKey];
+  return { ok: true, value: committed };
 }

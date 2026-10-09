@@ -1,4 +1,5 @@
 import type { JsonSchema, PluginCapability, PluginProfileSetup } from "@/lib/plugin-contract";
+import { managedProjectUrlConfigurationKey } from "@/lib/profile-project-selection";
 
 export type PluginConfigurationEntry = [string, JsonSchema];
 
@@ -17,9 +18,13 @@ export function buildPluginConfigurationRendererModel({
   profileSetup?: PluginProfileSetup;
 }): PluginConfigurationRendererModel {
   const configProperties = capability.blockConfigSchema.properties ?? {};
+  const managedProjectKey = managedProjectUrlConfigurationKey(profileSetup);
   const profileConfigurationKeys = [
     profileSetup?.configurationKey,
     profileSetup?.fallbackConfigurationKey,
+    // The runtime-managed project URL is resolved per active profile at
+    // invocation; it is never typed again in the Method interface.
+    managedProjectKey,
   ].filter((key): key is string => Boolean(key));
   const effectiveConfiguration = Object.fromEntries(
     Object.entries(configProperties).map(([key, schema]) => [

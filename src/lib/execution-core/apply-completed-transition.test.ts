@@ -108,11 +108,13 @@ test("T01/T03 — completed block activates the same human state regardless of o
 
 test("T02/T04 — completed block activates automatic state from the Core decision", () => {
   const state = execution([block("done"), block("next", "IA")], ["completed", "pending"]);
+  state.blocks[1].errorCode = "PROJECT_DESTINATION_CHANGED";
   const result = applyCompletedBlockTransition(state, "done", NOW, dependencies());
   assert.equal(result.ok, true);
   assert.equal(result.outcome, "activate_block");
   assert.equal(state.blocks[1].status, "blocked_executor");
   assert.equal(state.blocks[1].startedAt, NOW);
+  assert.equal(state.blocks[1].errorCode, undefined);
   assert.equal(state.status, "blocked_executor");
 });
 

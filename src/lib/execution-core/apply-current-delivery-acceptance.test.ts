@@ -114,6 +114,8 @@ test("accepts a cancelled current delivery and preserves its produced data", () 
 
 test("accepts a failed current delivery with the same canonical completion", () => {
   const execution = executionWithBlock("failed");
+  execution.blocks[0].errorCode = "PROJECT_DESTINATION_CHANGED";
+  execution.errorCode = "PROJECT_DESTINATION_CHANGED";
 
   const result = applyCurrentBlockDeliveryAcceptance(execution, {
     type: "current_block_delivery_accepted",
@@ -125,7 +127,9 @@ test("accepts a failed current delivery with the same canonical completion", () 
   assert.equal(execution.blocks[0].status, "completed");
   assert.equal(execution.blocks[0].completedAt, NOW);
   assert.equal(execution.blocks[0].progress, 1);
+  assert.equal(execution.blocks[0].errorCode, undefined);
   assert.equal(execution.error, undefined);
+  assert.equal(execution.errorCode, undefined);
 });
 
 test("blocks unsupported, ineligible, unknown and malformed states without mutation", () => {

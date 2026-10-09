@@ -20,6 +20,7 @@ import {
 } from "../src/lib/method-file";
 import { areInputShapesCompatible } from "../src/lib/data-shape";
 import { validateBuilderMethods, type BuilderPluginContext } from "./builder-methods";
+import { createMethodPackage, readMethodPackage } from "./method-package";
 import type { RegisteredPlugin } from "./plugin-runner";
 
 const textOne: ValueShape = {
@@ -481,7 +482,14 @@ function recordProducerConsumerBlocks(): ActionBlock[] {
 
 test("importação preserva shape record fechado de porta plugin explícita e continua válida", () => {
   const plugins = [recordPluginContext()];
-  const channel = { id: "channel-1", name: "Canal", handle: "@c", niche: "Edu", language: "pt-BR", methods: {} } as Channel;
+  const channel = {
+    id: "channel-1",
+    name: "Canal",
+    handle: "@c",
+    niche: "Edu",
+    language: "pt-BR",
+    methods: {},
+  } as Channel;
   const source = method(recordProducerConsumerBlocks(), "script");
   const sourceSnapshot = structuredClone(source.blocks);
 
@@ -495,28 +503,33 @@ test("importação preserva shape record fechado de porta plugin explícita e co
 
   const parsed = parseMethodFile(serializeMethodFile(source.name, source));
   let sequence = 0;
-  const copied = copyImportedBlocks(parsed.method.processType, parsed.method.blocks, (prefix) => `${prefix}-${++sequence}`);
+  const copied = copyImportedBlocks(
+    parsed.method.processType,
+    parsed.method.blocks,
+    (prefix) => `${prefix}-${++sequence}`,
+  );
 
   const copiedProducerOutput = copied[0].outputs?.[0];
   const copiedConsumerInput = copied[1].inputs?.[0];
   const sourceProducerOutput = sourceSnapshot[0].outputs?.[0];
   const sourceConsumerInput = sourceSnapshot[1].inputs?.[0];
-  assert.ok(copiedProducerOutput && copiedConsumerInput && sourceProducerOutput && sourceConsumerInput);
+  assert.ok(
+    copiedProducerOutput && copiedConsumerInput && sourceProducerOutput && sourceConsumerInput,
+  );
   assert.deepEqual(copiedProducerOutput.shape, sourceProducerOutput.shape);
   assert.deepEqual(copiedConsumerInput.shape, sourceConsumerInput.shape);
   assert.deepEqual(copiedProducerOutput.shape, copiedConsumerInput.shape);
   assert.deepEqual(
-    (copiedProducerOutput.shape as { fields: Array<{ id: string }> }).fields.map((field) => field.id),
+    (copiedProducerOutput.shape as { fields: Array<{ id: string }> }).fields.map(
+      (field) => field.id,
+    ),
     ["fld-title", "fld-count", "fld-flag"],
   );
   assert.notEqual(copied[0].id, sourceSnapshot[0].id);
   assert.notEqual(copied[1].id, sourceSnapshot[1].id);
   assert.notEqual(copiedProducerOutput.id, sourceProducerOutput.id);
   assert.notEqual(copiedConsumerInput.id, sourceConsumerInput.id);
-  assert.notEqual(
-    copied[0].outputs?.[0],
-    source.blocks[0].outputs?.[0],
-  );
+  assert.notEqual(copied[0].outputs?.[0], source.blocks[0].outputs?.[0]);
   assert.equal(
     areInputShapesCompatible(copiedProducerOutput.shape, copiedConsumerInput.shape),
     true,
@@ -536,11 +549,22 @@ test("importação preserva shape record fechado de porta plugin explícita e co
 
 test("mesma cópia com field IDs remapeados falha na porta interna exata", () => {
   const plugins = [recordPluginContext()];
-  const channel = { id: "channel-1", name: "Canal", handle: "@c", niche: "Edu", language: "pt-BR", methods: {} } as Channel;
+  const channel = {
+    id: "channel-1",
+    name: "Canal",
+    handle: "@c",
+    niche: "Edu",
+    language: "pt-BR",
+    methods: {},
+  } as Channel;
   const source = method(recordProducerConsumerBlocks(), "script");
   const parsed = parseMethodFile(serializeMethodFile(source.name, source));
   let sequence = 0;
-  const copied = copyImportedBlocks(parsed.method.processType, parsed.method.blocks, (prefix) => `${prefix}-${++sequence}`);
+  const copied = copyImportedBlocks(
+    parsed.method.processType,
+    parsed.method.blocks,
+    (prefix) => `${prefix}-${++sequence}`,
+  );
   const broken = structuredClone(copied);
   let brokenSequence = 10_000;
   for (const block of broken) {
@@ -558,7 +582,10 @@ test("mesma cópia com field IDs remapeados falha na porta interna exata", () =>
   const brokenProducerOutput = broken[0].outputs?.[0];
   const brokenConsumerInput = broken[1].inputs?.[0];
   assert.ok(brokenProducerOutput && brokenConsumerInput);
-  assert.equal(areInputShapesCompatible(brokenProducerOutput.shape, brokenConsumerInput.shape), true);
+  assert.equal(
+    areInputShapesCompatible(brokenProducerOutput.shape, brokenConsumerInput.shape),
+    true,
+  );
   const brokenCheck = validateBuilderMethods({
     channel,
     methods: { script: method(broken, "script") },
@@ -578,17 +605,420 @@ test("cópia remapeia field IDs de record humano sem porta explícita", () => {
     name: "Human",
     order: 0,
     parameters: [],
-    inputs: [{ id: "human-in", label: "Data", shape: structuredClone(receipt), binding: { kind: "runtime" } }],
-    outputs: [{ id: "human-out", label: "Data", key: "data", shape: structuredClone(receipt), required: true }],
+    inputs: [
+      {
+        id: "human-in",
+        label: "Data",
+        shape: structuredClone(receipt),
+        binding: { kind: "runtime" },
+      },
+    ],
+    outputs: [
+      {
+        id: "human-out",
+        label: "Data",
+        key: "data",
+        shape: structuredClone(receipt),
+        required: true,
+      },
+    ],
   };
   const snapshot = structuredClone([human]);
   let sequence = 0;
   const copied = copyImportedBlocks("script", [human], (prefix) => `${prefix}-${++sequence}`);
-  const copiedInputFields = (copied[0].inputs?.[0].shape as { fields: Array<{ id: string }> }).fields;
-  const copiedOutputFields = (copied[0].outputs?.[0].shape as { fields: Array<{ id: string }> }).fields;
+  const copiedInputFields = (copied[0].inputs?.[0].shape as { fields: Array<{ id: string }> })
+    .fields;
+  const copiedOutputFields = (copied[0].outputs?.[0].shape as { fields: Array<{ id: string }> })
+    .fields;
   assert.ok(copiedInputFields.length === 3 && copiedOutputFields.length === 3);
   for (const field of [...copiedInputFields, ...copiedOutputFields]) {
     assert.ok(!["fld-title", "fld-count", "fld-flag"].includes(field.id));
   }
   assert.deepEqual([human], snapshot);
+});
+
+test("exportação portátil remove seleções locais e URL gerenciada sem tocar em campos funcionais", () => {
+  const setupFor = (pluginId: string) =>
+    pluginId === "com.example.flow"
+      ? {
+          configurationKey: "profile",
+          fallbackConfigurationKey: "fallbackProfiles",
+          label: "Perfil",
+          namedUrls: { allowedHosts: ["flow.example.com"], configurationKey: "projectUrl" },
+        }
+      : undefined;
+  const source = method(
+    [
+      {
+        ...humanBlock(),
+        operator: "IA",
+        plugin: {
+          pluginId: "com.example.flow",
+          pluginVersion: "1.0.0",
+          capabilityId: "cap",
+          configuration: {
+            model: "best",
+            profile: "Alpha",
+            fallbackProfiles: "Beta",
+            projectUrl: "https://flow.example.com/p/stale",
+          },
+          connectionRequired: false,
+          profileExecution: {
+            mode: "fallback",
+            profileIds: ["profile-a", "profile-b"],
+            projectSelections: { "profile-a": "entry-1", "profile-b": "entry-2" },
+          },
+        },
+      },
+    ],
+    "script",
+  );
+  const parsed = parseMethodFile(serializeMethodFile(source.name, source, [], setupFor));
+  const plugin = parsed.method.blocks[0].plugin!;
+  assert.equal(plugin.profileExecution, undefined);
+  assert.equal(plugin.configuration.model, "best");
+  assert.equal((plugin.configuration as Record<string, unknown>).profile, undefined);
+  assert.equal((plugin.configuration as Record<string, unknown>).fallbackProfiles, undefined);
+  assert.equal((plugin.configuration as Record<string, unknown>).projectUrl, undefined);
+  const serialized = JSON.stringify(parsed.method);
+  assert.ok(!serialized.includes("profile-a") && !serialized.includes("entry-1"));
+  assert.ok(!serialized.includes("flow.example.com/p/stale"));
+
+  const plan = planPortableMethodTransfer({
+    name: "Pacote",
+    channelName: "Canal",
+    primaryProcessTypes: ["script"],
+    processOrder: [
+      "script",
+      "title",
+      "thumbnail",
+      "narration",
+      "assets",
+      "editing",
+      "publishing",
+      "theme",
+    ],
+    sourceMethods: [source],
+    collections: [],
+    items: [],
+    includeItems: false,
+    profileSetupForPlugin: setupFor,
+  });
+  const bundle = JSON.parse(serializePortableMethodTransfer(plan)) as {
+    methods: Array<{
+      method: {
+        blocks: Array<{
+          plugin?: { configuration: Record<string, unknown>; profileExecution?: unknown };
+        }>;
+      };
+    }>;
+  };
+  const bundlePlugin = bundle.methods[0].method.blocks[0].plugin!;
+  assert.equal(bundlePlugin.profileExecution, undefined);
+  assert.equal(bundlePlugin.configuration.projectUrl, undefined);
+});
+
+test("portable transfer serialization always drops local IDs without guessing URL keys", () => {
+  const source = method(
+    [
+      {
+        ...humanBlock(),
+        operator: "IA",
+        plugin: {
+          pluginId: "com.example.flow",
+          pluginVersion: "1.0.0",
+          capabilityId: "cap",
+          configuration: {
+            model: "best",
+            projectUrl: "https://flow.example.com/p/preserve-without-metadata",
+          },
+          connectionId: "local-connection-id",
+          profileExecution: {
+            mode: "fallback",
+            profileIds: ["physical-profile-id"],
+            projectSelections: { "physical-profile-id": "catalog-entry-id" },
+          },
+        },
+      },
+    ],
+    "script",
+  );
+  const plan = planPortableMethodTransfer({
+    name: "Transferência",
+    channelName: "Canal",
+    sourceMethods: [source],
+    processOrder: [
+      "script",
+      "title",
+      "thumbnail",
+      "narration",
+      "assets",
+      "editing",
+      "publishing",
+      "theme",
+    ],
+    primaryProcessTypes: ["script"],
+    preserveLocalConnections: true,
+  });
+
+  const exported = serializePortableMethodTransfer(plan);
+  assert.ok(!exported.includes("physical-profile-id"));
+  assert.ok(!exported.includes("catalog-entry-id"));
+  assert.ok(!exported.includes("local-connection-id"));
+  // Without plugin metadata, preserve ordinary config and avoid Flow-specific heuristics.
+  assert.ok(exported.includes("https://flow.example.com/p/preserve-without-metadata"));
+  assert.ok(exported.includes('"model": "best"'));
+});
+
+test("importação portátil não confia em ID local forjado", () => {
+  const forged = {
+    format: "contentflow-method",
+    version: 3,
+    name: "Forjado",
+    exportedAt: new Date().toISOString(),
+    method: {
+      contractVersion: 3,
+      name: "Forjado",
+      processType: "script",
+      blocks: [
+        {
+          id: "script:block:1",
+          type: "CRIAR",
+          operator: "IA",
+          order: 0,
+          parameters: [],
+          plugin: {
+            pluginId: "com.example.flow",
+            capabilityId: "cap",
+            configuration: {
+              model: "best",
+              projectUrl: "https://flow.example.com/p/forged",
+            },
+            profileExecution: {
+              mode: "fallback",
+              profileIds: ["attacker-profile"],
+              projectSelections: { "attacker-profile": "forged-entry-id" },
+            },
+          },
+        },
+      ],
+    },
+  };
+  const parsed = parseMethodFile(JSON.stringify(forged));
+  // O envelope portátil é legível, mas nenhum vínculo local é aplicado.
+  let sequence = 0;
+  const setupFor = (pluginId: string) =>
+    pluginId === "com.example.flow"
+      ? {
+          configurationKey: "profile",
+          label: "Perfil",
+          namedUrls: { allowedHosts: ["flow.example.com"], configurationKey: "projectUrl" },
+        }
+      : undefined;
+  const copied = copyImportedBlocks(
+    parsed.method.processType,
+    parsed.method.blocks,
+    (prefix) => `${prefix}-${++sequence}`,
+    {
+      profileSetupForPlugin: setupFor,
+    },
+  );
+  assert.equal(copied[0].plugin?.profileExecution, undefined);
+  assert.equal((copied[0].plugin?.configuration as Record<string, unknown>).projectUrl, undefined);
+  assert.equal((copied[0].plugin?.configuration as Record<string, unknown>).model, "best");
+});
+
+test("transfer preview source (share) emits no IDs or managed raw URL before transmission", () => {
+  // Simulates src/routes/methods.tsx openTransfer(..., "share") + confirmTransfer:
+  // canonical plan with real metadata resolver, then re-sanitize at export.
+  const setupFor = (pluginId: string) =>
+    pluginId === "com.example.flow"
+      ? {
+          configurationKey: "profile",
+          fallbackConfigurationKey: "fallbackProfiles",
+          label: "Perfil",
+          namedUrls: { allowedHosts: ["flow.example.com"], configurationKey: "projectUrl" },
+        }
+      : undefined;
+  const source = method(
+    [
+      {
+        ...humanBlock(),
+        operator: "IA",
+        plugin: {
+          pluginId: "com.example.flow",
+          pluginVersion: "1.0.0",
+          capabilityId: "cap",
+          configuration: {
+            model: "best",
+            profile: "Alpha",
+            fallbackProfiles: "Beta",
+            projectUrl: "https://flow.example.com/p/stale-raw",
+          },
+          connectionId: "local-conn",
+          connectionRequired: false,
+          profileExecution: {
+            mode: "fallback",
+            profileIds: ["profile-a"],
+            projectSelections: { "profile-a": "entry-stale" },
+          },
+        },
+      },
+    ],
+    "script",
+  );
+  // Preview source built with the canonical resolver (share strips).
+  const plan = planPortableMethodTransfer({
+    name: "Compartilhar",
+    channelName: "Canal",
+    primaryProcessTypes: ["script"],
+    processOrder: [
+      "script",
+      "title",
+      "thumbnail",
+      "narration",
+      "assets",
+      "editing",
+      "publishing",
+      "theme",
+    ],
+    sourceMethods: [source],
+    collections: [],
+    items: [],
+    includeItems: false,
+    profileSetupForPlugin: setupFor,
+  });
+  const previewJson = JSON.stringify(plan);
+  assert.ok(!previewJson.includes("profile-a"));
+  assert.ok(!previewJson.includes("entry-stale"));
+  assert.ok(!previewJson.includes("flow.example.com/p/stale-raw"));
+  assert.ok(!previewJson.includes("local-conn"));
+  const previewBlock = plan.methods[0].method.blocks[0].plugin!;
+  assert.equal(previewBlock.profileExecution, undefined);
+  assert.equal((previewBlock.configuration as Record<string, unknown>).model, "best");
+
+  // Transmission re-sanitizes with current metadata even if preview predates it.
+  const rawPlan = {
+    format: "contentflow-method-pack" as const,
+    name: "Compartilhar",
+    channelName: "Canal",
+    channelImageUrl: undefined,
+    primaryProcessType: undefined,
+    processOrder: plan.processOrder,
+    methods: plan.methods.map((entry) => ({
+      role: "set" as const,
+      method: entry.method,
+      requirements: entry.requirements,
+    })),
+    collections: plan.collections,
+    itemsIncluded: false,
+    items: plan.items,
+  };
+  const transmitted = JSON.parse(serializePortableMethodTransfer(rawPlan, setupFor)) as {
+    methods: Array<{ method: { blocks: Array<{ plugin?: Record<string, unknown> }> } }>;
+  };
+  const transmittedJson = JSON.stringify(transmitted);
+  assert.ok(!transmittedJson.includes("profile-a"));
+  assert.ok(!transmittedJson.includes("entry-stale"));
+  assert.ok(!transmittedJson.includes("flow.example.com/p/stale-raw"));
+  assert.equal(transmitted.methods[0].method.blocks[0].plugin?.profileExecution, undefined);
+});
+
+test("standalone share/package export strips IDs and stale raw key via resolver", () => {
+  const setupFor = (pluginId: string) =>
+    pluginId === "com.example.flow"
+      ? {
+          configurationKey: "profile",
+          label: "Perfil",
+          namedUrls: { allowedHosts: ["flow.example.com"], configurationKey: "projectUrl" },
+        }
+      : undefined;
+  const source = method(
+    [
+      {
+        ...humanBlock(),
+        operator: "IA",
+        plugin: {
+          pluginId: "com.example.flow",
+          pluginVersion: "1.0.0",
+          capabilityId: "cap",
+          configuration: { model: "best", projectUrl: "https://flow.example.com/p/stale" },
+          profileExecution: {
+            mode: "fallback",
+            profileIds: ["physical-1"],
+            projectSelections: { "physical-1": "catalog-9" },
+          },
+        },
+      },
+    ],
+    "script",
+  );
+  for (const json of [
+    serializeMethodFile(source.name, source, [], setupFor),
+    serializeMethodPackFile("Pacote", "Canal", [source], [], undefined, setupFor),
+  ]) {
+    assert.ok(!json.includes("physical-1"));
+    assert.ok(!json.includes("catalog-9"));
+    assert.ok(!json.includes("flow.example.com/p/stale"));
+    assert.ok(json.includes('"model":"best"') || json.includes('"model": "best"'));
+  }
+});
+
+test("package export/transmission strips IDs and managed raw URL via resolver; forged import drops them", async () => {
+  const setupFor = (pluginId: string) =>
+    pluginId === "com.example.flow"
+      ? {
+          configurationKey: "profile",
+          label: "Perfil",
+          namedUrls: { allowedHosts: ["flow.example.com"], configurationKey: "projectUrl" },
+        }
+      : undefined;
+  const manifest = JSON.stringify({
+    format: "contentflow-method",
+    version: 3,
+    name: "Pacote",
+    exportedAt: new Date().toISOString(),
+    method: {
+      contractVersion: 3,
+      name: "Pacote",
+      processType: "script",
+      blocks: [
+        {
+          id: "script:block:1",
+          type: "CRIAR",
+          operator: "IA",
+          order: 0,
+          parameters: [],
+          plugin: {
+            pluginId: "com.example.flow",
+            pluginVersion: "1.0.0",
+            capabilityId: "cap",
+            configuration: { model: "best", projectUrl: "https://flow.example.com/p/stale" },
+            connectionId: "local-conn",
+            profileExecution: {
+              mode: "fallback",
+              profileIds: ["physical-1"],
+              projectSelections: { "physical-1": "catalog-9" },
+            },
+          },
+        },
+      ],
+    },
+  });
+  const archive = await createMethodPackage(manifest, undefined, setupFor as never);
+  const restoredText = await readMethodPackage(archive, undefined, setupFor as never);
+  assert.ok(!restoredText.includes("physical-1"));
+  assert.ok(!restoredText.includes("catalog-9"));
+  assert.ok(!restoredText.includes("flow.example.com/p/stale"));
+  assert.ok(!restoredText.includes("local-conn"));
+  assert.ok(restoredText.includes("best"));
+  const restored = JSON.parse(restoredText) as {
+    method: {
+      blocks: Array<{
+        plugin?: { configuration?: Record<string, unknown>; profileExecution?: unknown };
+      }>;
+    };
+  };
+  assert.equal(restored.method.blocks[0].plugin?.profileExecution, undefined);
+  assert.equal(restored.method.blocks[0].plugin?.configuration?.projectUrl, undefined);
 });

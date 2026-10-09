@@ -532,6 +532,38 @@ const PHRASES: Record<string, Translation> = {
   "Resumo antes de salvar": ["Summary before saving", "Resumen antes de guardar"],
   "Perfis selecionados": ["Selected profiles", "Perfiles seleccionados"],
   "Ordem dos perfis": ["Profile order", "Orden de los perfiles"],
+  "Projeto nomeado por perfil": ["Named project per profile", "Proyecto nombrado por perfil"],
+  "Escolha um projeto pelo nome para cada perfil selecionado.": [
+    "Choose a project by name for each selected profile.",
+    "Elige un proyecto por nombre para cada perfil seleccionado.",
+  ],
+  "Selecione o projeto": ["Select the project", "Selecciona el proyecto"],
+  "Carregando projetos…": ["Loading projects…", "Cargando proyectos…"],
+  "Nenhum projeto cadastrado neste perfil.": [
+    "No projects saved on this profile.",
+    "No hay proyectos guardados en este perfil.",
+  ],
+  "Cadastre URLs em Plugins, na seção Projetos deste perfil.": [
+    "Register URLs in Plugins, under Projects on this profile.",
+    "Registra URLs en Plugins, en la sección Proyectos de este perfil.",
+  ],
+  "Gerenciar projetos do perfil": ["Manage profile projects", "Gestionar proyectos del perfil"],
+  "O projeto selecionado foi removido. Escolha outro projeto.": [
+    "The selected project was removed. Choose another project.",
+    "El proyecto seleccionado fue eliminado. Elige otro proyecto.",
+  ],
+  "Não foi possível carregar os projetos deste perfil.": [
+    "Could not load this profile's projects.",
+    "No se pudieron cargar los proyectos de este perfil.",
+  ],
+  "Nenhum projeto selecionado para este perfil.": [
+    "No project selected for this profile.",
+    "Ningún proyecto seleccionado para este perfil.",
+  ],
+  "O destino deste projeto mudou no catálogo. Escolha novamente o projeto antes de executar.": [
+    "This project's destination changed in the catalog. Choose the project again before running.",
+    "El destino de este proyecto cambió en el catálogo. Elige de nuevo el proyecto antes de ejecutar.",
+  ],
   "Progresso por perfil": ["Progress by profile", "Progreso por perfil"],
   Perfil: ["Profile", "Perfil"],
   "Progresso do perfil": ["Profile progress", "Progreso del perfil"],

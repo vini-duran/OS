@@ -12,6 +12,7 @@ import type {
 import { instructionCollectionKey, instructionVariables } from "@/lib/instruction-template";
 import { parseProcessMethodV3, processMethodV3Schema } from "@/lib/method-contract-v3";
 import { valueShapeSchema } from "@/lib/value-shape-schema";
+import { sanitizePortableConfiguration, type PortableProfileSetupResolver } from "@/lib/profile-project-selection";
 
 const universalProcessSchema = z.enum([
   "theme",
@@ -357,7 +358,10 @@ function createPortableImportedMethod(
   method: ProcessMethod,
   blockIds: Map<string, string>,
   collectionKeys: Map<string, string>,
-  options: { preserveLocalConnections?: boolean } = {},
+  options: {
+    preserveLocalConnections?: boolean;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
+  } = {},
 ) {
   const copied = structuredClone(method);
   return {
@@ -370,6 +374,13 @@ function createPortableImportedMethod(
         blockId && blockId !== "__process_output__"
           ? (blockIds.get(`${processType}:${blockId}`) ?? blockId)
           : blockId;
+      const portableConfiguration = options.preserveLocalConnections
+        ? structuredClone(block.plugin?.configuration ?? {})
+        : sanitizePortableConfiguration(
+            structuredClone(block.plugin?.configuration ?? {}),
+            options.profileSetupForPlugin?.(block.plugin?.pluginId ?? ""),
+            Boolean(options.profileSetupForPlugin),
+          );
       return {
         ...block,
         id: blockKey,
@@ -379,7 +390,7 @@ function createPortableImportedMethod(
               pluginId: block.plugin.pluginId,
               pluginVersion: block.plugin.pluginVersion,
               capabilityId: block.plugin.capabilityId,
-              configuration: structuredClone(block.plugin.configuration),
+              configuration: portableConfiguration,
               connectionId: options.preserveLocalConnections
                 ? block.plugin.connectionId
                 : undefined,
@@ -490,6 +501,7 @@ export function planPortableMethodTransfer(input: {
   items?: ChannelLibraryItem[];
   includeItems?: boolean;
   preserveLocalConnections?: boolean;
+  profileSetupForPlugin?: PortableProfileSetupResolver;
   processOrder: UniversalProcess[];
   primaryProcessTypes?: UniversalProcess[];
   includeAllMethods?: boolean;
@@ -583,6 +595,7 @@ export function planPortableMethodTransfer(input: {
         : ("dependency" as const),
     method: createPortableImportedMethod(method, blockIds, collectionKeys, {
       preserveLocalConnections: input.preserveLocalConnections,
+      profileSetupForPlugin: input.profileSetupForPlugin,
     }),
     requirements: portableRequirements(method),
   }));
@@ -661,9 +674,51 @@ export function planPortableMethodTransfer(input: {
   };
 }
 
-export function serializePortableMethodTransfer(plan: PortableTransferPlan) {
-  const file = portableMethodBundleSchema.parse({
+export function sanitizePortableTransferPlan(
+  plan: PortableTransferPlan,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+): PortableTransferPlan {
+  // Canonical portable sanitizer for share/package paths built outside
+  // planPortableMethodTransfer (e.g. transfer-preview confirm). Reuses the
+  // canonical stripper; never duplicates key lists. Drops physical/catalog
+  // IDs (profileExecution) and every managed raw URL before transmission.
+  // Internal/local clones use preserveLocalConnections and bypass this.
+  const sanitizeMethod = (method: ProcessMethod): ProcessMethod => ({
+    ...structuredClone(method),
+    blocks: method.blocks.map((block) => ({
+      ...structuredClone(block),
+      plugin: block.plugin
+        ? {
+            pluginId: block.plugin.pluginId,
+            pluginVersion: block.plugin.pluginVersion,
+            capabilityId: block.plugin.capabilityId,
+            configuration: sanitizePortableConfiguration(
+              structuredClone(block.plugin.configuration ?? {}),
+              profileSetupForPlugin?.(block.plugin.pluginId),
+              Boolean(profileSetupForPlugin),
+            ),
+            connectionRequired:
+              block.plugin.connectionRequired ?? Boolean(block.plugin.connectionId),
+            conversation: block.plugin.conversation,
+          }
+        : undefined,
+    })),
+  });
+  return {
     ...plan,
+    methods: plan.methods.map((entry) => ({ ...entry, method: sanitizeMethod(entry.method) })),
+  };
+}
+
+export function serializePortableMethodTransfer(
+  plan: PortableTransferPlan,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
+  // Even resolver-free legacy exports must drop physical/catalog IDs. With no
+  // metadata, the sanitizer preserves configuration rather than guessing keys.
+  const sanitized = sanitizePortableTransferPlan(plan, profileSetupForPlugin);
+  const file = portableMethodBundleSchema.parse({
+    ...sanitized,
     version: 3,
     exportedAt: new Date().toISOString(),
   });
@@ -699,27 +754,37 @@ function isPortableMethodBundle(parsed: unknown) {
   );
 }
 
-function canonicalMethodForExport(method: ProcessMethod) {
+function canonicalMethodForExport(
+  method: ProcessMethod,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
   return parseProcessMethodV3({
     ...structuredClone(method),
     blocks: method.blocks.map((block) => ({
       ...structuredClone(block),
       plugin: block.plugin
-        ? {
-            pluginId: block.plugin.pluginId,
-            pluginVersion: block.plugin.pluginVersion,
-            capabilityId: block.plugin.capabilityId,
-            configuration: structuredClone(block.plugin.configuration),
-            connectionId: block.plugin.connectionId,
-            connectionRequired: block.plugin.connectionRequired,
-            conversation: block.plugin.conversation,
-          }
+          ? {
+              pluginId: block.plugin.pluginId,
+              pluginVersion: block.plugin.pluginVersion,
+              capabilityId: block.plugin.capabilityId,
+              configuration: sanitizePortableConfiguration(
+                structuredClone(block.plugin.configuration),
+                profileSetupForPlugin?.(block.plugin.pluginId),
+                Boolean(profileSetupForPlugin),
+              ),
+              connectionId: block.plugin.connectionId,
+              connectionRequired: block.plugin.connectionRequired,
+              conversation: block.plugin.conversation,
+            }
         : undefined,
     })),
   });
 }
 
-function createPortableMethod(method: ProcessMethod) {
+function createPortableMethod(
+  method: ProcessMethod,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
   return {
     ...structuredClone(method),
     blocks: method.blocks.map((block) => ({
@@ -730,7 +795,11 @@ function createPortableMethod(method: ProcessMethod) {
             pluginId: block.plugin.pluginId,
             pluginVersion: block.plugin.pluginVersion,
             capabilityId: block.plugin.capabilityId,
-            configuration: structuredClone(block.plugin.configuration),
+            configuration: sanitizePortableConfiguration(
+              structuredClone(block.plugin.configuration),
+              profileSetupForPlugin?.(block.plugin.pluginId),
+              Boolean(profileSetupForPlugin),
+            ),
             connectionRequired:
               block.plugin.connectionRequired ?? Boolean(block.plugin.connectionId),
             conversation: block.plugin.conversation,
@@ -744,9 +813,11 @@ export function serializeMethodFile(
   name: string,
   method: ProcessMethod,
   collections: StrategicCollection[] = [],
+  profileSetupForPlugin?: PortableProfileSetupResolver,
 ) {
   const portableMethod = createPortableMethod(
-    canonicalMethodForExport({ ...method, name: method.name || name }),
+    canonicalMethodForExport({ ...method, name: method.name || name }, profileSetupForPlugin),
+    profileSetupForPlugin,
   );
   const file = sharedMethodSchema.parse({
     format: "contentflow-method",
@@ -765,6 +836,7 @@ export function serializeMethodPackFile(
   methods: ProcessMethod[],
   collections: StrategicCollection[] = [],
   channelImageUrl?: string,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
 ) {
   const included = methods.filter((method) => method.blocks.length > 0);
   const requirements = Object.fromEntries(
@@ -777,7 +849,12 @@ export function serializeMethodPackFile(
     channelName,
     channelImageUrl,
     exportedAt: new Date().toISOString(),
-    methods: included.map((method) => createPortableMethod(canonicalMethodForExport(method))),
+    methods: included.map((method) =>
+      createPortableMethod(
+        canonicalMethodForExport(method, profileSetupForPlugin),
+        profileSetupForPlugin,
+      ),
+    ),
     requirements,
   });
   return JSON.stringify(file, null, 2);
@@ -860,6 +937,7 @@ export function copyImportedBlocks(
   createId: (prefix: string) => string,
   options: {
     preserveLocalConnections?: boolean;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
     remapLocalProfileExecution?: (
       pluginId: string,
       policy: ProfileExecutionPolicy,
@@ -881,6 +959,7 @@ function copyBlocksWithIds(
   options: {
     preserveLocalConnections?: boolean;
     collectionIds?: ReadonlyMap<string, string>;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
     remapLocalProfileExecution?: (
       pluginId: string,
       policy: ProfileExecutionPolicy,
@@ -895,6 +974,13 @@ function copyBlocksWithIds(
     plugin: block.plugin
       ? {
           ...block.plugin,
+          configuration: options.preserveLocalConnections
+            ? { ...block.plugin.configuration }
+            : sanitizePortableConfiguration(
+                { ...block.plugin.configuration },
+                options.profileSetupForPlugin?.(block.plugin.pluginId),
+                Boolean(options.profileSetupForPlugin),
+              ),
           connectionId: options.preserveLocalConnections ? block.plugin.connectionId : undefined,
           profileExecution:
             block.plugin.profileExecution && options.remapLocalProfileExecution
@@ -995,6 +1081,7 @@ export function copyImportedMethods(
   options: {
     preserveLocalConnections?: boolean;
     collectionIds?: ReadonlyMap<string, string>;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
     remapLocalProfileExecution?: (
       pluginId: string,
       policy: ProfileExecutionPolicy,

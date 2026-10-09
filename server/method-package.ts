@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import type { PortableProfileSetupResolver } from "../src/lib/profile-project-selection";
+import { sanitizePortableConfiguration } from "../src/lib/profile-project-selection";
 
 const archiver = createRequire(import.meta.url)("archiver") as {
   create: (format: "zip", options: { zlib: { level: number } }) => Archiver;
@@ -12,7 +14,18 @@ const archiver = createRequire(import.meta.url)("archiver") as {
 const MAX_PACKAGE_BYTES = 20 * 1024 * 1024;
 const coverDataPattern = /^data:image\/(webp|png|jpeg);base64,([a-zA-Z0-9+/=]+)$/;
 
-type PortableMethod = { processType?: string; imageUrl?: string };
+type PortableMethod = {
+  processType?: string;
+  imageUrl?: string;
+  blocks?: Array<{
+    plugin?: {
+      pluginId?: string;
+      configuration?: Record<string, string | number | boolean>;
+      connectionId?: string;
+      profileExecution?: unknown;
+    };
+  }>;
+};
 type PortableMethodEntry = PortableMethod | { method?: PortableMethod };
 type PortableStoredFile = {
   id?: string;
@@ -30,6 +43,63 @@ type PortableManifest = {
   channelImageUrl?: string;
   items?: PortableItem[];
 };
+
+export type MethodPackageProfileSetupResolver = PortableProfileSetupResolver;
+
+/**
+ * Portable sanitizer for package export/transmission. Reuses the canonical
+ * portable sanitizer and real plugin metadata; no duplicated key lists.
+ * Physical/catalog IDs (profileExecution + connectionId) are ALWAYS dropped,
+ * even when no resolver is provided. Managed raw URLs are stripped via
+ * generic metadata when available. Resolver semantics:
+ * - object: known WITH profileSetup — strip owned keys, preserve the rest.
+ * - null: known WITHOUT profileSetup — preserve ordinary configuration.
+ * - undefined with resolver: unknown/unavailable — fail-closed unconfigured
+ *   `{}` so no stale local URL can leak (may drop unrelated keys for
+ *   unknown plugins only). Resolver-free legacy calls preserve configuration
+ *   as-is (limit documented) but still drop IDs.
+ * Internal/local clones bypass packaging. Forged imports drop the same
+ * fields on read; unknown importing packages never count as known.
+ */
+export function sanitizePortableManifestBlocks(
+  manifest: PortableManifest,
+  profileSetupForPlugin?: MethodPackageProfileSetupResolver,
+): PortableManifest {
+  const resolverProvided = Boolean(profileSetupForPlugin);
+  const sanitizeBlocks = (blocks: PortableMethod["blocks"]) => {
+    for (const block of blocks ?? []) {
+      const plugin = block.plugin;
+      if (!plugin) continue;
+      // Catalog IDs never leave: always drop the policy + connection handle.
+      delete plugin.profileExecution;
+      delete plugin.connectionId;
+      if (!plugin.configuration) continue;
+      const setup = profileSetupForPlugin?.(String(plugin.pluginId ?? ""));
+      if (setup) {
+        // Stale raw key is stripped via current metadata even when no
+        // profileExecution policy is present on the block.
+        plugin.configuration = sanitizePortableConfiguration(
+          { ...plugin.configuration },
+          setup,
+          true,
+        ) as Record<string, string | number | boolean>;
+      } else if (setup === null || !resolverProvided) {
+        // Known without profileSetup, or resolver-free legacy: preserve
+        // ordinary configuration; IDs already dropped above.
+      } else {
+        // Unknown plugin with resolver: fail-closed unconfigured block.
+        plugin.configuration = {};
+      }
+      // Resolver omitted: legacy limit — configuration preserved, IDs dropped.
+    }
+  };
+  if (manifest.method) sanitizeBlocks(manifest.method.blocks);
+  for (const entry of manifest.methods ?? []) {
+    const method = methodFromEntry(entry);
+    if (method) sanitizeBlocks(method.blocks);
+  }
+  return manifest;
+}
 
 function methodFromEntry(entry: PortableMethodEntry): PortableMethod | undefined {
   if ("method" in entry) return entry.method;
@@ -103,11 +173,13 @@ async function extractCover(
 export async function createMethodPackage(
   manifestText: string,
   resolveLocalAsset?: (url: string) => Buffer | Promise<Buffer>,
+  profileSetupForPlugin?: MethodPackageProfileSetupResolver,
 ) {
   const manifest = JSON.parse(manifestText) as PortableManifest;
   if (!["contentflow-method", "contentflow-method-pack"].includes(manifest.format ?? "")) {
     throw new Error("Manifesto de Métodos inválido.");
   }
+  sanitizePortableManifestBlocks(manifest, profileSetupForPlugin);
   const assets: { target: string; data: Buffer }[] = [];
   if (manifest.method?.imageUrl) {
     const asset = await extractCover(
@@ -240,6 +312,7 @@ function readZipEntries(buffer: Buffer) {
 export async function readMethodPackage(
   buffer: Buffer,
   storeAsset?: (assetPath: string, data: Buffer) => string | Promise<string>,
+  profileSetupForPlugin?: MethodPackageProfileSetupResolver,
 ) {
   const entries = await readZipEntries(buffer);
   const manifestBuffer = entries.get("manifest.json");
@@ -280,5 +353,8 @@ export async function readMethodPackage(
       item.values![fieldKey] = { ...file, size: asset.length, sha256, url: restoredUrl };
     }
   }
+  // Forged external payloads never confer trust: drop IDs/managed values on
+  // read as well, using real plugin metadata when available.
+  sanitizePortableManifestBlocks(manifest, profileSetupForPlugin);
   return JSON.stringify(manifest);
 }

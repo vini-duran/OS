@@ -51,6 +51,7 @@ export function applyExecutorBlockCompletion(
   blockExecution.status = "completed";
   blockExecution.completedAt = fact.now;
   blockExecution.error = undefined;
+  blockExecution.errorCode = undefined;
   return {
     ok: true,
     outcome: "completed",
