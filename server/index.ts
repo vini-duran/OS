@@ -217,6 +217,7 @@ import {
   findPluginMethodDependencies,
 } from "./plugin-dependencies";
 import { validatePluginDirectory, validatePluginManifest } from "./plugin-validation";
+import { registerPluginOrganizationRoutes } from "./plugin-organization";
 import {
   runtimeInputBindings,
   runtimeInputsReady,
@@ -3888,6 +3889,11 @@ app.get("/api/plugins", (_request, response) => {
     issues: registry.issues,
   });
 });
+
+// Organização local da biblioteca (Interface 3): preferência separada do
+// contrato /api/preferences, registrada antes das rotas dinâmicas para não
+// colidir com :pluginId.
+registerPluginOrganizationRoutes(app, database);
 
 app.get("/api/plugins/:pluginId/icon", (request, response) => {
   initializePluginRunner();

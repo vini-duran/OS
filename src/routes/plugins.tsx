@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -65,6 +65,25 @@ import {
   pluginAdministrationText,
   type PluginAdministrationCompatibility,
 } from "@/lib/plugin-administration-localization";
+import {
+  OrganizeLibraryButton,
+  PluginOrganizationDialog,
+  PluginOrganizationFilters,
+} from "@/components/plugin-organization-controls";
+import { PluginOrganizedLibrary } from "@/components/plugin-organized-library";
+import {
+  createOrganizationSection,
+  matchesOrganizationFilter,
+  movePluginToSection,
+  normalizePluginOrganization,
+  removeOrganizationSection,
+  renameOrganizationSection,
+  reorderSectionPlugins,
+  resolveSectionListing,
+  togglePluginFavorite,
+  type PluginOrganization,
+} from "@/lib/plugin-organization";
+import { pluginOrganizationText } from "@/lib/plugin-organization-localization";
 import type { AppLanguage } from "@/lib/app-preferences";
 
 export const Route = createFileRoute("/plugins")({
@@ -237,6 +256,16 @@ function PluginsPage() {
   const [deliveryFilter, setDeliveryFilter] = useState<"all" | ContentFamily>("all");
   const [blockFilter, setBlockFilter] = useState<"all" | BlockType>("all");
   const [processFilter, setProcessFilter] = useState<"all" | UniversalProcess>("all");
+  const [organization, setOrganization] = useState<PluginOrganization | null>(null);
+  const [organizationReady, setOrganizationReady] = useState(false);
+  const [organizationError, setOrganizationError] = useState(false);
+  const [organizerOpen, setOrganizerOpen] = useState(false);
+  const [sectionFilter, setSectionFilter] = useState<string | "all">("all");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [savingOrganization, setSavingOrganization] = useState(false);
+  const [organizationMutationError, setOrganizationMutationError] = useState<string | null>(null);
+  const revisionRef = useRef("");
+  const savingRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -297,6 +326,119 @@ function PluginsPage() {
     void checkUpdates();
   }, [checkUpdates, refresh]);
 
+  const loadOrganization = useCallback(async () => {
+    setOrganizationError(false);
+    try {
+      const response = await fetch("/api/plugins/organization");
+      if (!response.ok) throw new Error("A API local não respondeu.");
+      const result = (await response.json()) as {
+        organization?: unknown;
+        revision?: string;
+      };
+      setOrganization(normalizePluginOrganization(result.organization));
+      const revision = typeof result.revision === "string" ? result.revision : "";
+      revisionRef.current = revision;
+      setOrganizationReady(true);
+    } catch {
+      setOrganizationError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOrganization();
+  }, [loadOrganization]);
+
+  async function persistOrganization(next: PluginOrganization) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSavingOrganization(true);
+    setOrganizationMutationError(null);
+    try {
+      const response = await fetch("/api/plugins/organization", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organization: next, revision: revisionRef.current }),
+      });
+      const result = (await response.json()) as {
+        organization?: unknown;
+        revision?: string;
+        error?: string;
+      };
+      if (response.status === 409) {
+        setOrganization(normalizePluginOrganization(result.organization));
+        const revision = typeof result.revision === "string" ? result.revision : "";
+        revisionRef.current = revision;
+        toast.error(pluginOrganizationText("saveConflict", language));
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? "organization");
+      setOrganization(normalizePluginOrganization(result.organization));
+      const revision = typeof result.revision === "string" ? result.revision : revisionRef.current;
+      revisionRef.current = revision;
+    } catch (error) {
+      toast.error(pluginOrganizationText("saveFailed", language), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+      await loadOrganization();
+    } finally {
+      savingRef.current = false;
+      setSavingOrganization(false);
+    }
+  }
+
+  function handleToggleFavorite(pluginId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = togglePluginFavorite(organization, pluginId);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleReorderSection(sectionId: string, visibleOrderedIds: string[]) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = reorderSectionPlugins(organization, sectionId, visibleOrderedIds);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleMovePlugin(pluginId: string, sectionId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = movePluginToSection(organization, pluginId, sectionId);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleCreateSection(name: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = createOrganizationSection(organization, name);
+    if (!result.ok) {
+      setOrganizationMutationError(pluginOrganizationText("invalidSectionName", language));
+      return;
+    }
+    setOrganizationMutationError(null);
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
+  function handleRenameSection(sectionId: string, name: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = renameOrganizationSection(organization, sectionId, name);
+    if (!result.ok) {
+      setOrganizationMutationError(pluginOrganizationText("invalidSectionName", language));
+      return;
+    }
+    setOrganizationMutationError(null);
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
+  function handleRemoveSection(sectionId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = removeOrganizationSection(organization, sectionId);
+    if (!result.ok) return;
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredPlugins = data.plugins.filter((plugin) => {
     const localizedManifest = displayPluginManifest(plugin, language);
@@ -323,13 +465,49 @@ function PluginsPage() {
     Boolean(normalizedSearch) ||
     deliveryFilter !== "all" ||
     blockFilter !== "all" ||
-    processFilter !== "all";
+    processFilter !== "all" ||
+    sectionFilter !== "all" ||
+    favoritesOnly;
 
   function clearFilters() {
     setSearch("");
     setDeliveryFilter("all");
     setBlockFilter("all");
     setProcessFilter("all");
+    setSectionFilter("all");
+    setFavoritesOnly(false);
+  }
+
+  const organizationVisibleCount = (() => {
+    if (!organization || !organizationReady) return filteredPlugins.length;
+    const listing = resolveSectionListing(
+      organization,
+      data.plugins.map((plugin) => plugin.id),
+    );
+    const baseIds = new Set(filteredPlugins.map((plugin) => plugin.id));
+    const sections =
+      sectionFilter === "all"
+        ? organization.sections
+        : organization.sections.filter((section) => section.id === sectionFilter);
+    return sections.reduce(
+      (total, section) =>
+        total +
+        (listing[section.id] ?? []).filter(
+          (pluginId) =>
+            baseIds.has(pluginId) &&
+            matchesOrganizationFilter(organization, pluginId, {
+              sectionId: sectionFilter,
+              favoritesOnly,
+            }),
+        ).length,
+      0,
+    );
+  })();
+
+  function pluginDisplayName(pluginId: string) {
+    const plugin = data.plugins.find((candidate) => candidate.id === pluginId);
+    if (!plugin) return pluginId;
+    return String(displayPluginManifest(plugin, language).name);
   }
 
   return (
@@ -341,6 +519,11 @@ function PluginsPage() {
         showNewProject={false}
         actions={
           <div className="flex items-center gap-2">
+            <OrganizeLibraryButton
+              language={language}
+              disabled={!organizationReady || savingOrganization}
+              onClick={() => setOrganizerOpen(true)}
+            />
             <InstallPluginDialog onInstalled={refresh} />
             <Button
               size="sm"
@@ -501,6 +684,32 @@ function PluginsPage() {
               </SelectContent>
             </Select>
           </div>
+          {organization && organizationReady && (
+            <div className="mt-3">
+              <PluginOrganizationFilters
+                organization={organization}
+                sectionId={sectionFilter}
+                favoritesOnly={favoritesOnly}
+                language={language}
+                disabled={savingOrganization}
+                onSectionChange={setSectionFilter}
+                onFavoritesChange={setFavoritesOnly}
+              />
+            </div>
+          )}
+          {organizationError && !organizationReady && (
+            <p role="alert" className="mt-3 flex flex-wrap items-center gap-2 text-xs text-warning">
+              {pluginOrganizationText("loadFailed", language)}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() => void loadOrganization()}
+              >
+                {pluginOrganizationText("retry", language)}
+              </Button>
+            </p>
+          )}
         </section>
 
         {loading ? (
@@ -509,6 +718,57 @@ function PluginsPage() {
               <LoaderCircle className="size-4 animate-spin" /> Procurando plugins locais...
             </span>
           </div>
+        ) : organization && organizationReady ? (
+          organizationVisibleCount > 0 ? (
+            <PluginOrganizedLibrary
+              organization={organization}
+              inventoryIds={data.plugins.map((plugin) => plugin.id)}
+              filter={{
+                sectionId: sectionFilter,
+                favoritesOnly,
+                matchesBaseFilter: (pluginId) =>
+                  filteredPlugins.some((plugin) => plugin.id === pluginId),
+              }}
+              language={language}
+              disabled={savingOrganization}
+              renderCard={(pluginId) => {
+                const plugin = data.plugins.find((candidate) => candidate.id === pluginId);
+                if (!plugin) return null;
+                return (
+                  <PluginCard
+                    key={`${plugin.source}-${plugin.id}`}
+                    plugin={plugin}
+                    update={updates[plugin.id]}
+                    onChanged={refreshPluginsAndUpdates}
+                  />
+                );
+              }}
+              pluginNameFor={pluginDisplayName}
+              onToggleFavorite={handleToggleFavorite}
+              onReorderSection={handleReorderSection}
+            />
+          ) : (
+            <section className="mt-5 grid min-h-72 place-items-center rounded-xl border border-dashed border-border bg-card/25 p-8 text-center">
+              <div>
+                <Plug className="mx-auto size-8 text-muted-foreground" />
+                <h2 className="mt-3 text-sm font-semibold">
+                  {data.plugins.length
+                    ? "Nenhum plugin corresponde aos filtros"
+                    : "Nenhum plugin instalado ainda"}
+                </h2>
+                <p className="mt-1 max-w-lg text-xs text-muted-foreground">
+                  {data.plugins.length
+                    ? "Ajuste a pesquisa ou limpe os filtros para voltar a visualizar o catálogo."
+                    : "A interface já está preparada para descobrir plugins reais. Nenhum dado de exemplo foi criado."}
+                </p>
+                {filtersActive && (
+                  <Button size="sm" variant="outline" className="mt-4" onClick={clearFilters}>
+                    Limpar filtros
+                  </Button>
+                )}
+              </div>
+            </section>
+          )
         ) : filteredPlugins.length ? (
           <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {filteredPlugins.map((plugin) => (
@@ -558,6 +818,24 @@ function PluginsPage() {
           </section>
         )}
       </main>
+      {organization && (
+        <PluginOrganizationDialog
+          open={organizerOpen}
+          onOpenChange={setOrganizerOpen}
+          organization={organization}
+          inventory={data.plugins.map((plugin) => ({
+            id: plugin.id,
+            name: pluginDisplayName(plugin.id),
+          }))}
+          language={language}
+          disabled={savingOrganization}
+          mutationError={organizationMutationError}
+          onCreateSection={handleCreateSection}
+          onRenameSection={handleRenameSection}
+          onRemoveSection={handleRemoveSection}
+          onMovePlugin={handleMovePlugin}
+        />
+      )}
     </AppShell>
   );
 }
