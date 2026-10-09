@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pencil, Plus, SlidersHorizontal, Star, Trash2 } from "lucide-react";
+import { Pencil, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { AppLanguage } from "@/lib/app-preferences";
-import type { PluginCardSize } from "@/lib/plugin-card-size";
 import {
   PLUGIN_ORGANIZATION_BUILT_IN_SECTION_IDS,
   PLUGIN_ORGANIZATION_NONE_SECTION_ID,
@@ -55,75 +54,55 @@ export function OrganizeLibraryButton({
   );
 }
 
+export const PLUGIN_ORGANIZATION_FAVORITES_FILTER_VALUE = "favorites";
+
 export function PluginOrganizationFilters({
   organization,
   sectionId,
   favoritesOnly,
-  cardSize,
   language,
   disabled,
   onSectionChange,
   onFavoritesChange,
-  onCardSizeChange,
 }: {
   organization: PluginOrganization;
   sectionId: string | "all";
   favoritesOnly: boolean;
-  cardSize: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   onSectionChange: (sectionId: string | "all") => void;
   onFavoritesChange: (favoritesOnly: boolean) => void;
-  onCardSizeChange: (size: PluginCardSize) => void;
 }) {
+  const value = favoritesOnly ? PLUGIN_ORGANIZATION_FAVORITES_FILTER_VALUE : sectionId;
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Select
-        value={sectionId}
-        disabled={disabled}
-        onValueChange={(value) => onSectionChange(value as string | "all")}
-      >
-        <SelectTrigger className="w-44" aria-label={pluginOrganizationText("section", language)}>
-          <SelectValue placeholder={pluginOrganizationText("allSections", language)} />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">{pluginOrganizationText("allSections", language)}</SelectItem>
-          {organization.sections.map((section) => (
-            <SelectItem key={section.id} value={section.id}>
-              {pluginOrganizationSectionLabel(section.id, section.name, language)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Button
-        type="button"
-        size="sm"
-        variant={favoritesOnly ? "default" : "outline"}
-        className="gap-1.5"
-        aria-pressed={favoritesOnly}
-        disabled={disabled}
-        onClick={() => onFavoritesChange(!favoritesOnly)}
-      >
-        <Star className={favoritesOnly ? "size-3.5 fill-current" : "size-3.5"} />
-        {pluginOrganizationText("favoritesOnly", language)}
-      </Button>
-      <Select
-        value={cardSize}
-        disabled={disabled}
-        onValueChange={(value) => onCardSizeChange(value as PluginCardSize)}
-      >
-        <SelectTrigger className="w-40" aria-label={pluginOrganizationText("cardSize", language)}>
-          <SelectValue placeholder={pluginOrganizationText("cardSize", language)} />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="small">{pluginOrganizationText("cardSizeSmall", language)}</SelectItem>
-          <SelectItem value="medium">
-            {pluginOrganizationText("cardSizeMedium", language)}
+    <Select
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (next === PLUGIN_ORGANIZATION_FAVORITES_FILTER_VALUE) {
+          onSectionChange("all");
+          onFavoritesChange(true);
+          return;
+        }
+        onSectionChange(next as string | "all");
+        onFavoritesChange(false);
+      }}
+    >
+      <SelectTrigger className="w-full" aria-label={pluginOrganizationText("section", language)}>
+        <SelectValue placeholder={pluginOrganizationText("allSections", language)} />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">{pluginOrganizationText("allSections", language)}</SelectItem>
+        {organization.sections.map((section) => (
+          <SelectItem key={section.id} value={section.id}>
+            {pluginOrganizationSectionLabel(section.id, section.name, language)}
           </SelectItem>
-          <SelectItem value="large">{pluginOrganizationText("cardSizeLarge", language)}</SelectItem>
-        </SelectContent>
-      </Select>
-    </div>
+        ))}
+        <SelectItem value={PLUGIN_ORGANIZATION_FAVORITES_FILTER_VALUE}>
+          {pluginOrganizationText("favoritesSectionOption", language)}
+        </SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 

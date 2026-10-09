@@ -21,7 +21,7 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { AppLanguage } from "@/lib/app-preferences";
-import { pluginCardGridStyle, type PluginCardSize } from "@/lib/plugin-card-size";
+import { pluginAutomaticCardGridStyle, type PluginCardSize } from "@/lib/plugin-card-size";
 import {
   matchesOrganizationFilter,
   organizationItemFor,
@@ -42,7 +42,8 @@ type PluginOrganizedLibraryProps = {
   organization: PluginOrganization;
   inventoryIds: string[];
   filter: OrganizedLibraryCardFilter;
-  cardSize: PluginCardSize;
+  /** Mantido por compatibilidade; o layout de referência é sempre automático. */
+  cardSize?: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   renderCard: (pluginId: string) => ReactNode;
@@ -55,7 +56,6 @@ export function PluginOrganizedLibrary({
   organization,
   inventoryIds,
   filter,
-  cardSize,
   language,
   disabled,
   renderCard,
@@ -84,7 +84,6 @@ export function PluginOrganizedLibrary({
             sectionId={section.id}
             sectionName={section.name}
             visibleIds={visibleIds}
-            cardSize={cardSize}
             language={language}
             disabled={disabled}
             renderCard={renderCard}
@@ -103,7 +102,6 @@ function PluginOrganizationSectionGrid({
   sectionId,
   sectionName,
   visibleIds,
-  cardSize,
   language,
   disabled,
   renderCard,
@@ -115,7 +113,6 @@ function PluginOrganizationSectionGrid({
   sectionId: string;
   sectionName: string | undefined;
   visibleIds: string[];
-  cardSize: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   renderCard: (pluginId: string) => ReactNode;
@@ -149,7 +146,7 @@ function PluginOrganizationSectionGrid({
       </div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={visibleIds} strategy={rectSortingStrategy}>
-          <div className="mt-3 grid gap-3" style={pluginCardGridStyle(cardSize)}>
+          <div className="mt-3 grid" style={pluginAutomaticCardGridStyle()}>
             {visibleIds.map((pluginId) => (
               <SortablePluginCard
                 key={pluginId}
@@ -210,9 +207,9 @@ function SortablePluginCard({
           event.stopPropagation();
           onToggleFavorite();
         }}
-        className="absolute left-2 top-2 grid size-7 place-items-center rounded-md border border-border/60 bg-background/85 text-muted-foreground shadow-sm backdrop-blur transition hover:text-amber-500 disabled:cursor-default disabled:opacity-40"
+        className="absolute left-3 top-3 text-muted-foreground/60 transition hover:text-amber-500 disabled:cursor-default disabled:opacity-40"
       >
-        <Star className={cn("size-3.5", favorite && "fill-amber-400 text-amber-400")} />
+        <Star className={cn("size-4", favorite && "fill-amber-400 text-amber-400")} />
       </button>
       <span className="absolute bottom-2 right-2">
         <button

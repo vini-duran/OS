@@ -13,6 +13,7 @@ import {
   ExternalLink,
   FileText,
   FolderPlus,
+  GripVertical,
   Image,
   KeyRound,
   LoaderCircle,
@@ -27,7 +28,6 @@ import {
   Video,
 } from "lucide-react";
 import { toast } from "sonner";
-import { EcosystemCatalog } from "@/components/ecosystem-catalog";
 import { ecosystemCatalogText } from "@/lib/ecosystem-catalog-localization";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
@@ -71,11 +71,7 @@ import {
   PluginOrganizationFilters,
 } from "@/components/plugin-organization-controls";
 import { PluginOrganizedLibrary } from "@/components/plugin-organized-library";
-import {
-  normalizePluginCardSize,
-  pluginCardGridStyle,
-  type PluginCardSize,
-} from "@/lib/plugin-card-size";
+import { pluginAutomaticCardGridStyle } from "@/lib/plugin-card-size";
 import {
   createOrganizationSection,
   matchesOrganizationFilter,
@@ -85,7 +81,6 @@ import {
   renameOrganizationSection,
   reorderSectionPlugins,
   resolveSectionListing,
-  setPluginCardSize,
   togglePluginFavorite,
   type PluginOrganization,
 } from "@/lib/plugin-organization";
@@ -445,13 +440,6 @@ function PluginsPage() {
     void persistOrganization(result.organization);
   }
 
-  function handleCardSizeChange(size: PluginCardSize) {
-    if (!organization || !organizationReady || savingRef.current) return;
-    const next = setPluginCardSize(organization, size);
-    setOrganization(next);
-    void persistOrganization(next);
-  }
-
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredPlugins = data.plugins.filter((plugin) => {
     const localizedManifest = displayPluginManifest(plugin, language);
@@ -532,12 +520,12 @@ function PluginsPage() {
         showNewProject={false}
         actions={
           <div className="flex items-center gap-2">
+            <InstallPluginDialog onInstalled={refresh} />
             <OrganizeLibraryButton
               language={language}
               disabled={!organizationReady || savingOrganization}
               onClick={() => setOrganizerOpen(true)}
             />
-            <InstallPluginDialog onInstalled={refresh} />
             <Button
               size="sm"
               variant="outline"
@@ -557,31 +545,20 @@ function PluginsPage() {
         }
       />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+      <main className="mx-auto w-full flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
         {updateCheckFailed && (
           <p role="alert" className="mb-4 text-sm text-warning">
             {ecosystemCatalogText("unavailable", language)}
           </p>
         )}
-        <EcosystemCatalog
-          kind="plugins"
-          onSelect={async (id) => {
-            const response = await fetch(
-              `/api/plugins/${encodeURIComponent(id)}/install-from-catalog`,
-              { method: "POST" },
-            );
-            if (!response.ok) throw new Error("catalog");
-            toast.success(ecosystemCatalogText("installedNotice", language));
-            await refreshPluginsAndUpdates();
-          }}
-        />
         <section className="mb-4 rounded-xl border border-brand/25 bg-card/55 p-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-md">
-              <h2 className="text-sm font-semibold">Componentes externos</h2>
+              <h2 className="text-sm font-semibold">
+                {pluginOrganizationText("externalComponentsTitle", language)}
+              </h2>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale
-                todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.
+                {pluginOrganizationText("externalComponentsDescription", language)}
               </p>
             </div>
             <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[44rem]">
@@ -589,21 +566,25 @@ function PluginsPage() {
                 <a href={ECOSYSTEM_DOWNLOADS.plugins} target="_blank" rel="noreferrer">
                   <Boxes className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar plugins</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("consultPlugins", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Mesmo fluxo para qualquer autor
+                      {pluginOrganizationText("consultPluginsDescription", language)}
                     </span>
                   </span>
-                  <Download className="ml-auto size-3.5 shrink-0" />
+                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
                 <a href={ECOSYSTEM_DOWNLOADS.browserBridge} target="_blank" rel="noreferrer">
                   <SquareArrowOutUpRight className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar Browser Bridge</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("configureBrowserBridge", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Somente para automação web
+                      {pluginOrganizationText("browserBridgeDescription", language)}
                     </span>
                   </span>
                   <Download className="ml-auto size-3.5 shrink-0" />
@@ -617,9 +598,11 @@ function PluginsPage() {
                 >
                   <Sparkles className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Baixar skill de plugins</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("consultPluginSkill", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Para criar com um agente de IA
+                      {pluginOrganizationText("pluginSkillDescription", language)}
                     </span>
                   </span>
                   <Download className="ml-auto size-3.5 shrink-0" />
@@ -638,7 +621,7 @@ function PluginsPage() {
               </Button>
             )}
           </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(15rem,1fr)_repeat(3,minmax(9rem,0.42fr))]">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[minmax(15rem,2.8fr)_repeat(4,minmax(0,1fr))]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -648,6 +631,28 @@ function PluginsPage() {
                 className="pl-9"
               />
             </div>
+            {organization && organizationReady ? (
+              <PluginOrganizationFilters
+                organization={organization}
+                sectionId={sectionFilter}
+                favoritesOnly={favoritesOnly}
+                language={language}
+                disabled={savingOrganization}
+                onSectionChange={setSectionFilter}
+                onFavoritesChange={setFavoritesOnly}
+              />
+            ) : (
+              <Select value="all" disabled>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={pluginOrganizationText("allSections", language)} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">
+                    {pluginOrganizationText("allSections", language)}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            )}
             <Select
               value={deliveryFilter}
               onValueChange={(value) => setDeliveryFilter(value as "all" | ContentFamily)}
@@ -697,21 +702,6 @@ function PluginsPage() {
               </SelectContent>
             </Select>
           </div>
-          {organization && organizationReady && (
-            <div className="mt-3">
-              <PluginOrganizationFilters
-                organization={organization}
-                sectionId={sectionFilter}
-                favoritesOnly={favoritesOnly}
-                cardSize={normalizePluginCardSize(organization.cardSize)}
-                language={language}
-                disabled={savingOrganization}
-                onSectionChange={setSectionFilter}
-                onFavoritesChange={setFavoritesOnly}
-                onCardSizeChange={handleCardSizeChange}
-              />
-            </div>
-          )}
           {organizationError && !organizationReady && (
             <p role="alert" className="mt-3 flex flex-wrap items-center gap-2 text-xs text-warning">
               {pluginOrganizationText("loadFailed", language)}
@@ -726,6 +716,10 @@ function PluginsPage() {
             </p>
           )}
         </section>
+        <p className="mt-3 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <GripVertical className="size-4 shrink-0" aria-hidden />
+          <span>{pluginOrganizationText("dragReorderHelp", language)}</span>
+        </p>
 
         {loading ? (
           <div className="grid min-h-72 place-items-center text-sm text-muted-foreground">
@@ -744,7 +738,6 @@ function PluginsPage() {
                 matchesBaseFilter: (pluginId) =>
                   filteredPlugins.some((plugin) => plugin.id === pluginId),
               }}
-              cardSize={normalizePluginCardSize(organization.cardSize)}
               language={language}
               disabled={savingOrganization}
               renderCard={(pluginId) => {
@@ -786,14 +779,7 @@ function PluginsPage() {
             </section>
           )
         ) : filteredPlugins.length ? (
-          <section
-            className="mt-4 grid gap-3"
-            style={pluginCardGridStyle(
-              normalizePluginCardSize(
-                organization ? organization.cardSize : ("medium" as PluginCardSize),
-              ),
-            )}
-          >
+          <section className="mt-4 grid" style={pluginAutomaticCardGridStyle()}>
             {filteredPlugins.map((plugin) => (
               <PluginCard
                 key={`${plugin.source}-${plugin.id}`}
@@ -1047,7 +1033,7 @@ function PluginCard({
         <button
           type="button"
           aria-label={`Abrir detalhes de ${manifest.name}`}
-          className="group relative flex w-full aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+          className="group relative flex w-full aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-5 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
         >
           <span className="absolute right-3 top-3 flex items-center gap-2">
             {update?.updateAvailable && (
@@ -1079,20 +1065,22 @@ function PluginCard({
               </span>
             )}
           </span>
-          <span className="grid size-14 place-items-center rounded-2xl border border-border/70 bg-gradient-to-br from-brand/15 to-secondary text-xl font-semibold tracking-tight text-brand-soft transition-transform group-hover:scale-105">
+          <span className="grid size-16 place-items-center rounded-2xl border border-border/70 bg-gradient-to-br from-brand/15 to-secondary text-xl font-semibold tracking-tight text-brand-soft transition-transform group-hover:scale-105">
             {manifest.branding?.iconPath && !iconFailed ? (
               <img
                 src={`/api/plugins/${encodeURIComponent(plugin.id)}/icon?v=${encodeURIComponent(manifest.version)}`}
                 alt=""
-                className="size-9 object-contain"
+                className="size-10 object-contain"
                 onError={() => setIconFailed(true)}
               />
             ) : (
               initials || <Plug className="size-6" />
             )}
           </span>
-          <h2 className="mt-3 line-clamp-2 text-sm font-semibold leading-snug">{manifest.name}</h2>
-          <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] max-w-[15rem] text-[11px] leading-snug text-muted-foreground">
+          <h2 className="mt-3 line-clamp-2 text-base font-semibold leading-snug">
+            {manifest.name}
+          </h2>
+          <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] text-[13px] leading-snug text-muted-foreground">
             {manifest.description}
           </p>
           {manifest.profileSetup && (

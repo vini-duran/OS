@@ -62,6 +62,44 @@ export const pluginOrganizationMessages = {
   cardSizeSmall: ["Pequeno", "Small", "Pequeño"],
   cardSizeMedium: ["Médio", "Medium", "Mediano"],
   cardSizeLarge: ["Grande", "Large", "Grande"],
+  favoritesSectionOption: ["Favoritos", "Favorites", "Favoritos"],
+  dragReorderHelp: [
+    "Arraste o ícone no canto inferior direito de um card para reorganizar a seção atual.",
+    "Drag the icon in the bottom-right corner of a card to reorder the current section.",
+    "Arrastra el icono de la esquina inferior derecha de una tarjeta para reordenar la sección actual.",
+  ],
+  externalComponentsTitle: ["Componentes externos", "External components", "Componentes externos"],
+  externalComponentsDescription: [
+    "Consulte os componentes e suas instruções. Instale somente os plugins que você precisa pela opção Instalar plugin.",
+    "Browse the components and their instructions. Install only the plugins you need via the Install plugin option.",
+    "Consulta los componentes y sus instrucciones. Instala solo los plugins que necesites con la opción Instalar plugin.",
+  ],
+  consultPluginsDescription: [
+    "Mesmo fluxo para qualquer autor",
+    "Same flow for any author",
+    "Mismo flujo para cualquier autor",
+  ],
+  browserBridgeDescription: [
+    "Somente para automação web",
+    "For web automation only",
+    "Solo para automatización web",
+  ],
+  pluginSkillDescription: [
+    "Para criar com um agente de IA",
+    "Create with an AI agent",
+    "Para crear con un agente de IA",
+  ],
+  consultPlugins: ["Consultar plugins", "Browse plugins", "Consultar plugins"],
+  configureBrowserBridge: [
+    "Configurar Browser Bridge",
+    "Set up Browser Bridge",
+    "Configurar Browser Bridge",
+  ],
+  consultPluginSkill: [
+    "Consultar skill de plugins",
+    "Browse plugin skill",
+    "Consultar skill de plugins",
+  ],
 } as const;
 
 export type PluginOrganizationMessageKey = keyof typeof pluginOrganizationMessages;

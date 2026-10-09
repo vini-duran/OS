@@ -44,3 +44,25 @@ export function pluginCardGridStyle(size: PluginCardSize): { gridTemplateColumns
   const min = PLUGIN_CARD_GRID_MIN_WIDTH_PX[size] ?? PLUGIN_CARD_GRID_MIN_WIDTH_PX.medium;
   return { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${min}px), 1fr))` };
 }
+
+/**
+ * Grade automática da biblioteca de plugins (Interface 3, layout de referência).
+ *
+ * Layout único e automático, sem preferência manual de tamanho: a grade usa
+ * `repeat(auto-fill, minmax(min(100%, 300px), 1fr))` sobre a largura real do
+ * contêiner, com espaçamento de 16px. As funções legadas acima permanecem para
+ * compatibilidade de leitura do campo `cardSize` armazenado.
+ */
+export const PLUGIN_CARD_GRID_AUTOMATIC_MIN_WIDTH_PX = 300;
+
+export const PLUGIN_CARD_GRID_AUTOMATIC_GAP_PX = 16;
+
+export function pluginAutomaticCardGridStyle(): {
+  gridTemplateColumns: string;
+  gap: string;
+} {
+  return {
+    gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${PLUGIN_CARD_GRID_AUTOMATIC_MIN_WIDTH_PX}px), 1fr))`,
+    gap: `${PLUGIN_CARD_GRID_AUTOMATIC_GAP_PX}px`,
+  };
+}
