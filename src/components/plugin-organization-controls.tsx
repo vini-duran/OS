@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { AppLanguage } from "@/lib/app-preferences";
+import type { PluginCardSize } from "@/lib/plugin-card-size";
 import {
   PLUGIN_ORGANIZATION_BUILT_IN_SECTION_IDS,
   PLUGIN_ORGANIZATION_NONE_SECTION_ID,
@@ -58,18 +59,22 @@ export function PluginOrganizationFilters({
   organization,
   sectionId,
   favoritesOnly,
+  cardSize,
   language,
   disabled,
   onSectionChange,
   onFavoritesChange,
+  onCardSizeChange,
 }: {
   organization: PluginOrganization;
   sectionId: string | "all";
   favoritesOnly: boolean;
+  cardSize: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   onSectionChange: (sectionId: string | "all") => void;
   onFavoritesChange: (favoritesOnly: boolean) => void;
+  onCardSizeChange: (size: PluginCardSize) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -102,6 +107,22 @@ export function PluginOrganizationFilters({
         <Star className={favoritesOnly ? "size-3.5 fill-current" : "size-3.5"} />
         {pluginOrganizationText("favoritesOnly", language)}
       </Button>
+      <Select
+        value={cardSize}
+        disabled={disabled}
+        onValueChange={(value) => onCardSizeChange(value as PluginCardSize)}
+      >
+        <SelectTrigger className="w-40" aria-label={pluginOrganizationText("cardSize", language)}>
+          <SelectValue placeholder={pluginOrganizationText("cardSize", language)} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="small">{pluginOrganizationText("cardSizeSmall", language)}</SelectItem>
+          <SelectItem value="medium">
+            {pluginOrganizationText("cardSizeMedium", language)}
+          </SelectItem>
+          <SelectItem value="large">{pluginOrganizationText("cardSizeLarge", language)}</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
   renameOrganizationSection,
   reorderSectionPlugins,
   resolveSectionListing,
+  setPluginCardSize,
   togglePluginFavorite,
   validatePluginOrganizationForWrite,
 } from "./plugin-organization";
@@ -212,4 +213,82 @@ test("none reservado existe sempre após normalizar entrada vazia", () => {
     );
     assert.ok(Array.isArray(normalized.sectionOrder[PLUGIN_ORGANIZATION_NONE_SECTION_ID]));
   }
+});
+
+test("cardSize padrão é medium e legado ausente normaliza para medium", () => {
+  assert.equal(defaultPluginOrganization().cardSize, "medium");
+  const legacy = normalizePluginOrganization({
+    items: { "plugin-a": { section: "generation", favorite: false, hidden: false } },
+    sectionOrder: { generation: ["plugin-a"] },
+  });
+  assert.equal(legacy.cardSize, "medium");
+  assert.equal(legacy.items["plugin-a"].section, "generation");
+});
+
+test("cardSize válido é preservado; inválido normaliza sem perder o resto", () => {
+  const large = normalizePluginOrganization({ cardSize: "large" });
+  assert.equal(large.cardSize, "large");
+  const invalid = normalizePluginOrganization({
+    cardSize: "gigante",
+    items: { "plugin-a": { section: "editing", favorite: true, hidden: false } },
+    sectionOrder: { editing: ["plugin-a"] },
+  });
+  assert.equal(invalid.cardSize, "medium");
+  assert.equal(invalid.items["plugin-a"].section, "editing");
+  assert.equal(invalid.items["plugin-a"].favorite, true);
+});
+
+test("todas as mutações preservam cardSize; trocar tamanho não altera o resto", () => {
+  const sized = setPluginCardSize(defaultPluginOrganization(), "large");
+  assert.equal(sized.cardSize, "large");
+  const moved = movePluginToSection(sized, "plugin-a", "editing");
+  assert.equal(moved.cardSize, "large");
+  const favored = togglePluginFavorite(moved, "plugin-a");
+  assert.equal(favored.cardSize, "large");
+  const reordered = reorderSectionPlugins(favored, "editing", ["plugin-a"]);
+  assert.equal(reordered.cardSize, "large");
+  const renamed = renameOrganizationSection(reordered, "editing", "Minha edição");
+  assert.equal(renamed.ok, true);
+  if (renamed.ok) assert.equal(renamed.organization.cardSize, "large");
+  const created = createOrganizationSection(reordered, "Extra");
+  assert.equal(created.ok, true);
+  if (created.ok) assert.equal(created.organization.cardSize, "large");
+
+  const before = movePluginToSection(
+    setPluginCardSize(defaultPluginOrganization(), "small"),
+    "plugin-a",
+    "generation",
+  );
+  const snapshot = structuredClone(before);
+  const after = setPluginCardSize(before, "large");
+  assert.equal(after.cardSize, "large");
+  assert.deepEqual(after.sections, snapshot.sections);
+  assert.deepEqual(after.items, snapshot.items);
+  assert.deepEqual(after.sectionOrder, snapshot.sectionOrder);
+
+  const kept = setPluginCardSize(before, "inválido");
+  assert.equal(kept.cardSize, "small");
+  assert.deepEqual(kept.items, before.items);
+});
+
+test("validação de escrita aceita ausente como medium e rejeita inválido", () => {
+  const base = normalizePluginOrganization({});
+  assert.equal(validatePluginOrganizationForWrite(base).ok, true);
+  const without = structuredClone(base) as Record<string, unknown>;
+  delete without.cardSize;
+  const accepted = validatePluginOrganizationForWrite(without);
+  assert.equal(accepted.ok, true);
+  if (accepted.ok) assert.equal(accepted.organization.cardSize, "medium");
+  const bad = { ...structuredClone(base), cardSize: "gigante" };
+  assert.equal(validatePluginOrganizationForWrite(bad).ok, false);
+});
+
+test("revision muda quando só o cardSize muda", () => {
+  const base = defaultPluginOrganization();
+  const large = setPluginCardSize(base, "large");
+  assert.notEqual(pluginOrganizationRevision(base), pluginOrganizationRevision(large));
+  assert.equal(
+    pluginOrganizationRevision(base),
+    pluginOrganizationRevision(defaultPluginOrganization()),
+  );
 });

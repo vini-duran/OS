@@ -12,6 +12,10 @@
  * O formato atual acrescenta `sections: [{ id, name?, builtIn? }]` e `version`.
  */
 
+import { isPluginCardSize, normalizePluginCardSize, type PluginCardSize } from "./plugin-card-size";
+
+export type { PluginCardSize } from "./plugin-card-size";
+
 export const PLUGIN_ORGANIZATION_VERSION = 1;
 
 export const PLUGIN_ORGANIZATION_NONE_SECTION_ID = "none";
@@ -46,6 +50,8 @@ export type PluginOrganization = {
   sections: PluginOrganizationSection[];
   items: Record<string, PluginOrganizationItem>;
   sectionOrder: Record<string, string[]>;
+  /** Tamanho dos cards. Opcional no JSON legado; ausente = `medium`. */
+  cardSize?: PluginCardSize;
 };
 
 export const PLUGIN_ORGANIZATION_LIMITS = {
@@ -123,6 +129,7 @@ export function defaultPluginOrganization(): PluginOrganization {
         (id) => [id, []],
       ),
     ),
+    cardSize: "medium",
   };
 }
 
@@ -136,6 +143,7 @@ function cloneOrganization(organization: PluginOrganization): PluginOrganization
     sectionOrder: Object.fromEntries(
       Object.entries(organization.sectionOrder).map(([id, list]) => [id, [...list]]),
     ),
+    cardSize: normalizePluginCardSize(organization.cardSize),
   };
 }
 
@@ -186,6 +194,8 @@ export function normalizePluginOrganization(raw: unknown): PluginOrganization {
     }
     organization.sectionOrder[id] ??= [];
   }
+
+  organization.cardSize = normalizePluginCardSize(source.cardSize);
 
   const known = knownSectionIds(organization);
 
@@ -269,6 +279,13 @@ export function validatePluginOrganizationForWrite(raw: unknown): PluginOrganiza
   const source = raw as Record<string, unknown>;
   if (source.version !== undefined && source.version !== PLUGIN_ORGANIZATION_VERSION) {
     return { ok: false, error: "unsupported organization version" };
+  }
+  let cardSize: PluginCardSize = "medium";
+  if (source.cardSize !== undefined) {
+    if (!isPluginCardSize(source.cardSize)) {
+      return { ok: false, error: "invalid card size" };
+    }
+    cardSize = source.cardSize;
   }
 
   const sections: PluginOrganizationSection[] = [];
@@ -377,7 +394,13 @@ export function validatePluginOrganizationForWrite(raw: unknown): PluginOrganiza
 
   return {
     ok: true,
-    organization: { version: PLUGIN_ORGANIZATION_VERSION, sections, items, sectionOrder },
+    organization: {
+      version: PLUGIN_ORGANIZATION_VERSION,
+      sections,
+      items,
+      sectionOrder,
+      cardSize,
+    },
   };
 }
 
@@ -401,7 +424,13 @@ function canonicalizeForRevision(organization: PluginOrganization): unknown {
   for (const key of Object.keys(normalized.sectionOrder).sort()) {
     sectionOrder[key] = normalized.sectionOrder[key];
   }
-  return { version: 1, sections, items, sectionOrder };
+  return {
+    version: 1,
+    sections,
+    items,
+    sectionOrder,
+    cardSize: normalizePluginCardSize(normalized.cardSize),
+  };
 }
 
 function cyrb53Hex(input: string, seed = 0): string {
@@ -485,6 +514,20 @@ export function togglePluginFavorite(
   next.items[id] = item;
   const list = (next.sectionOrder[item.section] ??= []);
   if (!list.includes(id)) list.push(id);
+  return next;
+}
+
+/**
+ * Troca somente o tamanho dos cards, sem alterar seções, itens, ordem,
+ * favoritos ou ocultos. Tamanho inválido mantém o estado inalterado.
+ */
+export function setPluginCardSize(
+  organization: PluginOrganization,
+  size: unknown,
+): PluginOrganization {
+  const next = cloneOrganization(organization);
+  if (!isPluginCardSize(size)) return next;
+  next.cardSize = size;
   return next;
 }
 

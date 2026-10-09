@@ -21,6 +21,7 @@ import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { AppLanguage } from "@/lib/app-preferences";
+import { pluginCardGridStyle, type PluginCardSize } from "@/lib/plugin-card-size";
 import {
   matchesOrganizationFilter,
   organizationItemFor,
@@ -41,6 +42,7 @@ type PluginOrganizedLibraryProps = {
   organization: PluginOrganization;
   inventoryIds: string[];
   filter: OrganizedLibraryCardFilter;
+  cardSize: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   renderCard: (pluginId: string) => ReactNode;
@@ -53,6 +55,7 @@ export function PluginOrganizedLibrary({
   organization,
   inventoryIds,
   filter,
+  cardSize,
   language,
   disabled,
   renderCard,
@@ -81,6 +84,7 @@ export function PluginOrganizedLibrary({
             sectionId={section.id}
             sectionName={section.name}
             visibleIds={visibleIds}
+            cardSize={cardSize}
             language={language}
             disabled={disabled}
             renderCard={renderCard}
@@ -99,6 +103,7 @@ function PluginOrganizationSectionGrid({
   sectionId,
   sectionName,
   visibleIds,
+  cardSize,
   language,
   disabled,
   renderCard,
@@ -110,6 +115,7 @@ function PluginOrganizationSectionGrid({
   sectionId: string;
   sectionName: string | undefined;
   visibleIds: string[];
+  cardSize: PluginCardSize;
   language: AppLanguage;
   disabled: boolean;
   renderCard: (pluginId: string) => ReactNode;
@@ -143,7 +149,7 @@ function PluginOrganizationSectionGrid({
       </div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={visibleIds} strategy={rectSortingStrategy}>
-          <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <div className="mt-3 grid gap-3" style={pluginCardGridStyle(cardSize)}>
             {visibleIds.map((pluginId) => (
               <SortablePluginCard
                 key={pluginId}

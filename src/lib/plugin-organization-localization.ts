@@ -58,6 +58,10 @@ export const pluginOrganizationMessages = {
     "No plugins in this section.",
     "No hay plugins en esta sección.",
   ],
+  cardSize: ["Tamanho dos cards", "Card size", "Tamaño de las tarjetas"],
+  cardSizeSmall: ["Pequeno", "Small", "Pequeño"],
+  cardSizeMedium: ["Médio", "Medium", "Mediano"],
+  cardSizeLarge: ["Grande", "Large", "Grande"],
 } as const;
 
 export type PluginOrganizationMessageKey = keyof typeof pluginOrganizationMessages;

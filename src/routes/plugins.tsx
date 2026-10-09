@@ -72,6 +72,11 @@ import {
 } from "@/components/plugin-organization-controls";
 import { PluginOrganizedLibrary } from "@/components/plugin-organized-library";
 import {
+  normalizePluginCardSize,
+  pluginCardGridStyle,
+  type PluginCardSize,
+} from "@/lib/plugin-card-size";
+import {
   createOrganizationSection,
   matchesOrganizationFilter,
   movePluginToSection,
@@ -80,6 +85,7 @@ import {
   renameOrganizationSection,
   reorderSectionPlugins,
   resolveSectionListing,
+  setPluginCardSize,
   togglePluginFavorite,
   type PluginOrganization,
 } from "@/lib/plugin-organization";
@@ -439,6 +445,13 @@ function PluginsPage() {
     void persistOrganization(result.organization);
   }
 
+  function handleCardSizeChange(size: PluginCardSize) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = setPluginCardSize(organization, size);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredPlugins = data.plugins.filter((plugin) => {
     const localizedManifest = displayPluginManifest(plugin, language);
@@ -690,10 +703,12 @@ function PluginsPage() {
                 organization={organization}
                 sectionId={sectionFilter}
                 favoritesOnly={favoritesOnly}
+                cardSize={normalizePluginCardSize(organization.cardSize)}
                 language={language}
                 disabled={savingOrganization}
                 onSectionChange={setSectionFilter}
                 onFavoritesChange={setFavoritesOnly}
+                onCardSizeChange={handleCardSizeChange}
               />
             </div>
           )}
@@ -729,6 +744,7 @@ function PluginsPage() {
                 matchesBaseFilter: (pluginId) =>
                   filteredPlugins.some((plugin) => plugin.id === pluginId),
               }}
+              cardSize={normalizePluginCardSize(organization.cardSize)}
               language={language}
               disabled={savingOrganization}
               renderCard={(pluginId) => {
@@ -770,7 +786,14 @@ function PluginsPage() {
             </section>
           )
         ) : filteredPlugins.length ? (
-          <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <section
+            className="mt-4 grid gap-3"
+            style={pluginCardGridStyle(
+              normalizePluginCardSize(
+                organization ? organization.cardSize : ("medium" as PluginCardSize),
+              ),
+            )}
+          >
             {filteredPlugins.map((plugin) => (
               <PluginCard
                 key={`${plugin.source}-${plugin.id}`}
@@ -1024,7 +1047,7 @@ function PluginCard({
         <button
           type="button"
           aria-label={`Abrir detalhes de ${manifest.name}`}
-          className="group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+          className="group relative flex w-full aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
         >
           <span className="absolute right-3 top-3 flex items-center gap-2">
             {update?.updateAvailable && (
