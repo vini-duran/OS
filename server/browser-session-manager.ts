@@ -216,7 +216,7 @@ export class BrowserSessionManager {
       "--no-default-browser-check",
       "--disable-blink-features=AutomationControlled",
       "--window-size=1280,800",
-      "about:blank",
+      "about:blank#contentflow-startup",
     ];
     if (input.browserBridgeDirectory) {
       args.splice(args.length - 1, 0, `--load-extension=${input.browserBridgeDirectory}`);

@@ -55,6 +55,8 @@ test("abre uma única sessão com a porta reservada e devolve somente o endpoint
   assert.ok(launches[0]!.args.includes("--user-data-dir=C:\\contentflow-test-profile"));
   assert.ok(launches[0]!.args.includes("--load-extension=C:\\contentflow-browser-bridge"));
   assert.ok(launches[0]!.args.includes("--start-minimized"));
+  assert.equal(launches[0]!.args.filter((arg) => arg.startsWith("about:")).length, 1);
+  assert.ok(launches[0]!.args.includes("about:blank#contentflow-startup"));
 });
 
 test("permite a inicialização fria da Bridge sem reduzir o polling", () => {
