@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Express } from "express";
 import { valueShapeSchema } from "../src/lib/value-shape-schema";
 import type { PluginJobStore, PersistentPluginJob } from "./plugin-job-store";
@@ -1208,7 +1209,7 @@ export function planDatabaseMigration(
         }
       }
       const after = JSON.stringify(converted);
-      if (after !== JSON.stringify(payload))
+      if (!isDeepStrictEqual(payload, JSON.parse(after)))
         updates.push({ table: definition.table, id: row.id, before: row.payload, after });
     }
   }

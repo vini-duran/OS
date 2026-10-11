@@ -441,6 +441,126 @@ test("updated plugins do not force historical snapshots into their new port shap
   assert.deepEqual(snapshot.blocks, execution.blocks);
 });
 
+test("planner ignores terminal shape object key order after v3 normalization", (t) => {
+  const { database, directory } = fixture(t);
+  const initialPlan = planDatabaseMigration(database, directory);
+  for (const update of initialPlan.updates)
+    database.prepare(`UPDATE ${update.table} SET payload=? WHERE id=?`).run(update.after, update.id);
+  const jobBefore = payload(database, "plugin_jobs", "old-job");
+  const itemsBefore = JSON.parse(payload(database, "process_executions", "e")).blocks[0].items;
+  const projectBefore = payload(database, "projects", "p");
+
+  const root = path.join(directory, "plugins", "installed", "test.writer");
+  mkdirSync(root, { recursive: true });
+  const shape = {
+    kind: "content",
+    family: "text",
+    cardinality: "one",
+    representation: "inline",
+  };
+  writeFileSync(
+    path.join(root, "contentflow.plugin.json"),
+    JSON.stringify({
+      id: "test.writer",
+      apiVersion: "2",
+      version: "2.0.0",
+      capabilities: [{ id: "write", inputPorts: [], outputPorts: [{ key: "theme", shape }] }],
+    }),
+  );
+  const normalizedChannel = JSON.parse(payload(database));
+  normalizedChannel.methods.theme.blocks[0].plugin = {
+    pluginId: "test.writer",
+    pluginVersion: "2.0.0",
+    capabilityId: "write",
+    configuration: {},
+  };
+  normalizedChannel.methods.theme.blocks[0].outputs[0].portKey = "theme";
+  normalizedChannel.methods.theme.blocks[0].outputs[0].shape = shape;
+  database.prepare("UPDATE channels SET payload=? WHERE id='c'").run(JSON.stringify(normalizedChannel));
+
+  const normalized = JSON.parse(payload(database, "process_executions", "e"));
+  normalized.status = "completed";
+  normalized.methodSnapshot = structuredClone(normalizedChannel.methods.theme);
+  normalized.methodSnapshot.blocks[0].outputs[0].shape = {
+    representation: "inline",
+    cardinality: "one",
+    family: "text",
+    kind: "content",
+  };
+  normalized.blocks[0].values = { theme: "Preserved output" };
+  database.prepare("UPDATE process_executions SET payload=? WHERE id='e'").run(JSON.stringify(normalized));
+
+  const executionBefore = payload(database, "process_executions", "e");
+  const totalChangesBefore = database.prepare("SELECT total_changes() AS n").get();
+  const plan = planDatabaseMigration(database, directory);
+  assert.equal(plan.updates.length, 0, "a normalized v3 database should plan idempotently");
+  assert.equal(plan.updates.some((update) => update.table === "process_executions"), false);
+  assert.equal(payload(database, "process_executions", "e"), executionBefore);
+  assert.equal(payload(database, "plugin_jobs", "old-job"), jobBefore);
+  assert.equal(payload(database, "projects", "p"), projectBefore);
+  assert.deepEqual(database.prepare("SELECT total_changes() AS n").get(), totalChangesBefore);
+  assert.deepEqual(JSON.parse(executionBefore).blocks[0].items, itemsBefore);
+  assert.deepEqual(JSON.parse(executionBefore).blocks[0].values, { theme: "Preserved output" });
+  const persistedExecution = JSON.parse(payload(database, "process_executions", "e"));
+  assert.equal(persistedExecution.status, "completed");
+  assert.deepEqual(persistedExecution.blocks[0].values, { theme: "Preserved output" });
+});
+
+test("planner detects a real terminal shape change and preserves delivery array order", (t) => {
+  const { database, directory } = fixture(t);
+  const channel = JSON.parse(payload(database));
+  const method = channel.methods.theme;
+  method.blocks[0].plugin = {
+    pluginId: "test.writer",
+    pluginVersion: "2.0.0",
+    capabilityId: "write",
+    configuration: {},
+  };
+  method.blocks[0].outputs[0].portKey = "text";
+  database.prepare("UPDATE channels SET payload=? WHERE id='c'").run(JSON.stringify(channel));
+  const execution = JSON.parse(payload(database, "process_executions", "e"));
+  execution.status = "completed";
+  execution.methodSnapshot = method;
+  execution.blocks[0].values = { theme: "Materialized text" };
+  execution.deliveries = [
+    { blockId: "b", outputKey: "theme", items: [{ value: "First" }, { value: "Second" }] },
+  ];
+  database.prepare("UPDATE process_executions SET payload=? WHERE id='e'").run(JSON.stringify(execution));
+  const root = path.join(directory, "plugins", "installed", "test.writer");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    path.join(root, "contentflow.plugin.json"),
+    JSON.stringify({
+      id: "test.writer",
+      apiVersion: "2",
+      version: "2.0.0",
+      capabilities: [
+        {
+          id: "write",
+          inputPorts: [],
+          outputPorts: [
+            {
+              key: "text",
+              shape: {
+                kind: "content",
+                family: "text",
+                cardinality: "one",
+                representation: "either",
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const plan = planDatabaseMigration(database, directory);
+  const update = plan.updates.find((entry) => entry.table === "process_executions");
+  assert.ok(update, "a real terminal shape change must require migration");
+  const after = JSON.parse(update.after);
+  assert.equal(after.methodSnapshot.blocks[0].outputs[0].shape.representation, "either");
+  assert.deepEqual(after.deliveries[0].items.map((item: { value: string }) => item.value), ["First", "Second"]);
+});
+
 test("migration consumes a text collection through a scalar input, but never coerces records", () => {
   const text = {
     kind: "content",
