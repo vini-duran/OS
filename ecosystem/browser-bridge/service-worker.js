@@ -63,7 +63,15 @@ const PLUGIN_POLICIES = Object.freeze({
     ["https://chatgpt.com/*"],
   ),
   "local.contentflow.claude-browser-text": policy(["https://claude.ai"], ["https://claude.ai/*"]),
+  "com.contentflow.claude-structured-context": policy(
+    ["https://claude.ai"],
+    ["https://claude.ai/*"],
+  ),
   "local.contentflow.gemini-browser-studio": policy(
+    ["https://gemini.google.com"],
+    ["https://gemini.google.com/*"],
+  ),
+  "com.contentflow.gemini-structured-context": policy(
     ["https://gemini.google.com"],
     ["https://gemini.google.com/*"],
   ),

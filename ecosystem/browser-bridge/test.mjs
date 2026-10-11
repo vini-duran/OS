@@ -640,7 +640,9 @@ export async function testExtensionBridge(source) {
   for (const provider of [
     ["local.contentflow.chatgpt-browser-studio", "https://chatgpt.com/"],
     ["local.contentflow.claude-browser-text", "https://claude.ai/new"],
+    ["com.contentflow.claude-structured-context", "https://claude.ai/new"],
     ["local.contentflow.gemini-browser-studio", "https://gemini.google.com/app"],
+    ["com.contentflow.gemini-structured-context", "https://gemini.google.com/app"],
     ["local.contentflow.grok-browser-studio", "https://grok.com/"],
     ["local.contentflow.meta-ai-browser-studio", "https://www.meta.ai/"],
     ["local.contentflow.mai-playground-browser", "https://playground.microsoft.ai/chat"],
@@ -648,6 +650,43 @@ export async function testExtensionBridge(source) {
   ]) {
     const result = await bridge.connect({ ...handshake, pluginId: provider[0] });
     assert.equal(result.ok, true, `${provider[0]} deve estar na allowlist da ponte v2`);
+  }
+
+  for (const [pluginId, currentUrl] of [
+    ["com.contentflow.claude-structured-context", "https://claude.ai/new"],
+    ["com.contentflow.gemini-structured-context", "https://gemini.google.com/app"],
+  ]) {
+    currentTabUrl = currentUrl;
+    const result = await bridge.connect({
+      ...handshake,
+      pluginId,
+      sessionToken: createHash("sha256").update(pluginId).digest("hex"),
+    });
+    assert.equal(result.ok, true, `${pluginId} deve conectar na origem do próprio provedor`);
+  }
+
+  assert.equal(
+    (
+      await bridge.connect({
+        ...handshake,
+        pluginId: "com.contentflow.unknown-structured-context",
+        sessionToken: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      })
+    ).code,
+    "HANDSHAKE_REJECTED",
+    "IDs desconhecidos devem continuar rejeitados",
+  );
+  for (const [pluginId, crossProviderUrl] of [
+    ["com.contentflow.claude-structured-context", "https://gemini.google.com/app"],
+    ["com.contentflow.gemini-structured-context", "https://claude.ai/new"],
+  ]) {
+    currentTabUrl = crossProviderUrl;
+    const result = await bridge.connect({
+      ...handshake,
+      pluginId,
+      sessionToken: createHash("sha256").update(`${pluginId}:cross-provider`).digest("hex"),
+    });
+    assert.equal(result.code, "HANDSHAKE_REJECTED", `${pluginId} não deve acessar outro provedor`);
   }
 
   currentTabUrl = "https://chatgpt.com/";
