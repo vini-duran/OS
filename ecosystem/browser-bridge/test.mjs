@@ -676,17 +676,48 @@ export async function testExtensionBridge(source) {
     "HANDSHAKE_REJECTED",
     "IDs desconhecidos devem continuar rejeitados",
   );
-  for (const [pluginId, crossProviderUrl] of [
-    ["com.contentflow.claude-structured-context", "https://gemini.google.com/app"],
-    ["com.contentflow.gemini-structured-context", "https://claude.ai/new"],
+  for (const [pluginId, allowedUrl, forbiddenUrl] of [
+    [
+      "com.contentflow.claude-structured-context",
+      "https://claude.ai/new",
+      "https://gemini.google.com/app",
+    ],
+    [
+      "com.contentflow.gemini-structured-context",
+      "https://gemini.google.com/app",
+      "https://claude.ai/new",
+    ],
   ]) {
-    currentTabUrl = crossProviderUrl;
-    const result = await bridge.connect({
+    const sessionToken = createHash("sha256").update(`${pluginId}:provider-policy`).digest("hex");
+    currentTabUrl = allowedUrl;
+    assert.equal(
+      (
+        await bridge.connect({
+          ...handshake,
+          pluginId,
+          sessionToken,
+        })
+      ).ok,
+      true,
+      `${pluginId} deve estabelecer sessão para testar seus limites de origem`,
+    );
+    const forbiddenOrigin = await bridge.dispatch({
       ...handshake,
       pluginId,
-      sessionToken: createHash("sha256").update(`${pluginId}:cross-provider`).digest("hex"),
+      sessionToken,
+      commandId: createHash("sha256").update(`${pluginId}:cross-provider-command`).digest("hex"),
+      executionKey: `${pluginId}:cross-provider`,
+      expectedUrl: forbiddenUrl,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      action: "ping",
+      payload: {},
     });
-    assert.equal(result.code, "HANDSHAKE_REJECTED", `${pluginId} não deve acessar outro provedor`);
+    assert.equal(
+      forbiddenOrigin.code,
+      "ORIGIN_NOT_ALLOWED",
+      `${pluginId} deve rejeitar comandos direcionados a outro provedor`,
+    );
   }
 
   currentTabUrl = "https://chatgpt.com/";
