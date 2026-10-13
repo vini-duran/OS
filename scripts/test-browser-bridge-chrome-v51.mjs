@@ -211,8 +211,8 @@ async function prepareExtension(extensionPath, fixtureOrigin) {
   const workerPath = join(extensionPath, "service-worker.js");
   const worker = await readFile(workerPath, "utf8");
   const adapted = worker.replace(
-    '["https://chatgpt.com"],\r\n    ["https://chatgpt.com/*"]',
-    `[${JSON.stringify(fixtureOrigin)}],\r\n    [${JSON.stringify(localPattern)}]`,
+    /\["https:\/\/chatgpt\.com"\],\s*\["https:\/\/chatgpt\.com\/\*"\]/,
+    `[${JSON.stringify(fixtureOrigin)}], [${JSON.stringify(localPattern)}]`,
   );
   if (adapted === worker) throw new Error("Não foi possível adaptar a policy da fixture 5.1.");
   await writeFile(workerPath, adapted);
@@ -365,6 +365,24 @@ async function run() {
       `globalThis.contentFlowBridge.dispatch(${JSON.stringify(firstCommand)})`,
     );
     if (!first?.ok) throw new Error(`Comando real recusado: ${JSON.stringify(first)}`);
+    const firstPageSession = await attach(client, page.targetId);
+    const replacedDraft = await evaluate(client, firstPageSession, "document.querySelector('#prompt')?.innerText");
+    if (replacedDraft !== "chrome-real-minimizado") {
+      throw new Error(`Substituição não exata do rascunho contenteditable: ${String(replacedDraft).length} caracteres.`);
+    }
+    await client.send("Target.detachFromTarget", { sessionId: firstPageSession });
+    const emptyCommand = command({
+      sessionToken,
+      fixtureUrl,
+      text: "",
+      ordinal: 3,
+    });
+    const cleared = await evaluate(
+      client,
+      workerSession,
+      `globalThis.contentFlowBridge.dispatch(${JSON.stringify(emptyCommand)})`,
+    );
+    if (!cleared?.ok) throw new Error(`Limpeza real recusada: ${JSON.stringify(cleared)}`);
     await evaluate(
       client,
       workerSession,
@@ -378,11 +396,9 @@ async function run() {
     await client.send("Target.detachFromTarget", { sessionId: workerSession });
 
     const pageSession = await attach(client, page.targetId);
-    const value = await evaluate(client, pageSession, "document.querySelector('#prompt')?.value");
-    if (value !== "chrome-real-minimizado") {
-      throw new Error(
-        `O comando não alterou a fixture real; valor recebido: ${JSON.stringify(value)}`,
-      );
+    const value = await evaluate(client, pageSession, "document.querySelector('#prompt')?.innerText");
+    if (value !== "") {
+      throw new Error(`A limpeza não removeu os parágrafos antigos; texto residual: ${String(value).length} caracteres.`);
     }
     await client.send("Target.detachFromTarget", { sessionId: pageSession });
 
@@ -441,6 +457,8 @@ async function run() {
         minimized: ranWhileMinimized,
         handshake: true,
         command: first.ok,
+        replacedContenteditableDraft: first.ok,
+        clearedContenteditableDraft: cleared.ok,
         conditionObserver: observed.ok,
         workerSuspendResume: resumed.ok,
         workerTargetRecreated: resumedWorker.targetId !== worker.targetId,

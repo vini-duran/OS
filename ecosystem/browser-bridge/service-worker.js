@@ -1299,14 +1299,41 @@ async function focusTargetAtPoint(tabId, target) {
   }
 }
 
+async function selectAllModifier() {
+  const platform = await new Promise((resolve, reject) => {
+    try {
+      chrome.runtime.getPlatformInfo((info) => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve(info?.os);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+  if (!["mac", "win", "linux", "cros", "openbsd"].includes(platform)) {
+    throw new Error("Plataforma não identificada para selecionar todo o texto.");
+  }
+  return platform === "mac" ? 4 : 2;
+}
+
+function normalizeEditorText(value) {
+  return String(value ?? "").replace(/\uFEFF/g, "").replace(/\s+/g, " ").trim();
+}
+
+async function focusedText(tabId) {
+  return String((await evaluateValue(tabId, `(${readFocusedText.toString()})()`)) || "");
+}
+
 async function replaceFocusedText(tabId, value) {
+  const modifiers = await selectAllModifier();
   await sendCdp(tabId, "Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: "a",
     code: "KeyA",
     windowsVirtualKeyCode: 65,
     nativeVirtualKeyCode: 65,
-    modifiers: 2,
+    modifiers,
     commands: ["selectAll"],
   });
   await sendCdp(tabId, "Input.dispatchKeyEvent", {
@@ -1315,7 +1342,7 @@ async function replaceFocusedText(tabId, value) {
     code: "KeyA",
     windowsVirtualKeyCode: 65,
     nativeVirtualKeyCode: 65,
-    modifiers: 2,
+    modifiers,
   });
   // Input.insertText não substitui de forma consistente a seleção controlada
   // por editores React/contenteditable. Apague explicitamente antes de inserir
@@ -1334,9 +1361,13 @@ async function replaceFocusedText(tabId, value) {
     windowsVirtualKeyCode: 8,
     nativeVirtualKeyCode: 8,
   });
+  if (normalizeEditorText(await focusedText(tabId)) !== "") {
+    return false;
+  }
   if (value) {
     await sendCdp(tabId, "Input.insertText", { text: value });
   }
+  return true;
 }
 
 async function pressEnter(tabId) {
@@ -1395,7 +1426,7 @@ async function dispatchCdpAction(tabId, command, policy) {
   }
   if (command.action === "setText" || command.action === "setPrompt") {
     const text = String(payload.text || "");
-    const expected = text.replace(/\s+/g, " ").trim();
+    const expected = normalizeEditorText(text);
     let actual = "";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const target = await targetFor(tabId, payload, "editable", true);
@@ -1408,14 +1439,14 @@ async function dispatchCdpAction(tabId, command, policy) {
       await focusTargetAtPoint(tabId, target);
       await dispatchMouseClick(tabId, target);
       await focusTargetAtPoint(tabId, target);
-      await replaceFocusedText(tabId, text);
-      actual = String((await evaluateValue(tabId, `(${readFocusedText.toString()})()`)) || "")
-        .replace(/\uFEFF/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!expected || actual === expected || actual.includes(expected)) break;
+      const cleared = await replaceFocusedText(tabId, text);
+      if (!cleared) {
+        return bridgeError("EDITOR_WRITE_FAILED", "O texto não permaneceu no editor.");
+      }
+      actual = normalizeEditorText(await focusedText(tabId));
+      if (actual === expected) break;
     }
-    if (expected && actual !== expected && !actual.includes(expected)) {
+    if (actual !== expected) {
       return bridgeError("EDITOR_WRITE_FAILED", "O texto não permaneceu no editor.");
     }
     return { ok: true, readbackLength: actual.length };

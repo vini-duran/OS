@@ -11,7 +11,10 @@ assert.equal(extensionManifest.version, "0.5.1");
 export async function testExtensionBridge(source) {
   const storage = {};
   const debuggerCalls = [];
-  let focusedText = "";
+  let focusedText = "parágrafo antigo\nparágrafo antigo";
+  let textSelected = false;
+  let clearFailure = false;
+  let platform = "mac";
   let currentTabUrl = "https://flow.google.com/project/project-1";
   let failNextMousePress = false;
   let conditionObserverResult = {
@@ -35,6 +38,9 @@ export async function testExtensionBridge(source) {
   const chrome = {
     runtime: {
       getManifest: () => extensionManifest,
+      getPlatformInfo(callback) {
+        callback({ os: platform });
+      },
       onMessage: {
         addListener(listener) {
           runtimeListener = listener;
@@ -217,8 +223,18 @@ export async function testExtensionBridge(source) {
         ) {
           await mousePressGate;
         }
-        if (method === "Input.insertText") focusedText = params.text;
-        if (method === "Input.dispatchKeyEvent" && params.key === "Backspace") focusedText = "";
+        if (method === "Input.dispatchKeyEvent" && params.key === "a" && params.type === "rawKeyDown") {
+          const expectedModifier = platform === "mac" ? 4 : 2;
+          textSelected = params.modifiers === expectedModifier && params.commands?.includes("selectAll");
+        }
+        if (method === "Input.dispatchKeyEvent" && params.key === "Backspace" && params.type === "keyDown") {
+          if (textSelected && !clearFailure) focusedText = "";
+          textSelected = false;
+        }
+        if (method === "Input.insertText") {
+          focusedText = textSelected ? params.text : `${focusedText}${params.text}`;
+          textSelected = false;
+        }
         return {};
       },
     },
@@ -474,6 +490,28 @@ export async function testExtensionBridge(source) {
   ).length;
   const first = command(1);
   assert.equal((await bridge.dispatch(first)).ok, true);
+  assert.equal(focusedText, "prompt 1", "o texto antigo duplicado deve ser totalmente substituído");
+  for (const [index, os, modifier] of [[1, "mac", 4], [2, "win", 2], [3, "linux", 2]]) {
+    platform = os;
+    const exact = `substituição exata ${os}`;
+    assert.equal((await bridge.dispatch(command(590 + index, { payload: { text: exact } }))).ok, true);
+    assert.equal(focusedText, exact);
+    assert.ok(debuggerCalls.some((entry) =>
+      entry.method === "Input.dispatchKeyEvent" && entry.params?.key === "a" && entry.params?.modifiers === modifier,
+    ), `select all deve usar o modificador correto em ${os}`);
+  }
+  assert.equal((await bridge.dispatch(command(594, { payload: { text: "" } })).then((result) => result.ok)), true);
+  assert.equal(focusedText, "", "texto vazio deve limpar o editor e confirmar igualdade exata");
+  focusedText = "texto anterior que não pode permanecer";
+  clearFailure = true;
+  const insertCountBeforeFailedClear = debuggerCalls.filter((entry) => entry.method === "Input.insertText").length;
+  const failedClear = await bridge.dispatch(command(595, { payload: { text: "não inserir" } }));
+  assert.equal(failedClear.code, "EDITOR_WRITE_FAILED");
+  assert.equal(focusedText, "texto anterior que não pode permanecer");
+  assert.equal(debuggerCalls.filter((entry) => entry.method === "Input.insertText").length, insertCountBeforeFailedClear,
+    "falha ao limpar deve impedir qualquer inserção");
+  clearFailure = false;
+  platform = "mac";
   const attachCountAfterFirst = debuggerCalls.filter(
     (entry) => entry.operation === "attach",
   ).length;
@@ -520,7 +558,7 @@ export async function testExtensionBridge(source) {
   assert.equal(clickResult.ok, true);
   assert.equal(clickResult.text, "generate");
   assert.equal(clickResult.mechanism, "cdp-input");
-  assert.equal(Object.keys(storage.contentflowCommandCacheV2).length, 301);
+  assert.equal(Object.keys(storage.contentflowCommandCacheV2).length, 306);
   assert.equal(
     debuggerCalls.filter((entry) => entry.operation === "attach").length,
     attachCountBeforeVolume + 1,

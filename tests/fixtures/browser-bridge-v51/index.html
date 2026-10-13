@@ -8,14 +8,20 @@
   <body>
     <main>
       <label for="prompt">Prompt</label>
-      <textarea id="prompt" aria-label="Prompt de teste"></textarea>
+      <div id="prompt" role="textbox" aria-label="Prompt de teste" contenteditable="true">
+        <p id="prior-first"></p>
+        <p id="prior-second"></p>
+      </div>
       <button id="submit" type="button">Enviar</button>
       <output id="result"></output>
       <div id="condition-target" hidden>ready</div>
     </main>
     <script>
+      const priorDraft = "rascunho anterior ".repeat(200).slice(0, 2089);
+      document.querySelector("#prior-first").textContent = priorDraft.slice(0, 1044);
+      document.querySelector("#prior-second").textContent = priorDraft.slice(1044);
       document.querySelector("#submit").addEventListener("click", () => {
-        document.querySelector("#result").textContent = document.querySelector("#prompt").value;
+        document.querySelector("#result").textContent = document.querySelector("#prompt").innerText;
       });
       setTimeout(() => {
         document.querySelector("#condition-target").hidden = false;
