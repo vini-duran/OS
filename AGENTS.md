@@ -1,3 +1,5 @@
+> **Contexto do fork da equipe:** leia tambem `docs/AUTORIZACAO_E_LICENCA.md` e `docs/ecosystem/CORE_137_OWNER_CANDIDATE.md`. A autorizacao de uso/customizacao pela equipe ja tem registro neste fork; preserve autoria e licencas originais. O destino de escrita/publicacao e somente `vini-duran/OS`; `andremjr/contentflow` e consulta/fetch. Esta arvore e candidata de fonte, sem release/App novo; aceite do outro Mac pertence ao orquestrador daquela maquina. Esse contexto nao concede acesso a dados/segredos nem autoriza publicar release ou migrar PUCs automaticamente.
+
 # ContentFlow — orientações para alterações futuras
 
 - Para qualquer pergunta, investigação, revisão, correção, implementação ou documentação relacionada a este projeto, use obrigatoriamente a skill `development-contentflow` como guardrail principal de desenvolvimento. Leia/aplique a versão disponível no ambiente antes de agir e mantenha as skills especializadas subordinadas a ela e às fontes normativas vivas do checkout.

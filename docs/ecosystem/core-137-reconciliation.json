@@ -1,0 +1,1217 @@
+{
+  "format": "contentflow-owner-core-reconciliation-v1",
+  "date": "2026-10-15",
+  "target_source": "f8c7771057aec69c4270b637ebfc8adfc7a42baf",
+  "fork_parent": "555892b3bd2f2d2f23107220848c08b8b1d8ccd7",
+  "upstream_base": "dee47c7ebfbcf22b13df0ff95f4ce806d40d1af9",
+  "strategy": "explicit current-runtime tree with preserved fork ancestry; selected historical distribution files restored; no data migration",
+  "virtual_conflict_paths": [
+    ".gitignore",
+    "AGENTS.md",
+    "README.md",
+    "compiled/v0/windows/README.md",
+    "desktop/main.cjs",
+    "desktop/prepare-desktop.mjs",
+    "desktop/validate-native-dependencies.mjs",
+    "docs/DESKTOP.md",
+    "docs/README.md",
+    "docs/ecosystem/distribution.md",
+    "ecosystem/docs/development.md",
+    "ecosystem/docs/protocol.md",
+    "ecosystem/docs/schemas/contentflow-plugin-v1.schema.json",
+    "ecosystem/plugins/examples/kit-generated-text-transform/fixtures/execution.generated.json",
+    "ecosystem/plugins/reference/claude-browser-text/README.md",
+    "ecosystem/plugins/reference/claude-browser-text/contentflow.plugin.json",
+    "ecosystem/plugins/reference/claude-browser-text/handler.mjs",
+    "ecosystem/plugins/reference/claude-browser-text/test.mjs",
+    "ecosystem/plugins/reference/gemini-browser-studio/README.md",
+    "ecosystem/plugins/reference/gemini-browser-studio/handler.mjs",
+    "ecosystem/plugins/reference/manual-tool-launcher/test.mjs",
+    "package-lock.json",
+    "package.json",
+    "server/execution-commands.ts",
+    "server/execution-retry.test.ts",
+    "server/index.ts",
+    "server/plugin-account-fallback.integration.test.ts",
+    "server/plugin-account-fallback.test.ts",
+    "server/plugin-account-fallback.ts",
+    "server/plugin-item-orchestration.test.ts",
+    "server/plugin-item-orchestration.ts",
+    "server/plugin-job-store.ts",
+    "server/plugin-runner.ts",
+    "server/plugin-sandbox-smoke.ts",
+    "server/presentation-smoke.ts",
+    "src/components/image-gallery.tsx",
+    "src/components/process-runner.tsx",
+    "src/lib/app-preferences.test.ts",
+    "src/lib/app-preferences.tsx",
+    "src/lib/deliveries.ts",
+    "src/lib/ecosystem-downloads.ts",
+    "src/lib/plugin-contract.ts",
+    "src/routes/plugins.tsx",
+    "tests/e2e/reliability.spec.ts"
+  ],
+  "paths": [
+    {
+      "path": ".gitignore",
+      "fork_change": "M",
+      "fork_blob": "02f16f465487f0fc99720745f55f8b49f2db907c",
+      "local_137_blob": "ee7f7e521735dbe825708feb152bca10d3901e91",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "AGENTS.md",
+      "fork_change": "M",
+      "fork_blob": "25a668bd731edbfc9cdf886c2692cfa793783c3b",
+      "local_137_blob": "fc99389e1fccdafc10713d0c09949495b3fdb297",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "README.md",
+      "fork_change": "M",
+      "fork_blob": "eb9b7382326716745b7c9cc5ffe7efebf819c2a0",
+      "local_137_blob": "158287e62edbc55b9d924e60d3301e526e589cdc",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "compiled/v0/windows/README.md",
+      "fork_change": "D",
+      "fork_blob": null,
+      "local_137_blob": "c30827ec3ac67c9a15ee8ca588b8598a3f368fd1",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "desktop/data-selection.cjs",
+      "fork_change": "A",
+      "fork_blob": "d9cbfebf45bd7e5a009a1191e1051a1cfc1087cb",
+      "local_137_blob": "d9cbfebf45bd7e5a009a1191e1051a1cfc1087cb",
+      "decision": "already_identical",
+      "reason": "same Git blob or same intentional absence",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/data-selection.test.cjs",
+      "fork_change": "A",
+      "fork_blob": "8ff2e6fa6f4759d0730e253b5f5cf994782141a8",
+      "local_137_blob": "8ff2e6fa6f4759d0730e253b5f5cf994782141a8",
+      "decision": "already_identical",
+      "reason": "same Git blob or same intentional absence",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/desktop-paths.cjs",
+      "fork_change": "A",
+      "fork_blob": "842451841c2db279492055fc0ca826280adac787",
+      "local_137_blob": "842451841c2db279492055fc0ca826280adac787",
+      "decision": "already_identical",
+      "reason": "same Git blob or same intentional absence",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/desktop-paths.test.cjs",
+      "fork_change": "A",
+      "fork_blob": "ac5950cf778435236cb0292e9c8342d6612154e6",
+      "local_137_blob": "ac5950cf778435236cb0292e9c8342d6612154e6",
+      "decision": "already_identical",
+      "reason": "same Git blob or same intentional absence",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/distribution-boundaries.test.cjs",
+      "fork_change": "M",
+      "fork_blob": "29196e5f636d9b58ad336fb437a50ab2e2a84a92",
+      "local_137_blob": "0c7aaaec05d8e776805f6e587b20fb6531bad521",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/main.cjs",
+      "fork_change": "M",
+      "fork_blob": "2d3fd57365667e5234d61a19d34a321e24ae4e91",
+      "local_137_blob": "c81abbfb1955499a6292ec7ab6ab7f0c34b5274e",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "desktop/prepare-desktop.mjs",
+      "fork_change": "M",
+      "fork_blob": "ae6648e75590f32780722094105716ef3e1ad70f",
+      "local_137_blob": "5cb88c943e8eb5b490d33e94b7a18576dbeb6795",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "desktop/updater.cjs",
+      "fork_change": "M",
+      "fork_blob": "356d597b1399cc76391c45aae0bd9ea040430534",
+      "local_137_blob": "f7fcdbc02a7e32ac861d4d1f5d515c5f7b787979",
+      "decision": "preserve_current_and_reapply_owner_destination",
+      "reason": "keep current contracts/dependencies/messages; restore owner fork as distribution authority",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/updater.test.cjs",
+      "fork_change": "M",
+      "fork_blob": "2b6286e0787887982d2927bc28968523b003ce8b",
+      "local_137_blob": "a5d3778147bd4c95b88c442e62300cef3f8610e5",
+      "decision": "preserve_current_and_reapply_owner_destination",
+      "reason": "keep current contracts/dependencies/messages; restore owner fork as distribution authority",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "desktop/validate-native-dependencies.mjs",
+      "fork_change": "M",
+      "fork_blob": "5adb675c9c9bc917f6d0c4de6f6bb474e78e25ad",
+      "local_137_blob": "9849ee0538d8f52f39b6a39fcea8a51a25195b43",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "docs/ACEITE_CANDIDATA_MACOS_ARM64.md",
+      "fork_change": "A",
+      "fork_blob": "8de92d2cbe43cf0bc1c2e6b865db63c73a854cf9",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/AUTORIZACAO_E_LICENCA.md",
+      "fork_change": "A",
+      "fork_blob": "4a5b1741e0ba4798550818d69019ee9ae7e4595d",
+      "local_137_blob": null,
+      "decision": "restore_exact_from_fork",
+      "reason": "existing authorization / immutable ARM64 packaging and signature checks",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/CHANNEL_RESEARCH.md",
+      "fork_change": "A",
+      "fork_blob": "81795b0545fe55ba45dc8c3e7dc5b50e25aa4baa",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/CREDENTIAL_VAULT_MIGRATION.md",
+      "fork_change": "A",
+      "fork_blob": "f99139aa176a0643485dc23c927f04b7cdc63492",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/DESKTOP.md",
+      "fork_change": "M",
+      "fork_blob": "bc4d271ef24758a3b538e6d85355c957191224ae",
+      "local_137_blob": "5a645e9d891e0435952d767bc360b78f39096ace",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "docs/DESKTOP_MACOS.md",
+      "fork_change": "A",
+      "fork_blob": "4ef6e1c07a044c9192ea5e07923315c1d220a953",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/FORK_UPDATE_V1_1.md",
+      "fork_change": "A",
+      "fork_blob": "7624dda0c2d6fa127b6ac14ff2cfdd9a16b8ed7d",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/NORTE_MAGNATA_INTEGRATION.md",
+      "fork_change": "A",
+      "fork_blob": "76fac779933f4787d22e67a6d38090559e809c8d",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/README.md",
+      "fork_change": "M",
+      "fork_blob": "9ba2b627c1300bf7ca18bfbdbd1b61a7de2211cb",
+      "local_137_blob": "1f812e2204f28d4d7697f077ee3f425e54232b1a",
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "docs/RELEASE_0.3.2.md",
+      "fork_change": "A",
+      "fork_blob": "e591cfd34c97cff3d15e3dedac56029c6925e546",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/UPSTREAM_SYNC.md",
+      "fork_change": "A",
+      "fork_blob": "7e93eeaad282c1fb598fac5b773636cebee795ae",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/ATUALIZACAO_CORE_055.md",
+      "fork_change": "A",
+      "fork_blob": "029941109c68a858737b72d6ae5124a85730e9bb",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/ATUALIZACAO_CORE_061.md",
+      "fork_change": "A",
+      "fork_blob": "862bdbfb7fa8bc669d7bd47fc548c115569cbc4b",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/IMAGE_GALLERY_PREVIEW.md",
+      "fork_change": "A",
+      "fork_blob": "01f08d15b1ad03ccf6bed2a753166e7fe9d8ab40",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/MAIN_055_RECONCILIATION.md",
+      "fork_change": "A",
+      "fork_blob": "82d264a262c97db78254045e5dea3dfb6a7989e9",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/README.md",
+      "fork_change": "A",
+      "fork_blob": "268b282adad381266bc652cc6ed1c4e1bebbdbe8",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/UPDATE_055_REMAINING.md",
+      "fork_change": "A",
+      "fork_blob": "9168d8548dda2238407a9ad443e0f42db72258b2",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/UPSTREAM_SYNC_ATE_2026_09_12.md",
+      "fork_change": "A",
+      "fork_blob": "7284f7e96509b20dbdfef32229a7dcc410799abb",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/historico/V1_ROADMAP.md",
+      "fork_change": "A",
+      "fork_blob": "54f066833e72a56c06a41ec460d76c3502b9184a",
+      "local_137_blob": null,
+      "decision": "keep_current_documentation_boundary",
+      "reason": "current source authority; old notes remain retrievable from exact fork parent and new reconciliation index",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "docs/templates/norte-magnata-theme-curado.contentflow-method.json",
+      "fork_change": "A",
+      "fork_blob": "f9865f1f075969f4b253d4ac87f11202283e753d",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/browser-bridge/INSTALAR.md",
+      "fork_change": "M",
+      "fork_blob": "f1495d16d631f512a3ec457798f727ad7259e75a",
+      "local_137_blob": "c443a2f9bc6efd7a9797aef96800e660cf290a2a",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/browser-bridge/README.md",
+      "fork_change": "M",
+      "fork_blob": "f258e6dcfff48b4d0dcc327a25c1e9c6c7ef7eae",
+      "local_137_blob": "76dc337eafd4780a9417e2b8e4d03847836d52d3",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/browser-bridge/content-script.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "baa0c0764c212b03db0b35b5ebf8fd342c080999",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/browser-bridge/tab-binding.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "928984d39e6127748639dbde4f67b0c78deba8f6",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/docs/development.md",
+      "fork_change": "M",
+      "fork_blob": "3e8b484dde307c5e8b5632daf3566b09f2be19d3",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/docs/distribution.md",
+      "fork_change": "M",
+      "fork_blob": "2d3899b1eb9e7df6ad6b787f19765f803f84611b",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/docs/protocol.md",
+      "fork_change": "M",
+      "fork_blob": "62769c0610c54158e17ca6fc7d2c4b73c4fc4057",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/docs/schemas/contentflow-plugin-v1.schema.json",
+      "fork_change": "M",
+      "fork_blob": "d8d78d4b07ca6a156cea8b48a220b71cd646a07a",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/examples/kit-generated-text-transform/fixtures/execution.generated.json",
+      "fork_change": "D",
+      "fork_blob": null,
+      "local_137_blob": "0a6b2852441df7c88cec57e8e8b1c5a2eeb08b1c",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/README.md",
+      "fork_change": "M",
+      "fork_blob": "a67c1c88ad16b6e77e92ae0aa20a359f62dd9f9c",
+      "local_137_blob": "2d89974549d9154da0f6bf274d6b757ef421c956",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/contentflow.plugin.json",
+      "fork_change": "M",
+      "fork_blob": "4e1a1133a7f0feb6a2c043f2a21eae8caa8164bd",
+      "local_137_blob": "dccb8122147b4feeaa98ff422917579a24ca16c9",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/handler.mjs",
+      "fork_change": "M",
+      "fork_blob": "93e59b177d701531cc82f86efcd1d1b7fb44255d",
+      "local_137_blob": "d1325483e68fafaedc6bb7d8bcdd85dddf3a3614",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/inspect-send.mjs",
+      "fork_change": "A",
+      "fork_blob": "2650334979503ceffb257850f57e7d263a90b09d",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/response-guard.mjs",
+      "fork_change": "A",
+      "fork_blob": "468d300a3986eb770312901905792cdf20ae9a54",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/response-guard.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "c90c7b2c3f47962abcde1acf562c7d0634e237f5",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/send-safety.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "6ce0fb5c67b6711ec50a40ada7b910091aa0b9bd",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/claude-browser-text/test.mjs",
+      "fork_change": "M",
+      "fork_blob": "df2dafa8255f7faf3f30f4baa28600b9c635da15",
+      "local_137_blob": "770056b5a7b5368e7ca4116a3f2cf838bfccc504",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/gemini-browser-studio/README.md",
+      "fork_change": "M",
+      "fork_blob": "85348e1c8a6532084551841b87ec9533e4376dbc",
+      "local_137_blob": "42f023df24c89b65f4f2e3a6b2afb90c8ab1a876",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/gemini-browser-studio/contentflow.plugin.json",
+      "fork_change": "M",
+      "fork_blob": "dcc8b79c9dc16189d047fd25f44c4f34038e625f",
+      "local_137_blob": "b17023a079aa3b32faef57af809aee6565475bab",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/gemini-browser-studio/handler.mjs",
+      "fork_change": "M",
+      "fork_blob": "6c18b47c379d0fff3037930e3bac7903bc31036c",
+      "local_137_blob": "98b6710b37c8d1ce9427cbd90a74eb9c138780ab",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "ecosystem/plugins/reference/gemini-browser-studio/response-guard.mjs",
+      "fork_change": "A",
+      "fork_blob": "a0a862ad74761d9ad8eb7871239d6a0bd341d3bb",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/gemini-browser-studio/response-guard.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "1d310638cde450e2ea39e50974303f1f89ad0c66",
+      "local_137_blob": null,
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "ecosystem/plugins/reference/manual-tool-launcher/test.mjs",
+      "fork_change": "M",
+      "fork_blob": "bf9f5aa10ba0154914b903a23cba8f3561985336",
+      "local_137_blob": "cd727981a83ab2bd1df38d1a883202ceb60e7b25",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "eslint.config.js",
+      "fork_change": "M",
+      "fork_blob": "be149817b75268fc5ffbb4868feb38af3daf18cf",
+      "local_137_blob": "cce45183019922cfea0f6946f03257c680957b44",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "package-lock.json",
+      "fork_change": "M",
+      "fork_blob": "b81b64c4d6c64245e419174bd8c2ea1335012c6b",
+      "local_137_blob": "2c68d8cf78d121911ce502933aadf5819c71aea9",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "package.json",
+      "fork_change": "M",
+      "fork_blob": "898b02fa910d692fbeeebe98962151a1011fdeb7",
+      "local_137_blob": "b85d406d9d2b2e676c7afbb372748c6338d58c69",
+      "decision": "preserve_current_and_reapply_owner_destination",
+      "reason": "keep current contracts/dependencies/messages; restore owner fork as distribution authority",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "playwright.config.ts",
+      "fork_change": "M",
+      "fork_blob": "2cd8f073414ca46f43f4135f656a083b83f6dfc8",
+      "local_137_blob": "79090e52cacb0ca9f98df977b11fa4c323f20ee7",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/LICENSE",
+      "fork_change": "A",
+      "fork_blob": "47d98d4f630945fa24f2d7ed3bab10edea2f6cb4",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/OPERACAO_E_PORTABILIDADE.md",
+      "fork_change": "A",
+      "fork_blob": "8146eeba5a4de5344c271de12c7650f2607f64fd",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/README.md",
+      "fork_change": "A",
+      "fork_blob": "be8dca01e4e6a50128db944e9ff7db01b3d3362e",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/contentflow.plugin.json",
+      "fork_change": "A",
+      "fork_blob": "1948c3d4a7e3674071b8a3a40c6bae2fc03b74df",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/fixtures/execution.json",
+      "fork_change": "A",
+      "fork_blob": "a90cba53c283dfdf4e9a685301f3633988ca6e11",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/handler.mjs",
+      "fork_change": "A",
+      "fork_blob": "00e41b4a57388ed48b541186f972b6127b1b0c53",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-market-radar/test.mjs",
+      "fork_change": "A",
+      "fork_blob": "426fc42e5db3627575e1c93a00fd1cc02151befc",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-production-orchestrator/README.md",
+      "fork_change": "A",
+      "fork_blob": "e461e17298a697c330474cbf4c20b2b854993e83",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-production-orchestrator/contentflow.plugin.json",
+      "fork_change": "A",
+      "fork_blob": "18a33567e23b48835bd326cbcc0e058dce90eac8",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-production-orchestrator/handler.mjs",
+      "fork_change": "A",
+      "fork_blob": "c40d88c7cdd34709dc0b60f4684ac3419584d97c",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "plugins/private/norte-magnata-production-orchestrator/test.mjs",
+      "fork_change": "A",
+      "fork_blob": "520252c75d2069f315eb1f5b1cf44b9fc8a69e28",
+      "local_137_blob": null,
+      "decision": "historical_project_component_not_reintroduced",
+      "reason": "PUC-specific source is retained by fork history; outside the shared Core candidate and app payload",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "scripts/e2e-server.mjs",
+      "fork_change": "M",
+      "fork_blob": "d33a51c0eae49529a022d0ddd638998872ded910",
+      "local_137_blob": "c827b111859eaea0347f813739d66a2d038c6301",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "scripts/package-macos-release.sh",
+      "fork_change": "A",
+      "fork_blob": "ff12a76ff92c31e06d000147c7a9b9466402fd1a",
+      "local_137_blob": null,
+      "decision": "restore_exact_from_fork",
+      "reason": "existing authorization / immutable ARM64 packaging and signature checks",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "scripts/test-native-vault.mts",
+      "fork_change": "A",
+      "fork_blob": "141b1afd27247fe992e35e417903744f50b06460",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/browser-profile-readiness.test.ts",
+      "fork_change": "M",
+      "fork_blob": "771ce842d3e6119ad0fcce90b425617c1848f91c",
+      "local_137_blob": "55f938c76a2d34b1c212f8fe8001d4ef21b63f81",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/browser-response-dom.test.mjs",
+      "fork_change": "A",
+      "fork_blob": "949a53e7d4257cae95a1755ce231ad6bbce7427f",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/browser-response-regression.test.ts",
+      "fork_change": "A",
+      "fork_blob": "05d181fd7045ecccbc2f32236409206c0d086a0c",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/channel-research.integration.test.ts",
+      "fork_change": "A",
+      "fork_blob": "f37b29877526e65e89c096d01b7d5ca423859194",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/credential-vault-core.ts",
+      "fork_change": "A",
+      "fork_blob": "1616fde8048c57abc61dcec2644585d864deb371",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/credential-vault.test.ts",
+      "fork_change": "A",
+      "fork_blob": "33eda6b24b52f4ca91e7554bfc01365ee1b18c5b",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/credential-vault.ts",
+      "fork_change": "M",
+      "fork_blob": "0110651701a6cf8a47c9fc25a486b6b61856072e",
+      "local_137_blob": "c927c796035fb2c45781cbace5be9b43d5dd3f7f",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/execution-commands.ts",
+      "fork_change": "M",
+      "fork_blob": "a9281e611d762f1479dca9eb91f2f2f28efa063b",
+      "local_137_blob": "4beb7336bc34bfc233fcc9493894df2d17360b19",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/execution-hydration.test.ts",
+      "fork_change": "A",
+      "fork_blob": "fc8a24b1696c77e03e091a81e520ef58d92b0ae1",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/execution-retry.test.ts",
+      "fork_change": "M",
+      "fork_blob": "895079e344cd2dcb47cf2a96cdfb9089facf2436",
+      "local_137_blob": "3baa4e7169a7d70019d24986116387cea0eb733b",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/index.ts",
+      "fork_change": "M",
+      "fork_blob": "95c3698e00f8a6c988a824d6ba75706b66e659f1",
+      "local_137_blob": "f79c9a6eacb37fb49ef8462b42f224905e8c5ae0",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-account-fallback.integration.test.ts",
+      "fork_change": "M",
+      "fork_blob": "542c5b3a4284240f64e20d8c675e40297d444d96",
+      "local_137_blob": "dcbd182a94ff14c1b25c79cfe117fcff57015886",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-account-fallback.test.ts",
+      "fork_change": "M",
+      "fork_blob": "11635e6cdbc81179406a2e545a466d8395af9fd1",
+      "local_137_blob": "af8aa4a2ece7b91797c239acf37d4b1f11fd214c",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-account-fallback.ts",
+      "fork_change": "M",
+      "fork_blob": "ad6dde5700f3bd39194dd82bab4dc5877adbcbaf",
+      "local_137_blob": "cd4e1ee00002377e7900d293380503af636eaca0",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-consent-update.test.ts",
+      "fork_change": "A",
+      "fork_blob": "ba0fc0357ec7a2c5b7c75b3e118431c8a7ba9c2f",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/plugin-item-orchestration.test.ts",
+      "fork_change": "M",
+      "fork_blob": "74ebcbee8295d90567cfb52d0e158d04acfcd54c",
+      "local_137_blob": "7ba03586cfa56c15990b3d843d374751d9be346e",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-item-orchestration.ts",
+      "fork_change": "M",
+      "fork_blob": "2303fe1a0e7d5887f5b533801beb4ee416853d03",
+      "local_137_blob": "17674041434fa37bd966da5b7bdd7616c816bd3e",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-item-resume.test.ts",
+      "fork_change": "A",
+      "fork_blob": "8ff51fbf1909f9315723959dd9d14c115c716787",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/plugin-item-resume.ts",
+      "fork_change": "A",
+      "fork_blob": "00b86768275cc87f80d42b323d76e8c9828a761b",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/plugin-job-store.ts",
+      "fork_change": "M",
+      "fork_blob": "af71518af4252d88e87f71a293283ca23d8a58b4",
+      "local_137_blob": "a4a35f17040d24a32b13b01d14421ed5651b3ec4",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-package.integration.test.ts",
+      "fork_change": "M",
+      "fork_blob": "0209e4897124e7c6ce3f8ad080f14d8cff0aac76",
+      "local_137_blob": "d12783d6ce1fb71d6b61dc6a60a013b57ac1e986",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/plugin-runner.ts",
+      "fork_change": "M",
+      "fork_blob": "569f1761d132b9deb688a997256f4a3092841358",
+      "local_137_blob": "26e0a7693988bde66e4eddacad48d920fbfaa9a7",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/plugin-sandbox-smoke.ts",
+      "fork_change": "M",
+      "fork_blob": "fa66f88205ecaf1e88f146a483a8abd836fc4c23",
+      "local_137_blob": "2abd2e355c1ae86bdac3d36a8a875af73741bdd0",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/presentation-smoke.ts",
+      "fork_change": "M",
+      "fork_blob": "124df4b5f19d102ecc72be1c690fc474f0e0345c",
+      "local_137_blob": "b46b8ec03e69918894f1b792bdb44af101ff88e1",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "server/security/core-keystore.test.ts",
+      "fork_change": "A",
+      "fork_blob": "31003033c56070d89b34ac95f755870b37d349b1",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "server/security/core-keystore.ts",
+      "fork_change": "A",
+      "fork_blob": "de23bad46744b9c3a266d592eadae57d16ce5555",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/app-shell.tsx",
+      "fork_change": "M",
+      "fork_blob": "4ad673bace89f2b995f1004d5d2879f39480cad5",
+      "local_137_blob": "4cc56c187a03c1882b3c6faf64635978e7713c3c",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/app-sidebar.tsx",
+      "fork_change": "M",
+      "fork_blob": "582cf739abcf7b257ab1b20fe4584f5a5ac19882",
+      "local_137_blob": "f795c9b9c0dd266edb3fb829dec1adeaae15bf29",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/image-gallery.test.tsx",
+      "fork_change": "A",
+      "fork_blob": "610f7c4c36d1503e995d5c2be0e5a530497444fc",
+      "local_137_blob": "610f7c4c36d1503e995d5c2be0e5a530497444fc",
+      "decision": "already_identical",
+      "reason": "same Git blob or same intentional absence",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/image-gallery.tsx",
+      "fork_change": "A",
+      "fork_blob": "8d06a4de72e06694e9d01e2efbae7ef84da585be",
+      "local_137_blob": "32d919408d296d942a62d8702cec40afe6b9c6a8",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/components/method-agent-cta.tsx",
+      "fork_change": "M",
+      "fork_blob": "9e1500a5754f5a06761b3e45eaf73c33d6c135a6",
+      "local_137_blob": "ddd5cf98860a4812f64040f900d0335f95a5b27c",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/process-runner-recovery.test.tsx",
+      "fork_change": "A",
+      "fork_blob": "db72eff87fee728e12b0a22cc1c41d38aa2fe1f3",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/process-runner.tsx",
+      "fork_change": "M",
+      "fork_blob": "23ddb0e72b8e23f22024147de0e53c905d88b1f3",
+      "local_137_blob": "937ea82318710a24ad50fd6ce43413b4c18d027f",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/components/process-status.tsx",
+      "fork_change": "M",
+      "fork_blob": "7f469628abd7f5bce7589fe268d7ff2862736658",
+      "local_137_blob": "0f6cefc5661ae6dde15aa95e35694f259ac1b385",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/components/runtime-value-renderers.tsx",
+      "fork_change": "M",
+      "fork_blob": "76122af220f51ebd704db31673e82c458cb467ad",
+      "local_137_blob": "91a0024854942d4bea12c3a0e738399ce5c5633e",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/app-preferences.test.ts",
+      "fork_change": "M",
+      "fork_blob": "6488909f66903fe1328ec2afed0b4779d1ea1a37",
+      "local_137_blob": "021037ceaab8153a891e723423437f040339eea2",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/lib/app-preferences.tsx",
+      "fork_change": "M",
+      "fork_blob": "986c0b7693ad0b36ddc977a9f5e585393dedd28c",
+      "local_137_blob": "393daa9b621a4d8d693cd98982eacf5c71b1b6e5",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/lib/channel-research.ts",
+      "fork_change": "A",
+      "fork_blob": "024426b692b580e16ab2a29836f3415a87131ee9",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/deliveries.ts",
+      "fork_change": "M",
+      "fork_blob": "e7fa4f6e346dfbfb549f2722010653cdaec2b92f",
+      "local_137_blob": "b0203f2d8b7dfceb20fbcf0ff40a04a9d352cb65",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/lib/domain.ts",
+      "fork_change": "M",
+      "fork_blob": "ff4d643b547ac36b31fca5cb2d01e89761f697ae",
+      "local_137_blob": "2eed903ba3cedc9e9f35c0a3e3c277dcb258cc6b",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/ecosystem-downloads.ts",
+      "fork_change": "M",
+      "fork_blob": "cc23c3fea6202ffab228cc2ae2805c3d7dfffda0",
+      "local_137_blob": "aff8512129ddde3c4994a585ed839b89616a3553",
+      "decision": "keep_current_contract_version",
+      "reason": "current API2/reference catalogs; do not restore historical API1 implementations/schemas/URLs into current Core",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/lib/plugin-contract.ts",
+      "fork_change": "M",
+      "fork_blob": "6e72ab8a4ba94ebebe3c518dc77be10086b05b28",
+      "local_137_blob": "5a9185c712c5b3098889bb584149b6508c0f3b85",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/lib/plugins-search.test.ts",
+      "fork_change": "A",
+      "fork_blob": "3513f48b60d2cd4d15d8b17ff92cc93ecdb5de9f",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/search-shortcut.test.ts",
+      "fork_change": "A",
+      "fork_blob": "3eaf383028a49a4c19a2357e29a57395fd715ef7",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/search-shortcut.ts",
+      "fork_change": "A",
+      "fork_blob": "164e091c1041eba2a6c6d8a3930bdde70f5cc0de",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/lib/store.ts",
+      "fork_change": "M",
+      "fork_blob": "495604f8a4d64b02de5010e74f4e472facfebdc9",
+      "local_137_blob": "7e58287586aeb5daf2a118fca4732f1eb5f87a6b",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/routeTree.gen.ts",
+      "fork_change": "M",
+      "fork_blob": "6247da03fed397d2697bf6980a0c8c4356abe1ef",
+      "local_137_blob": "e86b64931ab204c5f2144f54bbaa99ce261dc3a1",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/routes/channel.$channelId.index.tsx",
+      "fork_change": "M",
+      "fork_blob": "33e6a4fe051a5890d2ca5acabbb29d03f7926298",
+      "local_137_blob": "ec0f96f6d5144a8c901eed266323b899e573a108",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/routes/channel.$channelId.research.tsx",
+      "fork_change": "A",
+      "fork_blob": "1a8f43c4a91f5de44d3829b7d8836238740de562",
+      "local_137_blob": null,
+      "decision": "historical_feature_not_in_local_137",
+      "reason": "not part of the installed 1.3.7 target; preserve in old fork history for explicit future adaptation, not silent merge",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/routes/methods.tsx",
+      "fork_change": "M",
+      "fork_blob": "c4301d01c5f944afd0447243e19b1abe72605d60",
+      "local_137_blob": "2cdd23a94e169652cf7d9e23db7aaf52e9167a9c",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "src/routes/plugins.tsx",
+      "fork_change": "M",
+      "fork_blob": "60f2333bb6eb2268ce3cbc5a0635cbb259bdbd9f",
+      "local_137_blob": "bc4465dfd1f60ea273cf8e76c83cc4d0cd7dc5bf",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "src/styles.css",
+      "fork_change": "M",
+      "fork_blob": "df5a4f717811457dd29c54d9d17926dadb5af7dc",
+      "local_137_blob": "ec054f3129d3e63854052f67fd940e4861223f37",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    },
+    {
+      "path": "tests/e2e/reliability.spec.ts",
+      "fork_change": "M",
+      "fork_blob": "ebe30fc6dbcae122c6590c74c231a782b2860bc4",
+      "local_137_blob": "5ee9c43b4e8acf6fa62a71e24fedefc39eebe449",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": true
+    },
+    {
+      "path": "tests/electron/reliability.spec.ts",
+      "fork_change": "M",
+      "fork_blob": "562e117368edc34893d75bfb7c0ce881529cf544",
+      "local_137_blob": "f00b83f67938d09c0d4d8db5177c3dc9cf6bea37",
+      "decision": "keep_validated_local_137",
+      "reason": "current installed-target architecture/contracts; future M1 functional acceptance delegated to target orchestrator",
+      "virtual_merge_conflict": false
+    }
+  ]
+}

@@ -118,5 +118,5 @@ test("percorre o fluxo IPC de verificar, baixar e instalar", async () => {
   assert.equal(controller.getState().status, "installing");
 
   await handlers.get("contentflow:updater:open-releases")();
-  assert.deepEqual(opened, [RELEASES_URL]);
+  assert.deepEqual(opened, ["https://github.com/vini-duran/OS/releases/latest"]);
 });

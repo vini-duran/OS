@@ -1,3 +1,5 @@
+> **Fork da equipe — candidata de fonte1.3.7,15/10/2026:** esta branch consolida a revisao usada na origem e preserva a ancestralidade do fork antigo. Nao e instalador nem release estavel. Comece por [Core da equipe](docs/ecosystem/CORE_137_OWNER_CANDIDATE.md) e [autorizacao registrada](docs/AUTORIZACAO_E_LICENCA.md). Pacote macOS ARM64 e aceite do outro orquestrador sao etapas posteriores. Documentacao original abaixo preservada; links oficiais/catalogos nao identificam automaticamente o pacote desta branch.
+
 # ContentFlow
 
 O ContentFlow é um gerenciador estratégico de Métodos para produção de conteúdo. Ele separa a estratégia — processos, blocos, operadores, prompts, parâmetros e aprovações — da execução funcional feita por pessoas ou por plugins independentes.

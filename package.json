@@ -229,8 +229,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "andremjr",
-        "repo": "contentflow",
+        "owner": "vini-duran",
+        "repo": "OS",
         "channel": "latest",
         "releaseType": "release"
       }
