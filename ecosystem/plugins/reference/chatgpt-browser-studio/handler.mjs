@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { jsonTextInstruction, jsonTextValue, jsonTextValues } from "./json-text-items.mjs";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
+import { createBridgeDiagnostics } from "./bridge-diagnostics.mjs";
 
 const PLUGIN_ID = "local.contentflow.chatgpt-browser-studio";
 const CHATGPT_HOST = "chatgpt.com";
@@ -15,10 +16,12 @@ const MAX_PROMPT_CHARACTERS = 500_000;
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 512 * 1024 * 1024;
 const PROFILE_SETUP_WAIT_MS = Number.POSITIVE_INFINITY;
+const IMAGE_CONVERSATION_CORRELATION_PREFIX = "chatgpt-image-conversation:";
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const DOCUMENT_EXTENSIONS = new Set([
   ".md",
   ".pdf",
+  ".srt",
   ".docx",
   ".csv",
   ".txt",
@@ -221,11 +224,80 @@ function expandOutlinePrompt(template, request, block, index, total, base) {
 }
 
 function buildParts(request) {
+  const structuredRecords = (request?.outputContract ?? []).some(
+    (field) => field?.shape?.kind === "record" && field?.shape?.cardinality === "many",
+  );
+  const textCollection = (request?.outputContract ?? []).some(
+    (field) =>
+      field?.shape?.kind === "content" &&
+      field.shape.family === "text" &&
+      field.shape.cardinality === "many",
+  );
   return [
     buildInstructionPrompt(request, [
-      "FORMATO OBRIGATÓRIO: entregue o conteúdo diretamente como texto, sem criar arquivos ou canvas.",
+      request?.configuration?.textItemFormat === "json"
+        ? jsonTextInstruction(request)
+        : structuredRecords
+          ? recordOutputInstruction(request)
+          : textCollection
+            ? "FORMATO OBRIGATÓRIO: responda somente com um array JSON válido de strings, com exatamente um item por unidade pedida, sem Markdown, numeração, comentários, introdução ou texto fora do JSON."
+            : "FORMATO OBRIGATÓRIO: entregue o conteúdo diretamente como texto, sem criar arquivos ou canvas.",
     ]),
   ];
+}
+
+function recordOutputInstruction(request) {
+  const contracts = (request?.outputContract ?? []).filter(
+    (field) => field?.shape?.kind === "record",
+  );
+  const fields = contracts[0]?.shape?.fields ?? [];
+  const schema = fields.map((field) => ({
+    key: field.key,
+    required: field.required,
+    type:
+      field.shape.kind === "content"
+        ? `${field.shape.family}/${field.shape.cardinality}`
+        : `${field.shape.control}/${field.shape.cardinality}`,
+    ...(field.referencesInputId ? { referencesInputId: field.referencesInputId } : {}),
+  }));
+  const example = Object.fromEntries(
+    fields.map((field) => [
+      field.key,
+      field.shape.cardinality === "many"
+        ? field.referencesInputId
+          ? ["ID_EXATO_DO_ITEM_DE_ORIGEM"]
+          : ["valor"]
+        : field.shape.kind === "control" && field.shape.control === "number"
+          ? 1
+          : field.shape.kind === "control" && field.shape.control === "boolean"
+            ? true
+            : "valor",
+    ]),
+  );
+  const referencedInputIds = new Set(
+    contracts.flatMap((contract) =>
+      contract.shape.fields.flatMap((field) =>
+        field.referencesInputId ? [field.referencesInputId] : [],
+      ),
+    ),
+  );
+  const sourceItems = (request?.inputDeliveries ?? [])
+    .filter((delivery) => referencedInputIds.has(delivery.inputId))
+    .map((delivery) => ({
+      inputId: delivery.inputId,
+      items: (delivery.items ?? []).map((item) => ({ id: item.id, value: item.value })),
+    }));
+  return [
+    "FORMATO OBRIGATÓRIO: responda somente com um array JSON válido de objetos, sem Markdown, comentários ou texto fora do JSON.",
+    "Use exatamente as chaves JSON declaradas abaixo. Não traduza as chaves, não use os rótulos visuais e não devolva o schema como conteúdo.",
+    `CAMPOS DE CADA OBJETO:\n${JSON.stringify(schema)}`,
+    `EXEMPLO APENAS ESTRUTURAL — substitua os valores, mas preserve exatamente as chaves:\n${JSON.stringify([example])}`,
+    sourceItems.length
+      ? `ITENS DE ORIGEM COM IDs CANÔNICOS:\n${JSON.stringify(sourceItems)}\nCampos referencesInputId devem conter somente IDs exatos da entrada indicada.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function buildSearchPrompt(request, _deep = false) {
@@ -267,10 +339,104 @@ function buildAnalysisPrompt(request, _image) {
   return buildInstructionPrompt(request);
 }
 
+export function imageRegenerationFeedback(request) {
+  const explicit = [
+    request?.conversation?.continuationMessage,
+    request?.retryFeedback?.feedback,
+    request?.retryFeedback?.reason,
+  ]
+    .map((value) => String(value ?? "").trim())
+    .find(Boolean);
+  return explicit || "Crie uma nova versão visualmente diferente da imagem anterior.";
+}
+
+function imageItemAction(request) {
+  if (request?.invocation?.mode !== "item_action") return undefined;
+  if (
+    request.invocation.action !== "regenerate" ||
+    request.invocation.outputPort !== "images" ||
+    !request?.itemAction
+  )
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "A geração de imagens aceita somente regenerate na porta images.",
+    );
+  return request.itemAction;
+}
+
 function buildImagePrompt(request) {
-  const prompt = buildInstructionPrompt(request);
+  const action = imageItemAction(request);
+  const prompt = buildInstructionPrompt(
+    request,
+    action
+      ? [
+          "REFINAMENTO DA IMAGEM SELECIONADA:",
+          imageRegenerationFeedback(request),
+          "Produza uma nova imagem; não devolva a mesma mídia sem mudança visual real.",
+        ]
+      : [],
+  );
   if (!prompt) throw codedError("INVALID_INPUT", "O prompt da imagem ficou vazio.");
   return prompt;
+}
+
+export function imageConversationCorrelation(request, conversationId) {
+  const payload = {
+    version: 1,
+    conversationId: validateConversationUrl(conversationId),
+    connectionId: String(request?.settings?.connectionId ?? ""),
+    profile: normalizeAccountProfile(request?.configuration?.accountProfile),
+  };
+  return `${IMAGE_CONVERSATION_CORRELATION_PREFIX}${Buffer.from(JSON.stringify(payload)).toString("base64url")}`;
+}
+
+export function imageConversationFromCorrelation(request) {
+  const key = String(request?.itemAction?.key ?? "");
+  if (!key.startsWith(IMAGE_CONVERSATION_CORRELATION_PREFIX)) return undefined;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(key.slice(IMAGE_CONVERSATION_CORRELATION_PREFIX.length), "base64url").toString(
+        "utf8",
+      ),
+    );
+    if (
+      payload?.version !== 1 ||
+      payload?.connectionId !== String(request?.settings?.connectionId ?? "") ||
+      payload?.profile !== normalizeAccountProfile(request?.configuration?.accountProfile)
+    )
+      return undefined;
+    return validateConversationUrl(payload.conversationId);
+  } catch {
+    return undefined;
+  }
+}
+
+export function conversationForInvocation(request, capabilityId) {
+  if (capabilityId === "generate-image-in-browser" && request?.invocation?.mode === "item_action") {
+    imageItemAction(request);
+    const conversationId = imageConversationFromCorrelation(request);
+    const fallbackAttachments = collectStoredFiles(request?.itemAction?.output);
+    const continuationMessage = imageRegenerationFeedback(request);
+    return conversationId
+      ? {
+          mode: "reuse",
+          id: conversationId,
+          continuationMessage,
+          fallbackAttachments,
+        }
+      : {
+          mode: "new",
+          continuationMessage,
+          fallbackAttachments,
+        };
+  }
+  if (capabilityId === "generate-image-in-browser" && request?.batch) return { mode: "new" };
+  return request?.conversation;
+}
+
+export function batchOperationKey(request, index, attempt) {
+  const itemId = String(request?.batch?.itemId ?? "single").trim() || "single";
+  return `${itemId}:${index}:${attempt}`;
 }
 
 function stripCodeFence(text) {
@@ -293,6 +459,54 @@ function parseJsonObject(text) {
       return undefined;
     }
   }
+}
+
+function parseJsonArray(text) {
+  const stripped = stripCodeFence(text);
+  try {
+    const parsed = JSON.parse(stripped);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    const start = stripped.indexOf("[");
+    const end = stripped.lastIndexOf("]");
+    if (start >= 0 && end > start) {
+      try {
+        const parsed = JSON.parse(stripped.slice(start, end + 1));
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // Continue with the JSONL normalization below.
+      }
+    }
+    {
+      // Alguns provedores devolvem uma coleção de registros como JSONL
+      // (um objeto por linha), mesmo quando receberam a instrução de usar
+      // uma lista JSON. Normalizar esse formato aqui preserva o contrato
+      // estruturado e evita que a resposta seja tratada como texto solto.
+      const lines = stripped
+        .split("\n")
+        .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
+        .filter(Boolean);
+      if (lines.length < 1) return undefined;
+      const records = [];
+      for (const line of lines) {
+        try {
+          const value = JSON.parse(line.replace(/,\s*$/, ""));
+          if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+          records.push(value);
+        } catch {
+          return undefined;
+        }
+      }
+      return records.length ? records : undefined;
+    }
+  }
+}
+
+function parseJsonStringArray(text) {
+  const parsed = parseJsonArray(text);
+  return parsed?.every((item) => typeof item === "string" && item.trim())
+    ? parsed.map((item) => item.trim())
+    : undefined;
 }
 
 function parseSelectedItemId(text, request) {
@@ -386,28 +600,78 @@ function textAsFiniteNumber(text) {
 
 function searchResponseValues(text, sources, request) {
   const fields = Array.isArray(request?.outputContract) ? request.outputContract : [];
-  if (!fields.length) return { result: text, sources };
   const values = {};
   for (const field of fields) {
     const isSource = /source|fonte|url|link/i.test(`${field.key} ${field.label}`);
     if (isSource)
-      values[field.key] = field.type === "url" ? (sources[0] ?? "https://chatgpt.com") : sources;
-    else if (["list", "multiselect"].includes(field.type)) values[field.key] = textAsList(text);
-    else values[field.key] = text;
+      values[field.portKey] =
+        field.type === "url" ? (sources[0] ?? "https://chatgpt.com") : sources;
+    else if (["list", "multiselect"].includes(field.type)) values[field.portKey] = textAsList(text);
+    else values[field.portKey] = text;
   }
   return values;
 }
 
 function generationResponseValues(result, responses, request) {
-  const values = { result };
-  for (const field of request?.outputContract ?? []) {
-    if (field?.key === "parts") values.parts = responses.map((response) => response.text);
-    else if (["list", "multiselect"].includes(field?.type)) values[field.key] = textAsList(result);
-    else if (field?.type === "number") {
-      const value = textAsFiniteNumber(result);
-      values[field.key] = value;
-      if (field.portKey === "result") values.result = value;
-    } else values[field.key] = result;
+  const fields = request?.outputContract ?? [];
+  const values = {};
+  for (const field of fields) {
+    if (
+      request?.configuration?.textItemFormat === "json" &&
+      field?.portKey === "parts" &&
+      field?.shape?.kind === "content" &&
+      field.shape.family === "text" &&
+      field.shape.cardinality === "one"
+    ) {
+      values[field.portKey] = jsonTextValue(result, request);
+    } else if (field?.shape?.kind === "record" && field?.shape?.cardinality === "many") {
+      const records = parseJsonArray(result);
+      if (
+        !records ||
+        !records.every((item) => item && typeof item === "object" && !Array.isArray(item))
+      )
+        throw codedError(
+          "OUTPUT_VALIDATION_FAILED",
+          "A resposta não contém um array JSON válido de registros.",
+          true,
+        );
+      values[field.portKey] = records;
+    } else if (
+      field?.shape?.kind === "content" &&
+      field.shape.family === "text" &&
+      field.shape.cardinality === "many"
+    ) {
+      // O contrato define a representação da coleção como JSON estruturado.
+      // Aceitar linhas soltas aqui transformava uma resposta truncada (por
+      // exemplo, `[`, `Provide` ou texto de fallback do provedor) em prompts
+      // válidos e fazia o Flow gerar imagens sem relação com a cena.
+      const items =
+        request?.configuration?.textItemFormat === "json"
+          ? jsonTextValues(result, request)
+          : (parseJsonStringArray(result) ??
+            (() => {
+              const lines = textAsList(result);
+              const operational =
+                /^(?:provide|provide missing|missing image prompt|here(?:'|’)s the answer)\b/i;
+              return lines.length > 1 && !lines.some((line) => operational.test(line))
+                ? lines
+                : undefined;
+            })());
+      if (!items || !items.length)
+        throw codedError(
+          "OUTPUT_VALIDATION_FAILED",
+          "A resposta não contém um array JSON válido de textos.",
+          true,
+        );
+      values[field.portKey] = items;
+    } else if (["list", "multiselect"].includes(field?.type)) {
+      values[field.portKey] = textAsList(result);
+    } else if (
+      (field?.shape?.kind === "control" && field?.shape?.control === "number") ||
+      field?.type === "number"
+    ) {
+      values[field.portKey] = textAsFiniteNumber(result);
+    } else values[field.portKey] = result;
   }
   return values;
 }
@@ -441,7 +705,8 @@ function attachmentInput(request) {
   if (request?.capabilityId === "analyze-images-in-browser") return request?.inputs?.images;
   if (request?.capabilityId === "analyze-documents-in-browser") return request?.inputs?.documents;
   if (request?.capabilityId === "validate-content-in-browser") return request?.inputs?.content;
-  if (request?.capabilityId === "generate-text-in-browser") return request?.inputs?.attachments;
+  if (request?.capabilityId === "generate-text-in-browser")
+    return [request?.inputs?.attachments, request?.inputs?.documents];
   if (request?.capabilityId === "deep-research-in-browser") return request?.inputs?.context;
   if (request?.capabilityId === "generate-image-in-browser") return request?.inputs?.references;
   return undefined;
@@ -463,12 +728,8 @@ async function resolveAttachments(request, services) {
   return resolved;
 }
 
-async function resolveFallbackAttachments(request, services) {
-  return resolveStoredFileAttachments(
-    request?.conversation?.fallbackAttachments,
-    services,
-    "image",
-  );
+async function resolveFallbackAttachments(request, services, conversation = request?.conversation) {
+  return resolveStoredFileAttachments(conversation?.fallbackAttachments, services, "image");
 }
 
 async function resolveStoredFileAttachments(value, services, kind) {
@@ -532,22 +793,64 @@ function runtimeProfilePath(settings, name, services) {
   if (settings?.profilesBasePath?.trim?.()) return profilePathFor(settings, name);
   return services.getWorkspacePath(name);
 }
+function profileReadinessFile(name) {
+  const digest = createHash("sha256").update(name).digest("hex").slice(0, 16);
+  return `.contentflow-chatgpt-profile-ready-${digest}.json`;
+}
 function profileMarkerPath(path) {
   return join(path, ".contentflow-profile-ready.json");
 }
-async function profileIsPrepared(path, name) {
-  try {
-    const marker = JSON.parse(await readFile(profileMarkerPath(path), "utf8"));
-    return (
-      marker?.provider === CHATGPT_HOST && marker?.profile === name && marker?.bridgeProtocol === 2
-    );
-  } catch {
-    return false;
+function resolveProfileRuntime(request, services) {
+  const settings = request?.settings ?? {};
+  const name = normalizeAccountProfile(request?.configuration?.accountProfile);
+  const port = profilePort(
+    clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000),
+    name,
+  );
+  if (typeof services?.getProfilePath === "function") {
+    const profilePath = services.getProfilePath(".");
+    return {
+      name,
+      profilePath,
+      port,
+      readinessPath:
+        typeof services?.getWorkspacePath === "function"
+          ? services.getWorkspacePath(profileReadinessFile(name))
+          : profileMarkerPath(profilePath),
+      legacyReadinessPath: profileMarkerPath(profilePath),
+    };
   }
+  const profilePath = runtimeProfilePath(settings, name, services);
+  return { name, profilePath, port, readinessPath: profileMarkerPath(profilePath) };
 }
-async function markProfilePrepared(path, name) {
+function profileReadinessPaths(runtimeOrPath) {
+  if (typeof runtimeOrPath === "string") return [profileMarkerPath(runtimeOrPath)];
+  return [runtimeOrPath?.readinessPath, runtimeOrPath?.legacyReadinessPath].filter(
+    (value, index, values) => value && values.indexOf(value) === index,
+  );
+}
+async function profileIsPrepared(runtimeOrPath, name) {
+  for (const readinessPath of profileReadinessPaths(runtimeOrPath)) {
+    try {
+      const marker = JSON.parse(await readFile(readinessPath, "utf8"));
+      if (
+        marker?.provider === CHATGPT_HOST &&
+        marker?.profile === name &&
+        marker?.bridgeProtocol === 2
+      ) {
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+async function markProfilePrepared(runtimeOrPath, name) {
+  const [readinessPath] = profileReadinessPaths(runtimeOrPath);
+  if (!readinessPath) {
+    throw codedError("INVALID_CONFIGURATION", "Não foi possível resolver o readiness do perfil.");
+  }
   await writeFile(
-    profileMarkerPath(path),
+    readinessPath,
     JSON.stringify({
       provider: CHATGPT_HOST,
       profile: name,
@@ -576,241 +879,34 @@ function assertDedicatedProfilePath(path, allowExistingChromeProfile = false) {
     throw codedError("INVALID_CONFIGURATION", "Use um perfil Chrome dedicado ao plugin.");
 }
 
-async function captureProcess(executable, args, timeoutMs = 4000) {
-  return await new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(executable, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        shell: false,
-      });
-    } catch {
-      resolve({ ok: false, stdout: "" });
-      return;
-    }
-    let stdout = "",
-      settled = false;
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok, stdout });
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {}
-      finish(false);
-    }, timeoutMs);
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.once("error", () => finish(false));
-    child.once("close", (code) => finish(code === 0));
-  });
-}
-
-function parseRegistryDefaultValue(output) {
-  for (const line of String(output ?? "").split(/\r?\n/)) {
-    const match = line.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i);
-    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, "");
-  }
-  return "";
-}
-
-async function chromeCandidates() {
-  if (platform() === "win32") {
-    const standardCandidates = [
-      process.env.PROGRAMFILES &&
-        join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] &&
-        join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA &&
-        join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    ].filter(Boolean);
-    const existing = standardCandidates.filter((p) => existsSync(p));
-    if (existing.length) return [...new Set(existing)];
-
-    const found = [];
-    for (const key of [
-      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-      "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-    ]) {
-      const result = await captureProcess("reg.exe", ["query", key, "/ve"]);
-      if (result.ok) found.push(parseRegistryDefaultValue(result.stdout));
-    }
-    const where = await captureProcess("where.exe", ["chrome.exe"]);
-    if (where.ok) found.push(...where.stdout.split(/\r?\n/));
-    return [
-      ...new Set(
-        found
-          .filter(Boolean)
-          .map(String)
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    ];
-  }
-  if (platform() === "darwin")
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
-  const found = [];
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const result = await captureProcess("which", [name]);
-    if (result.ok) found.push(...result.stdout.split(/\r?\n/));
-  }
-  return [...new Set(found.filter(Boolean))];
-}
-
-async function resolveChromeExecutables(settings) {
-  if (settings?.chromeExecutable?.trim?.()) return [settings.chromeExecutable.trim()];
-  const candidates = await chromeCandidates();
-  if (!candidates.length)
+function requireCoreBrowserSession(coreSession) {
+  if (
+    !coreSession ||
+    !Number.isInteger(coreSession.port) ||
+    typeof coreSession.webSocketDebuggerUrl !== "string" ||
+    !coreSession.webSocketDebuggerUrl
+  ) {
     throw codedError(
       "INVALID_CONFIGURATION",
-      "Google Chrome não localizado. Configure chromeExecutable.",
-    );
-  return candidates;
-}
-
-async function fetchBrowserVersion(port, timeoutMs = 1500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    const value = await response.json();
-    return typeof value?.webSocketDebuggerUrl === "string" ? value : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function launchOrReuseChrome({
-  executables,
-  profilePath,
-  port,
-  startMinimized,
-  keepBrowserOpen,
-  signal,
-}) {
-  const existing = await fetchBrowserVersion(port);
-  if (existing) return { version: existing, child: null, reused: true };
-  const args = [
-    `--remote-debugging-port=${port}`,
-    "--remote-debugging-address=127.0.0.1",
-    `--user-data-dir=${profilePath}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    CHATGPT_NEW_URL,
-  ];
-  if (startMinimized) {
-    // A janela dedicada pode ficar minimizada durante todo o job. Sem estes
-    // flags, o Chrome reduz timers e renderização de uma janela oculta e a UI
-    // do provedor deixa de avançar antes de o polling do handler expirar.
-    args.unshift(
-      "--start-minimized",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--disable-features=CalculateNativeWinOcclusion",
+      "O ContentFlow não forneceu a sessão de navegador reservada para este perfil.",
     );
   }
-  const failures = [];
-  for (const executable of executables) {
-    for (let launchAttempt = 1; launchAttempt <= 2; launchAttempt += 1) {
-      const delayedExisting = await fetchBrowserVersion(port);
-      if (delayedExisting) return { version: delayedExisting, child: null, reused: true };
-      let child;
-      let spawnError;
-      try {
-        child = spawn(executable, args, {
-          detached: Boolean(keepBrowserOpen),
-          stdio: "ignore",
-          windowsHide: false,
-          shell: false,
-        });
-        child.once("error", (error) => {
-          spawnError = error;
-        });
-      } catch (error) {
-        spawnError = error;
-      }
-      if (!child) {
-        failures.push(`${executable}: ${spawnError?.message ?? spawnError ?? "falha ao iniciar"}`);
-        break;
-      }
-      const deadline = Date.now() + (launchAttempt === 1 ? 15000 : 25000);
-      while (Date.now() < deadline) {
-        if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-        const version = await fetchBrowserVersion(port);
-        if (version) {
-          if (keepBrowserOpen) child.unref();
-          return { version, child, reused: false };
-        }
-        if (spawnError || child.exitCode !== null) break;
-        await sleep(350, signal);
-      }
-      const exitDetail = spawnError
-        ? spawnError.message
-        : child.exitCode !== null
-          ? `Chrome encerrou com código ${child.exitCode}`
-          : "CDP não respondeu";
-      failures.push(`${executable} (tentativa ${launchAttempt}/2): ${exitDetail}.`);
-      try {
-        child.kill();
-      } catch {}
-      if (launchAttempt < 2) {
-        // O Chrome pode fechar a última janela de um perfil alguns instantes
-        // depois de o job anterior terminar. Aguarde a liberação do singleton
-        // e cheque novamente a porta antes de relançar o mesmo perfil.
-        await sleep(1500, signal);
-      }
-    }
-  }
-  throw codedError(
-    "PERMISSION_DENIED",
-    `Não foi possível iniciar o Chrome dedicado. ${failures.slice(0, 3).join(" | ")}`,
-  );
+  return coreSession;
 }
 
-async function waitForChildExit(child, timeoutMs = 5000) {
-  if (!child || child.exitCode !== null) return true;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (exited) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("exit", onExit);
-      resolve(exited);
-    };
-    const onExit = () => finish(true);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    timer.unref?.();
-    child.once("exit", onExit);
-  });
+async function launchOrReuseChrome({ coreSession }) {
+  const session = requireCoreBrowserSession(coreSession);
+  return {
+    version: { webSocketDebuggerUrl: session.webSocketDebuggerUrl },
+    child: null,
+    reused: true,
+    startedByCore: true,
+    startedByPlugin: false,
+  };
 }
 
-async function closeBrowserGracefully(client, child) {
-  try {
-    await client?.send("Browser.close");
-  } catch {}
-  const exited = await waitForChildExit(child);
+async function closeBrowserGracefully(client) {
   client?.close();
-  if (!exited && child?.exitCode === null) {
-    try {
-      child.kill();
-    } catch {}
-  }
 }
 
 class CdpClient {
@@ -946,6 +1042,30 @@ async function waitForDomMutation(client, sessionId, waitMs, signal) {
   }
 }
 
+async function waitForPageLoadComplete(client, sessionId, waitMs, signal) {
+  const deadline = Date.now() + waitMs;
+  let state;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
+    try {
+      state = await evaluate(
+        client,
+        sessionId,
+        "({ readyState: document.readyState, host: location.hostname })",
+      );
+      if (state?.host === CHATGPT_HOST && state?.readyState === "complete") return;
+    } catch (error) {
+      if (error?.code !== "UPSTREAM_UNAVAILABLE") throw error;
+    }
+    await sleep(350, signal);
+  }
+  throw codedError(
+    "UPSTREAM_UNAVAILABLE",
+    "A página do ChatGPT não terminou de carregar no tempo disponível.",
+    true,
+  );
+}
+
 function normalizeEditorText(value) {
   return String(value ?? "")
     .replace(/\s+/gu, " ")
@@ -955,7 +1075,18 @@ function normalizeEditorText(value) {
 async function attachChatGptPage(client, signal, activate = false, forceNew = false) {
   const { targetInfos = [] } = await client.send("Target.getTargets");
   let target = forceNew
-    ? undefined
+    ? targetInfos.find(
+        (item) =>
+          item.type === "page" &&
+          (() => {
+            try {
+              const url = new URL(item.url);
+              return url.hostname === CHATGPT_HOST && url.hash === "#contentflow-ready-chatgpt";
+            } catch {
+              return false;
+            }
+          })(),
+      )
     : targetInfos.find((item) => item.type === "page" && String(item.url).includes(CHATGPT_HOST));
   let created = false;
   if (!target) {
@@ -974,31 +1105,26 @@ async function attachChatGptPage(client, signal, activate = false, forceNew = fa
   await client.send("Page.enable", {}, sessionId);
   await client.send("Runtime.enable", {}, sessionId);
   if (activate) await client.send("Page.bringToFront", {}, sessionId).catch(() => undefined);
-  await sleep(300, signal);
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-    try {
-      const ready = await evaluate(
-        client,
-        sessionId,
-        "({ readyState: document.readyState, host: location.hostname })",
-      );
-      if (ready?.host === CHATGPT_HOST && ["interactive", "complete"].includes(ready?.readyState))
-        break;
-    } catch {}
-    await sleep(300, signal);
-  }
+  // The provider page owns the first loading phase. Do not expose the tab to
+  // Browser Bridge while the document is still loading; this avoids sending
+  // into a half-initialized SPA after a cold or minimized Windows launch.
+  await waitForPageLoadComplete(client, sessionId, PROFILE_SETUP_WAIT_MS, signal);
   return { sessionId, targetId: target.targetId, created };
 }
 
-export async function attachExistingChatGptPage(client, targetId) {
+export async function attachExistingChatGptPage(
+  client,
+  targetId,
+  signal,
+  waitMs = PROFILE_SETUP_WAIT_MS,
+) {
   const { sessionId } = await client.send("Target.attachToTarget", {
     targetId,
     flatten: true,
   });
   await client.send("Page.enable", {}, sessionId);
   await client.send("Runtime.enable", {}, sessionId);
+  await waitForPageLoadComplete(client, sessionId, waitMs, signal);
   return sessionId;
 }
 
@@ -1065,18 +1191,70 @@ export function responseHasStrongCompletionSignal({
   );
 }
 
+export function classifyProviderResponseFailure(text) {
+  const normalized = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return undefined;
+  if (
+    /^(conex[aã]o interrompida[.!]?\s*)?(aguardando a resposta completa|waiting for the complete response|esperando la respuesta completa)[.!]?$/i.test(
+      normalized,
+    ) ||
+    /^(conex[aã]o interrompida|connection interrupted|conexi[oó]n interrumpida)[.!]?(\s+(aguardando|waiting|esperando).*)?$/i.test(
+      normalized,
+    )
+  ) {
+    return {
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "A resposta do ChatGPT foi interrompida antes de ser concluída.",
+      retryable: true,
+    };
+  }
+  if (
+    /^(there was an error generating a response|houve um erro ao gerar uma resposta|ocurri[oó] un error al generar una respuesta)([.!].*)?$/i.test(
+      normalized,
+    )
+  ) {
+    return {
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "O ChatGPT informou erro ao gerar a resposta.",
+      retryable: true,
+    };
+  }
+  return undefined;
+}
+
+function assertProviderResponseSucceeded(text) {
+  const failure = classifyProviderResponseFailure(text);
+  if (failure) throw codedError(failure.code, failure.message, failure.retryable);
+}
+
 // Runs in the provider page. Uploaded references can use the same content URL
 // and alt text as generated images after submission, so URL/alt alone cannot
 // establish provenance. Require an assistant message or assistant turn.
 export function collectGeneratedImages(doc) {
   const unique = new Map();
   for (const img of doc.querySelectorAll("img")) {
-    if (img.closest('form, [data-message-author-role="user"], [data-turn="user"]')) continue;
+    if (
+      img.closest(
+        'form, [data-message-author-role="user"], [data-turn="user"], [data-testid*="avatar"], [class*="avatar" i]',
+      )
+    )
+      continue;
     const owner = img.closest("[data-message-author-role], [data-turn]");
     const role =
       owner?.getAttribute("data-message-author-role") || owner?.getAttribute("data-turn");
     const turn = img.closest('article[data-testid^="conversation-turn-"]');
+    // A UI atual de Images agrupa a mensagem do usuário e a resposta em um
+    // único data-turn-key, sem data-message-author-role. O par gallery/preview
+    // é um marcador estrutural específico da saída gerada pelo provedor e não
+    // aparece nos anexos do compositor nem nos avatares.
+    const providerGenerated = Boolean(
+      img.closest('[data-testid="generated-image-preview"]') &&
+      img.closest('[data-testid="generated-image-gallery"]'),
+    );
     const assistantOwned =
+      providerGenerated ||
       role === "assistant" ||
       (!role &&
         turn &&
@@ -1089,7 +1267,8 @@ export function collectGeneratedImages(doc) {
       !img.complete ||
       img.naturalWidth < 256 ||
       img.naturalHeight < 256 ||
-      (!/generated image|imagem gerada/i.test(alt) && !src.includes("backend-api/estuary/content"))
+      (!/generated image|imagem(?:\s+\d+)?\s+gerada/i.test(alt) &&
+        !src.includes("backend-api/estuary/content"))
     )
       continue;
     if (!unique.has(src))
@@ -1103,21 +1282,51 @@ export function collectGeneratedImages(doc) {
   return [...unique.values()];
 }
 
+export function collectAssistantResponseNodes(doc, visible = () => true) {
+  const selectors = [
+    '[data-chatgpt-selection-message-id] [data-markdown-text-style="assistant-message"]',
+    '[data-content-search-unit-key$=":assistant"] [data-markdown-text-style="assistant-message"]',
+    '[data-message-author-role="assistant"] .markdown',
+    '[data-message-author-role="assistant"]',
+    'article[data-testid^="conversation-turn-"] .markdown',
+  ];
+  for (const selector of selectors) {
+    const nodes = [...doc.querySelectorAll(selector)].filter(visible);
+    if (nodes.length) return nodes;
+  }
+  return [];
+}
+
+export function countUserTurns(doc) {
+  for (const selector of [
+    '[data-message-author-role="user"]',
+    '[data-turn="user"]',
+    '[data-user-message-bubble="true"]',
+  ]) {
+    const count = doc.querySelectorAll(selector).length;
+    if (count) return count;
+  }
+  return 0;
+}
+
 const PAGE_HELPERS = String.raw`
 function cfVisible(el){if(!el||!(el instanceof Element))return false;const s=getComputedStyle(el),r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>8&&r.height>8&&r.bottom>0&&r.right>0}
 function cfText(el){return [el?.innerText,el?.textContent,el?.getAttribute?.('aria-label'),el?.getAttribute?.('data-testid')].filter(Boolean).join(' ').replace(/\s+/g,' ').trim()}
 function cfGenerating(){const stopPattern=new RegExp(${JSON.stringify(GENERATION_STOP_PATTERN.source)},'i');return [...document.querySelectorAll('button')].some(el=>cfVisible(el)&&(stopPattern.test(cfText(el))||el.getAttribute('data-testid')==='stop-button'))}
 function cfVoiceReady(){const voicePattern=new RegExp(${JSON.stringify(VOICE_READY_PATTERN.source)},'i');return [...document.querySelectorAll('button')].some(el=>cfVisible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'&&voicePattern.test(cfText(el)))}
 function cfPrompt(){const selectors=['#prompt-textarea','[contenteditable="true"][role="textbox"]','[role="textbox"][aria-label*="Chat" i]'];for(const s of selectors){const el=[...document.querySelectorAll(s)].find(cfVisible);if(el)return el}return null}
-function cfAssistantNodes(){const selectors=['[data-message-author-role="assistant"] .markdown','[data-message-author-role="assistant"]','article[data-testid^="conversation-turn-"] .markdown'];for(const s of selectors){const n=[...document.querySelectorAll(s)].filter(cfVisible);if(n.length)return n}return []}
+function cfAssistantNodes(){return (${collectAssistantResponseNodes.toString()})(document,cfVisible)}
 function cfGeneratedImages(){return (${collectGeneratedImages.toString()})(document)}
 function cfResolveComparison(){const body=document.body?.innerText||'';if(!/giving feedback on a new version|qual resposta voc[êe] prefere|dando feedback sobre uma nova vers[ãa]o/i.test(body))return false;const button=[...document.querySelectorAll('button')].find(el=>cfVisible(el)&&/prefer this response|prefiro esta resposta|choose this response|escolher esta resposta/i.test(cfText(el)));if(!button)return false;button.click();return true}
-function cfResponseState(){const comparisonResolved=cfResolveComparison(),nodes=cfAssistantNodes(),entries=nodes.map(el=>({text:(el.innerText||el.textContent||'').trim(),links:[...el.querySelectorAll('a[href]')].map(a=>({href:a.href,label:(a.innerText||a.textContent||'').trim()})).filter(x=>/^https:\/\//i.test(x.href))})).filter(x=>x.text);return{texts:entries.map(x=>x.text),entries,stop:cfGenerating(),voiceReady:cfVoiceReady(),completedActionCount:document.querySelectorAll('button[data-testid="copy-turn-action-button"]').length,comparisonResolved,bodyHint:(document.body?.innerText||'').slice(0,6000)}}
+function cfUserTurnCount(){return (${countUserTurns.toString()})(document)}
+function cfResponseState(){const comparisonResolved=cfResolveComparison(),nodes=cfAssistantNodes(),entries=nodes.map(el=>({text:(el.innerText||el.textContent||'').trim(),links:[...el.querySelectorAll('a[href]')].map(a=>({href:a.href,label:(a.innerText||a.textContent||'').trim()})).filter(x=>/^https:\/\//i.test(x.href))})).filter(x=>x.text);return{texts:entries.map(x=>x.text),entries,stop:cfGenerating(),userTurnCount:cfUserTurnCount(),voiceReady:cfVoiceReady(),completedActionCount:document.querySelectorAll('button[data-testid="copy-turn-action-button"]').length,comparisonResolved,bodyHint:(document.body?.innerText||'').slice(0,6000)}}
 `;
 
 export const CHATGPT_SEND_BUTTON_SELECTORS = [
   'button[data-testid="send-button"]:not(:disabled):not([aria-disabled="true"])',
   'button#composer-submit-button:not(:disabled):not([aria-disabled="true"])',
+  'button[aria-label="Enviar" i]:not(:disabled):not([aria-disabled="true"])',
+  'button[aria-label="Send" i]:not(:disabled):not([aria-disabled="true"])',
 ];
 
 async function openNewConversation(client, sessionId, signal) {
@@ -1261,13 +1470,23 @@ async function waitForPrompt(client, sessionId, waitMs, signal) {
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     try {
-      state = await evaluate(client, sessionId, `(${promptPageState.toString()})(document)`);
+      state = await evaluate(
+        client,
+        sessionId,
+        `(() => ({ ...(${promptPageState.toString()})(document), readyState: document.readyState }))()`,
+      );
     } catch (error) {
       if (error?.code !== "UPSTREAM_UNAVAILABLE") throw error;
       await sleep(350, signal);
       continue;
     }
-    if (state?.host === CHATGPT_HOST && state?.prompt && !state?.login) return;
+    if (
+      state?.host === CHATGPT_HOST &&
+      state?.readyState === "complete" &&
+      state?.prompt &&
+      !state?.login
+    )
+      return;
     await sleep(700, signal);
   }
   if (state?.captcha)
@@ -1283,7 +1502,12 @@ async function waitForPrompt(client, sessionId, waitMs, signal) {
 // and filenames in previous messages cannot satisfy the current upload.
 export function composerUploadState(doc) {
   const prompt = doc.querySelector('#prompt-textarea, [contenteditable="true"][role="textbox"]');
-  const sendSelector = 'button[data-testid="send-button"], button#composer-submit-button';
+  const sendSelector = [
+    'button[data-testid="send-button"]',
+    "button#composer-submit-button",
+    'button[aria-label="Enviar" i]',
+    'button[aria-label="Send" i]',
+  ].join(", ");
   let composer = prompt?.closest("form");
   if (!composer) {
     composer = prompt?.parentElement;
@@ -1298,7 +1522,7 @@ export function composerUploadState(doc) {
     );
   };
   const send = composer.querySelector(sendSelector);
-  const sendLabel = `${send?.getAttribute("aria-label") || ""} ${send?.getAttribute("data-testid") || ""}`;
+  const sendLabel = `${send?.id || ""} ${send?.getAttribute("aria-label") || ""} ${send?.getAttribute("data-testid") || ""}`;
   // A blob preview can be decoded before the server has received the file.
   // ChatGPT also uses CSS-animated SVGs and blurred previews during upload.
   const outsidePrompt = (el) => !prompt?.contains(el);
@@ -1354,11 +1578,16 @@ export function composerUploadState(doc) {
     !send.matches?.(":disabled") &&
     send.getAttribute("aria-disabled") !== "true" &&
     doc.defaultView.getComputedStyle(send).pointerEvents !== "none" &&
-    /send-button|\b(?:send|enviar|envoyer|senden)\b/i.test(sendLabel) &&
+    /send-button|composer-submit-button|\b(?:send|enviar|envoyer|senden)\b/i.test(sendLabel) &&
     !/stop|parar|detener|interromper/i.test(sendLabel),
   );
   return {
     hasPrompt,
+    sendPresent: Boolean(send),
+    sendDisabled: Boolean(send?.disabled || send?.matches?.(":disabled")),
+    sendAriaDisabled: send?.getAttribute("aria-disabled") === "true",
+    sendPointerEvents: send ? doc.defaultView.getComputedStyle(send).pointerEvents : "missing",
+    sendLabel,
     previews,
     attachmentPresent:
       previews.length > 0 || attachmentRemovalControls.length > 0 || (!hasPrompt && sendEnabled),
@@ -1491,9 +1720,11 @@ export async function waitAndClickSend(readState, click, signal, timing = {}) {
   const deadline = now() + (timing.timeoutMs ?? 120000);
   let readyPolls = 0;
   let attempt = 0;
+  let lastState;
   while (now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await readState();
+    lastState = state;
     if (state?.error) throw codedError("INVALID_INPUT", "O ChatGPT recusou um anexo.");
     readyPolls = state?.hasPrompt && state.sendEnabled && !state.busy ? readyPolls + 1 : 0;
     if (readyPolls < 2) {
@@ -1513,7 +1744,7 @@ export async function waitAndClickSend(readState, click, signal, timing = {}) {
   }
   throw codedError(
     "TIMEOUT",
-    "O ChatGPT não liberou o envio após aguardar os anexos por 120 segundos.",
+    `O ChatGPT não liberou o envio após aguardar o compositor por 120 segundos (prompt=${Boolean(lastState?.hasPrompt)}, envio=${Boolean(lastState?.sendEnabled)}, controle=${Boolean(lastState?.sendPresent)}, desabilitado=${Boolean(lastState?.sendDisabled)}, ariaDesabilitado=${Boolean(lastState?.sendAriaDisabled)}, pointer=${String(lastState?.sendPointerEvents || "desconhecido")}, ocupado=${Boolean(lastState?.busy)}, anexo=${Boolean(lastState?.attachmentPresent)}, erro=${Boolean(lastState?.error)}).`,
     true,
   );
 }
@@ -1561,22 +1792,52 @@ async function clickSendWithBridge(bridge, signal, operationKey, timing = {}) {
   );
 }
 
-async function confirmPromptSubmitted(client, sessionId, signal, timeoutMs = 15000) {
+function promptSubmissionConfirmed(
+  { promptText = "", generating = false, userTurnCount = 0, assistantTurnCount = 0 } = {},
+  { baselineUserTurnCount = 0, baselineAssistantTurnCount = 0 } = {},
+) {
+  return Boolean(
+    !String(promptText).trim() ||
+    generating ||
+    userTurnCount > baselineUserTurnCount ||
+    assistantTurnCount > baselineAssistantTurnCount,
+  );
+}
+
+async function confirmPromptSubmitted(
+  client,
+  sessionId,
+  signal,
+  { baselineUserTurnCount = 0, baselineAssistantTurnCount = 0, timeoutMs = 15000 } = {},
+) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-    const submitted = await evaluate(
+    const state = await evaluate(
       client,
       sessionId,
-      `(() => {${PAGE_HELPERS};const prompt=cfPrompt();const text=(prompt?.innerText||prompt?.textContent||'').trim();return !text||cfGenerating()})()`,
+      `(() => {${PAGE_HELPERS};const prompt=cfPrompt();return{promptText:(prompt?.innerText||prompt?.textContent||'').trim(),generating:cfGenerating(),userTurnCount:cfUserTurnCount(),assistantTurnCount:cfAssistantNodes().length}})()`,
     );
-    if (submitted) return true;
+    if (
+      promptSubmissionConfirmed(state, {
+        baselineUserTurnCount,
+        baselineAssistantTurnCount,
+      })
+    )
+      return true;
     await sleep(150, signal);
   }
   return false;
 }
 
-async function clickSend(client, sessionId, bridge, signal, operationKey) {
+async function clickSend(client, sessionId, bridge, signal, operationKey, submissionBaseline = {}) {
+  // O compositor atual pode exibir a seta azul habilitada sem expor atributos
+  // acessiveis suficientes para que a leitura DOM reconheca o botao. Enviar
+  // Enter pelo editor focado usa a acao estruturada da Bridge e evita ficar
+  // preso antes do clique. A confirmacao impede um segundo envio; o clique
+  // permanece como fallback para layouts em que Enter apenas cria uma linha.
+  await clickSendWithBridge(bridge, signal, `${operationKey}:enter`);
+  if (await confirmPromptSubmitted(client, sessionId, signal, submissionBaseline)) return;
   await waitAndClickSend(
     () => evaluate(client, sessionId, `(${composerUploadState.toString()})(document)`),
     (attempt) =>
@@ -1585,11 +1846,11 @@ async function clickSend(client, sessionId, bridge, signal, operationKey) {
         {
           selectors: CHATGPT_SEND_BUTTON_SELECTORS,
         },
-        `${operationKey}:${attempt}`,
+        `${operationKey}:click:${attempt}`,
       ),
     signal,
   );
-  if (await confirmPromptSubmitted(client, sessionId, signal)) return;
+  if (await confirmPromptSubmitted(client, sessionId, signal, submissionBaseline)) return;
   throw codedError("OUTPUT_VALIDATION_FAILED", "O ChatGPT não confirmou o envio do prompt.", true);
 }
 
@@ -1632,7 +1893,7 @@ async function waitForResponse(
       completedActionCount: state?.completedActionCount,
       baselineCompletedActionCount,
     });
-    if (phase === "completed" && strongCompletion) {
+    if (strongCompletion) {
       await sleep(500, signal);
       const confirmedState = await responseState(client, sessionId);
       const confirmedTexts = confirmedState?.texts ?? [];
@@ -1647,6 +1908,7 @@ async function waitForResponse(
           baselineCompletedActionCount,
         })
       ) {
+        assertProviderResponseSucceeded(confirmedNewest);
         return {
           text: confirmedNewest.trim(),
           links: confirmedState.entries?.at(-1)?.links ?? [],
@@ -1667,6 +1929,7 @@ async function waitForResponse(
       const confirmedTexts = confirmedState?.texts ?? [];
       const confirmedNewest = confirmedTexts.length > baselineCount ? confirmedTexts.at(-1) : "";
       if (confirmedNewest === newest && !confirmedState?.stop) {
+        assertProviderResponseSucceeded(confirmedNewest);
         return {
           text: confirmedNewest.trim(),
           links: confirmedState.entries?.at(-1)?.links ?? [],
@@ -1690,15 +1953,19 @@ async function waitForResponse(
 async function generatePart(client, sessionId, bridge, prompt, settings, signal, operationKey) {
   const before = await responseState(client, sessionId),
     baseline = before?.texts?.length ?? 0,
-    baselineCompletedActionCount = before?.completedActionCount ?? 0;
+    baselineCompletedActionCount = before?.completedActionCount ?? 0,
+    baselineUserTurnCount = before?.userTurnCount ?? 0;
   await setPrompt(bridge, prompt, `prompt:${operationKey}`);
-  await clickSend(client, sessionId, bridge, signal, `send:${operationKey}`);
+  await clickSend(client, sessionId, bridge, signal, `send:${operationKey}`, {
+    baselineUserTurnCount,
+    baselineAssistantTurnCount: baseline,
+  });
   return await waitForResponse(
     client,
     sessionId,
     baseline,
     baselineCompletedActionCount,
-    clampInteger(settings?.responseTimeoutSeconds, 600, 30, 3600) * 1000,
+    clampInteger(settings?.responseTimeoutSeconds, 1200, 30, 3600) * 1000,
     signal,
   );
 }
@@ -1712,6 +1979,7 @@ async function generateImagePart(
   signal,
   operationKey,
 ) {
+  const before = await responseState(client, sessionId);
   const baselineImages = await evaluate(
     client,
     sessionId,
@@ -1719,9 +1987,12 @@ async function generateImagePart(
   );
   const baselineSources = (baselineImages ?? []).map((image) => image.src).filter(Boolean);
   await setPrompt(bridge, prompt, `image-prompt:${operationKey}`);
-  await clickSend(client, sessionId, bridge, signal, `image-send:${operationKey}`);
+  await clickSend(client, sessionId, bridge, signal, `image-send:${operationKey}`, {
+    baselineUserTurnCount: before?.userTurnCount ?? 0,
+    baselineAssistantTurnCount: before?.texts?.length ?? 0,
+  });
   const deadline =
-    Date.now() + clampInteger(settings?.responseTimeoutSeconds, 600, 30, 3600) * 1000;
+    Date.now() + clampInteger(settings?.responseTimeoutSeconds, 1200, 30, 3600) * 1000;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await evaluate(
@@ -1752,9 +2023,13 @@ async function captureGeneratedImages(
   request,
   timeoutMs,
   baselineSources,
+  options = {},
 ) {
   const deadline = Date.now() + timeoutMs;
   const capturedBySource = new Map();
+  const excludedContentHashes = options.excludedContentHashes ?? new Set();
+  const maxImages = clampInteger(options.maxImages, Number.MAX_SAFE_INTEGER, 1, 100);
+  let unchangedImageSeen = false;
   let quietSince;
   while (Date.now() < deadline) {
     if (services.signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
@@ -1774,7 +2049,7 @@ async function captureGeneratedImages(
         payloads = await evaluate(
           client,
           sessionId,
-          `(async()=>Promise.all(${JSON.stringify(candidates)}.map(async image=>{try{const r=await fetch(image.src,{credentials:'include'});if(!r.ok)throw new Error('HTTP '+r.status);const b=new Uint8Array(await r.arrayBuffer());let s='';const n=32768;for(let i=0;i<b.length;i+=n)s+=String.fromCharCode(...b.subarray(i,i+n));return{...image,base64:btoa(s),mimeType:(r.headers.get('content-type')||'image/png').split(';')[0]}}catch(error){return{...image,error:String(error?.message||error)}}})))()`,
+          `(async()=>Promise.all(${JSON.stringify(candidates)}.map(async image=>{try{const r=await fetch(image.src,{credentials:'include'});if(!r.ok)throw new Error('HTTP '+r.status);const b=new Uint8Array(await r.arrayBuffer());let s='';const n=32768;for(let i=0;i<b.length;i+=n)s+=String.fromCharCode(...b.subarray(i,i+n));return{...image,base64:btoa(s),mimeType:(r.headers.get('content-type')||'').split(';')[0].trim().toLowerCase()}}catch(error){return{...image,error:String(error?.message||error)}}})))()`,
         );
       } catch (error) {
         if (capturedBySource.size && isCdpConnectionLoss(error)) break;
@@ -1783,58 +2058,187 @@ async function captureGeneratedImages(
       let added = false;
       for (const image of payloads ?? []) {
         if (image.error || capturedBySource.has(image.src)) continue;
-        const bytes = Buffer.from(image.base64, "base64");
-        if (!bytes.length || bytes.length > 50 * 1024 * 1024) continue;
-        const extension =
-          image.mimeType === "image/webp"
-            ? "webp"
-            : image.mimeType === "image/jpeg"
-              ? "jpg"
-              : "png";
-        const artifactId = `chatgpt-image-${createHash("sha256")
-          .update(
-            `${request?.executionId || "execution"}:${request?.blockId || "block"}:${request?.attempt || 1}:${createHash("sha256").update(bytes).digest("hex")}`,
-          )
-          .digest("hex")
-          .slice(0, 16)}`;
-        const name = `${artifactId}.${extension}`;
-        await writeFile(services.getOutputPath(name), bytes);
-        capturedBySource.set(image.src, {
-          image,
-          file: {
-            id: artifactId,
-            name,
-            mimeType: image.mimeType,
-            size: bytes.length,
-            url: `artifact://${artifactId}`,
-          },
-          artifact: {
-            id: artifactId,
-            name,
-            mimeType: image.mimeType,
-            size: bytes.length,
-            source: { kind: "path", path: name },
-          },
+        const entry = await materializeGeneratedImage(image, services, request, {
+          excludedContentHashes,
         });
+        if (entry?.excluded) {
+          unchangedImageSeen = true;
+          continue;
+        }
+        if (!entry) continue;
+        const variantIndex = capturedBySource.size;
+        capturedBySource.set(image.src, entry);
+        const captured = [...capturedBySource.values()];
+        await publishGeneratedImagePartial(
+          services,
+          request,
+          captured,
+          entry.file,
+          variantIndex,
+          options.conversationId,
+        );
         added = true;
+        if (capturedBySource.size >= maxImages) break;
       }
       if (added) quietSince = Date.now();
     }
+    if (capturedBySource.size >= maxImages) break;
     if (capturedBySource.size && quietSince && Date.now() - quietSince >= 3_000) break;
     await sleep(capturedBySource.size ? 500 : 1000, services.signal);
   }
-  if (!capturedBySource.size)
-    throw codedError(
-      "OUTPUT_VALIDATION_FAILED",
-      "A resposta terminou sem uma imagem gerada capturável.",
-      true,
-    );
+  assertGeneratedImageCapture(capturedBySource.size, unchangedImageSeen);
   const captured = [...capturedBySource.values()];
   return {
     files: captured.map((entry) => entry.file),
     artifacts: captured.map((entry) => entry.artifact),
     dimensions: captured.map((entry) => entry.image),
   };
+}
+
+export function assertGeneratedImageCapture(capturedCount, unchangedImageSeen) {
+  if (capturedCount > 0) return;
+  if (unchangedImageSeen)
+    throw codedError(
+      "OUTPUT_VALIDATION_FAILED",
+      "A regeneração devolveu a mesma imagem, sem mudança real.",
+      true,
+    );
+  throw codedError(
+    "OUTPUT_VALIDATION_FAILED",
+    "A resposta terminou sem uma imagem gerada capturável.",
+    true,
+  );
+}
+
+const IMAGE_MIME_BY_EXTENSION = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
+export async function imageActionBaselineHashes(request, services) {
+  if (request?.invocation?.mode !== "item_action") return new Set();
+  imageItemAction(request);
+  const files = collectStoredFiles(request?.itemAction?.output);
+  if (files.length !== 1)
+    throw codedError(
+      "INVALID_INPUT",
+      "A regeneração exige exatamente uma imagem materializada como origem.",
+    );
+  const path = await services.resolveInputFile(files[0]);
+  const info = await stat(path);
+  if (!info.isFile() || info.size < 1 || info.size > MAX_ATTACHMENT_BYTES)
+    throw codedError("INVALID_INPUT", "A imagem de origem da regeneração é inválida.");
+  return new Set([
+    createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex"),
+  ]);
+}
+
+export function sniffImageMimeType(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 12) return undefined;
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+    return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (
+    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  )
+    return "image/webp";
+  return undefined;
+}
+
+function decodeImagePayload(image) {
+  const encoded = String(image?.base64 ?? "").trim();
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0)
+    return undefined;
+  const bytes = Buffer.from(encoded, "base64");
+  if (!bytes.length || bytes.length > 50 * 1024 * 1024) return undefined;
+  const detectedMimeType = sniffImageMimeType(bytes);
+  if (!detectedMimeType) return undefined;
+  const declaredMimeType = String(image?.mimeType ?? "")
+    .trim()
+    .toLowerCase()
+    .replace("image/jpg", "image/jpeg");
+  if (
+    declaredMimeType &&
+    declaredMimeType !== "application/octet-stream" &&
+    declaredMimeType !== detectedMimeType
+  )
+    return undefined;
+  return {
+    bytes,
+    mimeType: detectedMimeType,
+    extension: IMAGE_MIME_BY_EXTENSION[detectedMimeType],
+  };
+}
+
+export async function materializeGeneratedImage(image, services, request, options = {}) {
+  const decoded = decodeImagePayload(image);
+  if (!decoded) return undefined;
+  const contentHash = createHash("sha256").update(decoded.bytes).digest("hex");
+  if (options.excludedContentHashes?.has(contentHash)) return { excluded: true, contentHash };
+  const artifactId = `chatgpt-image-${createHash("sha256")
+    .update(
+      `${request?.executionId || "execution"}:${request?.blockId || "block"}:${request?.attempt || 1}:${request?.batch?.itemId || "single"}:${contentHash}`,
+    )
+    .digest("hex")
+    .slice(0, 16)}`;
+  const name = `${artifactId}.${decoded.extension}`;
+  await writeFile(services.getOutputPath(name), decoded.bytes);
+  return {
+    image: { ...image, mimeType: decoded.mimeType },
+    file: {
+      id: artifactId,
+      name,
+      mimeType: decoded.mimeType,
+      size: decoded.bytes.length,
+      url: `artifact://${artifactId}`,
+    },
+    artifact: {
+      id: artifactId,
+      name,
+      mimeType: decoded.mimeType,
+      size: decoded.bytes.length,
+      source: { kind: "path", path: name },
+    },
+    contentHash,
+  };
+}
+
+export function imageItemUpdate(request, file, variantIndex, conversationId) {
+  return {
+    key: conversationId
+      ? imageConversationCorrelation(request, conversationId)
+      : request?.itemAction?.key || "generation",
+    variantKey: `image:${variantIndex}`,
+    outputPort: "images",
+    state: "completed",
+    input: request?.inputs?.prompt ?? request?.resolvedInstruction ?? null,
+    value: file,
+  };
+}
+
+export async function publishGeneratedImagePartial(
+  services,
+  request,
+  captured,
+  file,
+  variantIndex,
+  conversationId,
+) {
+  await services.publishPartial?.({
+    values: imageResponseValues(
+      {
+        files: captured.map((item) => item.file),
+      },
+      "Imagem gerada",
+    ),
+    artifacts: captured.map((item) => item.artifact),
+    itemUpdates: [imageItemUpdate(request, file, variantIndex, conversationId)],
+    message: `${captured.length} imagem(ns) capturada(s).`,
+  });
 }
 
 export function isCdpConnectionLoss(error) {
@@ -1864,15 +2268,10 @@ export function generatedImagesAfterBaseline(images = [], baselineSources = []) 
 
 async function configureProfile(request, services) {
   const settings = request?.settings ?? {};
-  let profileName, profilePath, port;
+  let runtime;
   try {
-    profileName = normalizeAccountProfile(request?.configuration?.accountProfile);
-    profilePath = runtimeProfilePath(settings, profileName, services);
-    port = profilePort(
-      clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000),
-      profileName,
-    );
-    assertDedicatedProfilePath(profilePath, settings.allowExistingChromeProfile === true);
+    runtime = resolveProfileRuntime(request, services);
+    assertDedicatedProfilePath(runtime.profilePath, settings.allowExistingChromeProfile === true);
   } catch (error) {
     return resultError(
       error?.code || "INVALID_CONFIGURATION",
@@ -1882,7 +2281,7 @@ async function configureProfile(request, services) {
   if (request?.invocation?.action === "status") {
     return {
       status: "success",
-      values: { ready: await profileIsPrepared(profilePath, profileName) },
+      values: { ready: await profileIsPrepared(runtime, runtime.name) },
     };
   }
   if (request?.invocation?.action !== "prepare") {
@@ -1890,20 +2289,18 @@ async function configureProfile(request, services) {
   }
 
   let client,
-    child,
     bridge,
     taskTargetId,
     closeTaskTarget = false;
   try {
     const launched = await launchOrReuseChrome({
-      executables: await resolveChromeExecutables(settings),
-      profilePath,
-      port,
+      profilePath: runtime.profilePath,
+      port: runtime.port,
       startMinimized: false,
       keepBrowserOpen: false,
       signal: services.signal,
+      coreSession: settings.__contentFlowBrowserSession,
     });
-    child = launched.child;
     client = await new CdpClient(launched.version.webSocketDebuggerUrl).connect(services.signal);
     const initialPage = await attachChatGptPage(client, services.signal, true);
     bridge = await prepareProfileSession({
@@ -1912,7 +2309,7 @@ async function configureProfile(request, services) {
           client,
           pageSessionId: initialPage.sessionId,
           pluginId: PLUGIN_ID,
-          profileId: profileName,
+          profileId: runtime.name,
           request,
           signal: services.signal,
           allowedOrigins: ["https://chatgpt.com"],
@@ -1922,10 +2319,10 @@ async function configureProfile(request, services) {
       waitPrompt: (sessionId) =>
         waitForPrompt(client, sessionId, PROFILE_SETUP_WAIT_MS, services.signal),
     });
-    await markProfilePrepared(profilePath, profileName);
+    await markProfilePrepared(runtime, runtime.name);
     return {
       status: "success",
-      values: { ready: true, message: `Perfil ${profileName} validado no ChatGPT.` },
+      values: { ready: true, message: `Perfil ${runtime.name} validado no ChatGPT.` },
     };
   } catch (error) {
     return resultError(
@@ -1934,8 +2331,8 @@ async function configureProfile(request, services) {
       Boolean(error?.retryable),
     );
   } finally {
-    bridge?.dispose();
-    await closeBrowserGracefully(client, child);
+    await bridge?.dispose();
+    await closeBrowserGracefully(client);
   }
 }
 
@@ -1949,16 +2346,17 @@ async function prepareProfileSession({ attachBridge, attachPage, waitPrompt }) {
     await waitPrompt(sessionId);
     return bridge;
   } catch (error) {
-    bridge?.dispose();
+    await bridge?.dispose();
     throw error;
   }
 }
 
-export async function execute(request, services) {
+async function executeHandler(request, services) {
   if (request?.invocation?.mode === "configure") return await configureProfile(request, services);
   const settings = request?.settings ?? {},
     capabilityId = String(request?.capabilityId ?? "generate-text-in-browser"),
     mock = String(settings.diagnosticMockResponse ?? "").trim();
+  if (services.signal?.aborted) return resultError("CANCELLED", "Execução cancelada.");
   const startMinimized =
     typeof request?.configuration?.startMinimized === "boolean"
       ? request.configuration.startMinimized
@@ -2019,21 +2417,20 @@ export async function execute(request, services) {
   }
 
   const configuration = request?.configuration ?? {};
+  const conversation = conversationForInvocation(request, capabilityId);
   let client,
-    child,
     bridge,
     taskTargetId,
     closeTaskTarget = false;
   try {
-    const profileName = normalizeAccountProfile(configuration.accountProfile),
-      profilePath = runtimeProfilePath(settings, profileName, services),
-      port = profilePort(
-        clampInteger(settings.remoteDebuggingPort, DEFAULT_PORT, 1024, 64000),
-        profileName,
-      );
+    const profileRuntime = resolveProfileRuntime(request, services),
+      profileName = profileRuntime.name,
+      profilePath = profileRuntime.profilePath,
+      port = profileRuntime.port;
     const primaryAttachments = await resolveAttachments(request, services);
+    const excludedImageHashes = await imageActionBaselineHashes(request, services);
     assertDedicatedProfilePath(profilePath, settings.allowExistingChromeProfile === true);
-    if (!(await profileIsPrepared(profilePath, profileName))) {
+    if (!(await profileIsPrepared(profileRuntime, profileName))) {
       throw codedError(
         "AUTHENTICATION_FAILED",
         `O perfil ${profileName} ainda não foi salvo. Abra a configuração do Método e use Salvar perfil antes de executar.`,
@@ -2047,15 +2444,14 @@ export async function execute(request, services) {
     step(`Preparando perfil ${profileName} para ${parts.length} etapa(s).`);
     const keepBrowserOpen = settings.keepBrowserOpen !== false;
     const launched = await launchOrReuseChrome({
-      executables: await resolveChromeExecutables(settings),
       profilePath,
       port,
       startMinimized,
       keepBrowserOpen,
       signal: services.signal,
+      coreSession: settings.__contentFlowBrowserSession,
     });
     step(`Chrome ${launched.reused ? "reutilizado" : "iniciado"}; conectando ao CDP.`);
-    child = launched.child;
     client = await new CdpClient(launched.version.webSocketDebuggerUrl, trace).connect(
       services.signal,
     );
@@ -2063,29 +2459,29 @@ export async function execute(request, services) {
     const taskPage = await attachChatGptPage(client, services.signal, false, launched.reused);
     let { sessionId } = taskPage;
     taskTargetId = taskPage.targetId;
-    closeTaskTarget = taskPage.created || !launched.reused;
+    closeTaskTarget = true;
     step(
       `Aba do ChatGPT anexada (${taskPage.created ? "nova" : "existente"}); preparando conversa.`,
     );
     const reusedConversation = await prepareConversation(
       client,
       sessionId,
-      request.conversation,
+      conversation,
       clampInteger(settings.interactiveWaitSeconds, 600, 30, 900) * 1000,
       services.signal,
       taskPage.created,
     );
     step(`Conversa preparada (${reusedConversation ? "reutilizada" : "nova"}).`);
-    if (taskPage.created) await markTaskPage(client, sessionId, request, services.signal);
-    parts = partsForConversation(parts, request.conversation, reusedConversation);
+    await markTaskPage(client, sessionId, request, services.signal);
+    parts = partsForConversation(parts, conversation, reusedConversation);
     const fallbackAttachments = reusedConversation
       ? []
-      : await resolveFallbackAttachments(request, services);
+      : await resolveFallbackAttachments(request, services, conversation);
     const attachments = attachmentsForConversation(
       primaryAttachments,
       fallbackAttachments,
       reusedConversation,
-      request.conversation?.continuationMessage,
+      conversation?.continuationMessage,
     );
     if (attachments.length) {
       step(`Enviando ${attachments.length} anexo(s) autorizado(s).`);
@@ -2122,7 +2518,7 @@ export async function execute(request, services) {
                 parts[index],
                 settings,
                 services.signal,
-                `${index}:${attempt}`,
+                batchOperationKey(request, index, attempt),
               ),
             );
           } else {
@@ -2148,9 +2544,46 @@ export async function execute(request, services) {
             await clickSendWithBridge(bridge, services.signal, `send:${index}:${attempt}`);
             await bridge.dispose();
             bridge = undefined;
-            await sleep(300, services.signal);
-            sessionId = await attachExistingChatGptPage(client, taskTargetId);
-            if (!(await confirmPromptSubmitted(client, sessionId, services.signal))) {
+            // chrome.debugger.detach is asynchronous in the extension worker;
+            // give the target a short handoff window before CDP confirmation.
+            await sleep(5000, services.signal);
+            sessionId = await attachExistingChatGptPage(client, taskTargetId, services.signal);
+            let submitted = await confirmPromptSubmitted(client, sessionId, services.signal, {
+              baselineUserTurnCount: before?.userTurnCount ?? 0,
+              baselineAssistantTurnCount: baseline,
+            });
+            if (!submitted) {
+              // Enter can be interpreted as editing the composer by a provider
+              // UI variant. Only after the first attempt is reconciled as not
+              // submitted do we issue the idempotent fallback click.
+              await detachChatGptPage(client, sessionId);
+              sessionId = undefined;
+              await sleep(300, services.signal);
+              bridge = await attachContentFlowBridge({
+                client,
+                pageTargetId: taskTargetId,
+                expectedUrl: targetUrl,
+                pluginId: PLUGIN_ID,
+                profileId: profileName,
+                request,
+                signal: services.signal,
+                allowedOrigins: ["https://chatgpt.com"],
+              });
+              await bridge.dispatch(
+                "click",
+                { selectors: CHATGPT_SEND_BUTTON_SELECTORS, preferDomActivation: true },
+                `send:${index}:${attempt}:fallback-click`,
+              );
+              await bridge.dispose();
+              bridge = undefined;
+              await sleep(5000, services.signal);
+              sessionId = await attachExistingChatGptPage(client, taskTargetId, services.signal);
+              submitted = await confirmPromptSubmitted(client, sessionId, services.signal, {
+                baselineUserTurnCount: before?.userTurnCount ?? 0,
+                baselineAssistantTurnCount: baseline,
+              });
+            }
+            if (!submitted) {
               throw codedError(
                 "OUTPUT_VALIDATION_FAILED",
                 "O ChatGPT não confirmou o envio do prompt.",
@@ -2163,7 +2596,7 @@ export async function execute(request, services) {
                 sessionId,
                 baseline,
                 baselineCompletedActionCount,
-                clampInteger(settings?.responseTimeoutSeconds, 600, 30, 3600) * 1000,
+                clampInteger(settings?.responseTimeoutSeconds, 1200, 30, 3600) * 1000,
                 services.signal,
               ),
             );
@@ -2177,9 +2610,11 @@ export async function execute(request, services) {
             bridge = undefined;
           }
           if (!sessionId && taskTargetId && capabilityId !== "generate-image-in-browser") {
-            sessionId = await attachExistingChatGptPage(client, taskTargetId).catch(
-              () => undefined,
-            );
+            sessionId = await attachExistingChatGptPage(
+              client,
+              taskTargetId,
+              services.signal,
+            ).catch(() => undefined);
           }
           if (
             !error?.retryable ||
@@ -2196,7 +2631,7 @@ export async function execute(request, services) {
           responses.map((response) => response.text).join("\n\n"),
         );
         await services.publishPartial?.({
-          values: { result: partialText, parts: responses.map((response) => response.text) },
+          values: generationResponseValues(partialText, responses, request),
           progress: (index + 1) / parts.length,
           message: `Resposta ${index + 1} de ${parts.length} capturada.`,
         });
@@ -2209,14 +2644,6 @@ export async function execute(request, services) {
       ].slice(0, 10);
     let values;
     if (capabilityId === "generate-image-in-browser") {
-      const captured = await captureGeneratedImages(
-        client,
-        sessionId,
-        services,
-        request,
-        clampInteger(settings?.responseTimeoutSeconds, 600, 30, 3600) * 1000,
-        responses[0]?.imageBaselineSources,
-      );
       let conversationId = responses.at(-1)?.conversationId;
       if (!conversationId)
         try {
@@ -2224,6 +2651,19 @@ export async function execute(request, services) {
         } catch (error) {
           if (!isCdpConnectionLoss(error)) throw error;
         }
+      const captured = await captureGeneratedImages(
+        client,
+        sessionId,
+        services,
+        request,
+        clampInteger(settings?.responseTimeoutSeconds, 1200, 30, 3600) * 1000,
+        responses[0]?.imageBaselineSources,
+        {
+          conversationId,
+          excludedContentHashes: excludedImageHashes,
+          maxImages: request?.invocation?.mode === "item_action" ? 1 : 100,
+        },
+      );
       await services.publishPartial?.({
         values: imageResponseValues(captured, combined),
         artifacts: captured.artifacts,
@@ -2234,7 +2674,7 @@ export async function execute(request, services) {
         status: "success",
         values: imageResponseValues(captured, combined),
         artifacts: captured.artifacts,
-        ...(conversationId ? { conversation: { id: conversationId } } : {}),
+        ...(!request?.batch && conversationId ? { conversation: { id: conversationId } } : {}),
         usage: {
           provider: "OpenAI / ChatGPT Images",
           outputUnits: captured.files.reduce((total, file) => total + file.size, 0),
@@ -2260,6 +2700,12 @@ export async function execute(request, services) {
         );
       values = generationResponseValues(result, responses, request);
     }
+    await evaluate(
+      client,
+      sessionId,
+      `(() => { const url = new URL(location.href); url.hash = "contentflow-ready-chatgpt"; history.replaceState(history.state, "", url); return true; })()`,
+    );
+    closeTaskTarget = false;
     return {
       status: "success",
       values,
@@ -2275,23 +2721,22 @@ export async function execute(request, services) {
       Boolean(error?.retryable),
     );
   } finally {
-    bridge?.dispose();
+    await bridge?.dispose();
     if (closeTaskTarget && taskTargetId)
       try {
         await client?.send("Target.closeTarget", { targetId: taskTargetId });
       } catch {}
-    const keepBrowserOpen = settings.keepBrowserOpen !== false;
-    if (!keepBrowserOpen && child)
-      try {
-        await client?.send("Browser.close");
-      } catch {}
     client?.close();
-    if (!keepBrowserOpen && child) {
-      try {
-        child.kill();
-      } catch {}
-    }
   }
+}
+
+export async function execute(request, services) {
+  const bridgeDiagnosticsState = await createBridgeDiagnostics(request, services);
+  const response = await executeHandler(
+    { ...request, __bridgeDiagnosticsState: bridgeDiagnosticsState },
+    services,
+  );
+  return { ...response, bridgeDiagnostics: bridgeDiagnosticsState.bridgeDiagnostics };
 }
 
 export const __test = {
@@ -2314,21 +2759,24 @@ export const __test = {
   profileIsPrepared,
   markProfilePrepared,
   profilePathFor,
+  resolveProfileRuntime,
   runtimeProfilePath,
   profilePort,
-  waitForChildExit,
   closeBrowserGracefully,
   taskPageMarker,
   prepareConversation,
   prepareProfileSession,
   searchResponseValues,
   generationResponseValues,
+  recordOutputInstruction,
   imageResponseValues,
   generatedImagesAfterBaseline,
   isCdpConnectionLoss,
   generationControlIsStop,
   voiceControlIsReady,
   responseHasStrongCompletionSignal,
+  promptSubmissionConfirmed,
+  classifyProviderResponseFailure,
   summarizeBlock,
   responsePhase,
 };

@@ -11,6 +11,7 @@ import {
   captureProjectStrategy,
   nextExecutableProcess,
   projectProcessOrder,
+  refreshProjectProcessStrategy,
   effectiveProcessOrder,
   isProcessOrder,
   resolveProcessOrderForMethods,
@@ -31,6 +32,7 @@ const method = (
   processType: UniversalProcess,
   inputs: ProcessMethod["blocks"][number]["inputs"] = [],
 ): ProcessMethod => ({
+  contractVersion: 3,
   name: processType,
   processType,
   blocks: [
@@ -46,7 +48,7 @@ const method = (
           id: `${processType}-output`,
           label: processType,
           key: processType,
-          type: "textarea",
+          shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
           required: true,
         },
       ],
@@ -70,11 +72,8 @@ test("script output can feed thumbnail only after script moves ahead", () => {
       {
         id: "from-script",
         label: "Roteiro",
-        type: "textarea",
-        source: "previous_process",
-        sourceProcessType: "script",
-        blockId: "__process_output__",
-        sourceKey: "script",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+        binding: { kind: "previous_process", processType: "script", outputKey: "script" },
       },
     ]),
   };
@@ -83,7 +82,11 @@ test("script output can feed thumbnail only after script moves ahead", () => {
     /processo anterior inválido/,
   );
   assert.deepEqual(validateProcessDependencies(reordered, methods), []);
-  methods.thumbnail.blocks[0].inputs![0].sourceKey = "missing";
+  methods.thumbnail.blocks[0].inputs![0].binding = {
+    kind: "previous_process",
+    processType: "script",
+    outputKey: "missing",
+  };
   assert.match(
     validateProcessDependencies(reordered, methods).join("\n"),
     /saída anterior não encontrada/,
@@ -96,22 +99,20 @@ test("cross process cycles and incompatible source types are rejected", () => {
       {
         id: "from-thumb",
         label: "Miniatura",
-        type: "image",
-        source: "previous_process",
-        sourceProcessType: "thumbnail",
-        blockId: "__process_output__",
-        sourceKey: "thumbnail",
+        shape: { kind: "content", family: "image", cardinality: "one", representation: "artifact" },
+        binding: {
+          kind: "previous_process",
+          processType: "thumbnail",
+          outputKey: "thumbnail",
+        },
       },
     ]),
     thumbnail: method("thumbnail", [
       {
         id: "from-script",
         label: "Roteiro",
-        type: "image",
-        source: "previous_process",
-        sourceProcessType: "script",
-        blockId: "__process_output__",
-        sourceKey: "script",
+        shape: { kind: "content", family: "image", cardinality: "one", representation: "artifact" },
+        binding: { kind: "previous_process", processType: "script", outputKey: "script" },
       },
     ]),
   };
@@ -127,11 +128,8 @@ test("resolved import order moves required dependencies ahead", () => {
       {
         id: "from-script",
         label: "Roteiro",
-        type: "textarea",
-        source: "previous_process",
-        sourceProcessType: "script",
-        blockId: "__process_output__",
-        sourceKey: "script",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+        binding: { kind: "previous_process", processType: "script", outputKey: "script" },
       },
     ]),
   };
@@ -143,22 +141,26 @@ test("resolved import order rejects dependency cycles", () => {
     {
       id: "from-thumbnail",
       label: "Thumbnail",
-      type: "textarea",
-      source: "previous_process",
-      sourceProcessType: "thumbnail",
-      blockId: "thumbnail-block",
-      sourceKey: "thumbnail",
+      shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+      binding: {
+        kind: "previous_process",
+        processType: "thumbnail",
+        blockId: "thumbnail-block",
+        outputKey: "thumbnail",
+      },
     },
   ]);
   const thumbnail = method("thumbnail", [
     {
       id: "from-script",
       label: "Roteiro",
-      type: "textarea",
-      source: "previous_process",
-      sourceProcessType: "script",
-      blockId: "script-block",
-      sourceKey: "script",
+      shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+      binding: {
+        kind: "previous_process",
+        processType: "script",
+        blockId: "script-block",
+        outputKey: "script",
+      },
     },
   ]);
   assert.equal(resolveProcessOrderForMethods(PROCESS_ORDER, { script, thumbnail }), undefined);
@@ -210,6 +212,28 @@ test("a project freezes order and all Methods once at first execution", () => {
   assert.equal(project.strategySnapshot?.methods.script.name, "script");
   captureProjectStrategy(project, channel, false);
   assert.equal(project.strategySnapshot?.methods.script.name, "script");
+});
+
+test("an explicit process restart adopts only that process' latest Method", () => {
+  const channel = {
+    processOrder: reordered,
+    definitionRevision: 5,
+    methods: Object.fromEntries(PROCESS_ORDER.map((id) => [id, method(id)])),
+  } as Channel;
+  const project = {
+    stages: Object.fromEntries(PROCESS_ORDER.map((id) => [id, "not_started"])),
+  } as Project;
+  captureProjectStrategy(project, channel, false);
+  channel.definitionRevision = 6;
+  channel.methods.assets.name = "Assets corrigidos";
+  channel.methods.script.name = "Roteiro alterado depois";
+
+  refreshProjectProcessStrategy(project, channel, "assets");
+
+  assert.equal(project.strategySnapshot?.definitionRevision, 6);
+  assert.equal(project.strategySnapshot?.methods.assets.name, "Assets corrigidos");
+  assert.equal(project.strategySnapshot?.methods.script.name, "script");
+  assert.deepEqual(project.strategySnapshot?.processOrder, reordered);
 });
 
 test("legacy started projects retain the historical sequence", () => {

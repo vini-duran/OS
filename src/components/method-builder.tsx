@@ -21,6 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
   Bot,
   Braces,
   CheckCircle2,
@@ -43,13 +44,32 @@ import {
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
+import { channelNeedsUpgrade, methodNeedsUpgrade } from "@/lib/user-data-upgrade";
 import { useAppPreferences } from "@/lib/app-preferences";
 import { effectiveProcessOrder } from "@/lib/process-order";
 import { pluginRequirementReadiness } from "@/lib/method-transfer-readiness";
 import { pluginCapabilityLabel } from "@/lib/plugin-capability-label";
+import { addPluginOutput, bindPluginInput, pluginInputSources } from "@/lib/plugin-method-ports";
+import {
+  clonePluginConfigurationDraft,
+  preparePluginConfigurationCommit,
+} from "@/lib/plugin-configuration-draft";
+import { localizePluginManifest } from "@/lib/plugin-localization";
+import {
+  areValueShapesCompatible,
+  contentShape,
+  controlShape,
+  recordShape,
+} from "@/lib/data-shape";
 import { ChannelAvatar } from "@/components/channel-avatar";
+import { PluginConfigurationRenderer } from "@/components/plugin-configuration-renderer";
+import { ProfileProjectSelection } from "@/components/profile-project-selection";
+import {
+  managedProjectUrlConfigurationKey,
+  normalizeProjectSelections,
+} from "@/lib/profile-project-selection";
 import { RuntimeValueViewer } from "@/components/runtime-value-viewer";
-import { LineListTextarea } from "@/components/line-list-textarea";
+import { isMethodContentField, replaceMethodContentFields } from "@/lib/method-content-fields";
 import {
   PRESENTATION_RENDERERS,
   PRESENTATION_RENDERER_REGISTRY,
@@ -87,6 +107,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   PROCESS_META,
   type ActionBlock,
+  type BlockPluginBinding,
   type BlockFieldDefinition,
   type BlockInputBinding,
   type BlockOperator,
@@ -94,14 +115,17 @@ import {
   type BlockType,
   type Channel,
   type FieldPresentation,
-  type HumanFieldType,
+  type ContentCardinality,
+  type ContentShape,
+  type ContentFamily,
+  type ContentRepresentation,
   type PresentationRendererId,
+  type ProfileExecutionPolicy,
   type ProcessMethod,
-  type RecordFieldDefinition,
-  type RecordFieldType,
   type StrategicCollection,
   type UniversalProcess,
   type ValidationMode,
+  type ValueShape,
 } from "@/lib/domain";
 import {
   createProcessOutputFields,
@@ -114,8 +138,8 @@ import {
   planPortableMethodTransfer,
   serializeMethodFile,
   type MethodRequirement,
-  type PortableCollectionV2,
-  type PortableLibraryItemV2,
+  type PortableCollection,
+  type PortableLibraryItem,
 } from "@/lib/method-file";
 import { getCompatiblePresentationRenderers, normalizeFieldPresentation } from "@/lib/presentation";
 import { createChannelHistoryRecordFields } from "@/lib/channel-history";
@@ -131,18 +155,15 @@ import {
   removeInstructionInputVariables,
   replaceInstructionInputVariable,
 } from "@/lib/instruction-template";
-import type {
-  JsonSchema,
-  PluginCapability,
-  PluginManifest,
-  PluginProfileSetup,
-} from "@/lib/plugin-contract";
+import type { PluginCapability, PluginManifest, PluginProfileSetup } from "@/lib/plugin-contract";
+import { pluginConnectionRequired } from "@/lib/plugin-contract";
 import {
   applyMethodTransfer,
   clearMethodDraft,
   readMethodDraft,
   rememberMethodDraft,
   setChannelMethod,
+  removeChannelMethod,
   useChannel,
   useChannels,
   useLibraryCollections,
@@ -177,15 +198,17 @@ type ManagedPluginProfile = {
   alias: string;
   createdAt: string;
   updatedAt: string;
+  readinessState?: string;
+  occupied?: boolean;
 };
 
 type MethodTransferPreview = {
   name: string;
   sourceChannelId?: string;
   methods: ProcessMethod[];
-  collections: PortableCollectionV2[];
+  collections: PortableCollection[];
   itemsIncluded: boolean;
-  items: PortableLibraryItemV2[];
+  items: PortableLibraryItem[];
   requirements: MethodRequirement[];
   preferredOrder: UniversalProcess[];
   primaryProcess: UniversalProcess;
@@ -233,52 +256,18 @@ const OPERATOR_META: Record<BlockOperator, { label: string; icon: typeof Bot }> 
   Código: { label: "Código", icon: Code2 },
 };
 
-const FIELD_TYPES: { value: HumanFieldType; label: string }[] = [
-  { value: "text", label: "Texto curto" },
-  { value: "textarea", label: "Texto longo" },
-  { value: "number", label: "Número" },
-  { value: "boolean", label: "Sim ou não" },
-  { value: "list", label: "Lista de textos" },
-  { value: "records", label: "Lista de registros" },
-  { value: "select", label: "Seleção" },
-  { value: "multiselect", label: "Seleção múltipla" },
-  { value: "datetime", label: "Data e hora" },
-  { value: "url", label: "URL" },
-  { value: "file", label: "Arquivo" },
-  { value: "files", label: "Vários arquivos" },
-  { value: "image", label: "Imagem" },
-  { value: "audio", label: "Áudio" },
-  { value: "video", label: "Vídeo" },
-  { value: "thumbnail_layout", label: "Layout de thumbnail" },
-  { value: "approval", label: "Decisão" },
-];
-
-const RECORD_FIELD_TYPES: { value: RecordFieldType; label: string }[] = [
-  { value: "text", label: "Texto curto" },
-  { value: "textarea", label: "Texto longo" },
-  { value: "number", label: "Número" },
-  { value: "boolean", label: "Sim ou não" },
-  { value: "select", label: "Seleção" },
-  { value: "datetime", label: "Data e hora" },
-  { value: "url", label: "URL" },
-  { value: "file", label: "Arquivo" },
-  { value: "image", label: "Imagem" },
-  { value: "audio", label: "Áudio" },
-  { value: "video", label: "Vídeo" },
-];
-
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function newRecordField(index: number): RecordFieldDefinition {
-  return {
-    id: uid("record-field"),
-    label: index === 0 ? "Nome" : "Novo campo",
-    key: index === 0 ? "name" : `field_${index + 1}`,
-    type: index === 0 ? "text" : "textarea",
-    required: true,
-  };
+function shapeSummary(shape: ValueShape) {
+  const cardinality = shape.cardinality === "many" ? "vários" : "um";
+  if (shape.kind === "content") {
+    const representation = shape.representation === "artifact" ? "arquivo" : shape.representation;
+    return `${shape.family} · ${cardinality} · ${representation}`;
+  }
+  if (shape.kind === "record") return `registro · ${cardinality}`;
+  return `${shape.control} · ${cardinality}`;
 }
 
 export function MethodBuilder({
@@ -298,6 +287,7 @@ export function MethodBuilder({
   const [draftName, setDraftName] = useState("");
   const [draftImageUrl, setDraftImageUrl] = useState<string>();
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [pluginPanelBlockId, setPluginPanelBlockId] = useState<string | null>(null);
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [draftBlocks, setDraftBlocks] = useState<ActionBlock[]>([]);
   const [isDirty, setIsDirty] = useState(false);
@@ -305,7 +295,9 @@ export function MethodBuilder({
     "idle",
   );
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const [availablePlugins, setAvailablePlugins] = useState<DiscoveredPlugin[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
   const [readinessPlugins, setReadinessPlugins] = useState<DiscoveredPlugin[]>([]);
   const [readinessConnections, setReadinessConnections] = useState<Record<string, string[]>>({});
   const [transferPreview, setTransferPreview] = useState<MethodTransferPreview>();
@@ -326,12 +318,15 @@ export function MethodBuilder({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const reusableMethods = channels
-    .filter((candidate) => candidate.id !== channelId)
+    .filter((candidate) => candidate.id !== channelId && !channelNeedsUpgrade(candidate))
     .map((candidate) => ({
       channel: candidate,
       method: candidate.methods?.[processType],
     }))
-    .filter((candidate) => candidate.method?.blocks.length);
+    .filter(
+      (candidate) =>
+        candidate.method && !methodNeedsUpgrade(candidate.method) && candidate.method.blocks.length,
+    );
 
   currentProcessRef.current = processType;
 
@@ -340,6 +335,12 @@ export function MethodBuilder({
       setSelectedBlockId(null);
     }
   }, [blocks, selectedBlockId]);
+
+  useEffect(() => {
+    if (pluginPanelBlockId && pluginPanelBlockId !== selectedBlockId) {
+      setPluginPanelBlockId(null);
+    }
+  }, [pluginPanelBlockId, selectedBlockId]);
 
   useEffect(() => {
     let active = true;
@@ -351,9 +352,6 @@ export function MethodBuilder({
       .then((result) => {
         if (active) {
           setReadinessPlugins(result.plugins);
-          setAvailablePlugins(
-            result.plugins.filter((plugin) => plugin.enabled && plugin.executable),
-          );
           void Promise.all(
             result.plugins.map(async (plugin) => {
               try {
@@ -382,7 +380,6 @@ export function MethodBuilder({
       })
       .catch(() => {
         if (active) {
-          setAvailablePlugins([]);
           setReadinessPlugins([]);
           setReadinessConnections({});
         }
@@ -396,7 +393,7 @@ export function MethodBuilder({
     const changedProcess = loadedProcessRef.current !== processType;
     if (!changedProcess && isDirty) return;
 
-    const recovered = changedProcess ? readMethodDraft(channelId, processType) : undefined;
+    const recovered = readMethodDraft(channelId, processType);
     const loadedMethod = recovered ?? method;
     setDraftName(loadedMethod?.name ?? `Método de ${PROCESS_META[processType].label}`);
     setDraftImageUrl(loadedMethod?.imageUrl);
@@ -413,7 +410,7 @@ export function MethodBuilder({
 
   const persistMethod = useCallback(
     async (showConfirmation = false) => {
-      if (!channel) return;
+      if (!channel || deletingRef.current) return;
       const savingProcess = processType;
       const savingBlocks = blocks;
       const savingVersion = editVersionRef.current;
@@ -426,6 +423,7 @@ export function MethodBuilder({
             channel.id,
             savingProcess,
             {
+              contractVersion: 3,
               name: draftName.trim() || `Método de ${PROCESS_META[savingProcess].label}`,
               imageUrl: draftImageUrl,
               processType: savingProcess,
@@ -498,8 +496,10 @@ export function MethodBuilder({
   if (!channel || !method) return null;
 
   const saveBlocks = (nextBlocks: ActionBlock[]) => {
+    if (deletingRef.current) return;
     editVersionRef.current += 1;
     rememberMethodDraft(channelId, processType, {
+      contractVersion: 3,
       name: draftName,
       imageUrl: draftImageUrl,
       processType,
@@ -509,6 +509,34 @@ export function MethodBuilder({
     setIsDirty(true);
     setSaveStatus("pending");
   };
+
+  async function deleteMethod() {
+    if (!channel || deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
+    const wasDirty = isDirty;
+    setIsDirty(false);
+    editVersionRef.current += 1;
+    try {
+      await saveQueueRef.current.catch(() => undefined);
+      await removeChannelMethod(channel.id, processType, definitionRevisionRef.current);
+      setDraftBlocks([]);
+      setDraftImageUrl(undefined);
+      setSelectedBlockId(null);
+      setPluginPanelBlockId(null);
+      setSaveStatus("idle");
+      setDeleteOpen(false);
+      toast.success(t("Método apagado."));
+    } catch (error) {
+      setIsDirty(wasDirty);
+      toast.error(t("Não foi possível apagar o Método."), {
+        description: error instanceof Error ? t(error.message) : undefined,
+      });
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
+  }
 
   const loadAppliedProcess = (nextProcess: UniversalProcess) => {
     loadedProcessRef.current = null;
@@ -569,10 +597,16 @@ export function MethodBuilder({
     const processLabel = PROCESS_META[processType].label;
     const fileName = `metodo-${processType}.contentflow-method.zip`;
     const methodName = draftName.trim() || `Método de ${processLabel}`;
+    // Portable exports never carry local profile/project IDs or the managed URL value.
+    const profileSetupForExport = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const contents = serializeMethodFile(
       methodName,
-      { name: methodName, imageUrl: draftImageUrl, processType, blocks },
+      { contractVersion: 3, name: methodName, imageUrl: draftImageUrl, processType, blocks },
       collections,
+      profileSetupForExport,
     );
     const packageResponse = await fetch("/api/method-packages/export", {
       method: "POST",
@@ -639,19 +673,19 @@ export function MethodBuilder({
       ) {
         return;
       }
-      const isV2 = imported.version === 2;
-      const importedMethods = isV2
+      const isBundle = "methods" in imported;
+      const importedMethods = isBundle
         ? imported.methods.map((entry) => entry.method)
         : [imported.method];
-      const primaryProcess = isV2 ? imported.primaryProcessType : imported.method.processType;
+      const primaryProcess = isBundle ? imported.primaryProcessType : imported.method.processType;
       if (!primaryProcess) throw new Error(t("O Método principal não foi identificado."));
       setTransferPreview({
         name: imported.name,
         methods: importedMethods,
-        collections: isV2 ? imported.collections : [],
-        itemsIncluded: isV2 ? imported.itemsIncluded : false,
-        items: isV2 ? (imported.items ?? []) : [],
-        requirements: isV2
+        collections: isBundle ? imported.collections : [],
+        itemsIncluded: isBundle ? imported.itemsIncluded : false,
+        items: isBundle ? (imported.items ?? []) : [],
+        requirements: isBundle
           ? imported.methods.flatMap((entry) => entry.requirements)
           : (imported.requirements ?? []),
         preferredOrder: effectiveProcessOrder(channel),
@@ -699,10 +733,6 @@ export function MethodBuilder({
   };
 
   const addBlock = (type: BlockType) => {
-    const validationTarget =
-      type === "VALIDAR"
-        ? [...blocks].reverse().find((block) => block.type !== "VALIDAR")
-        : undefined;
     const newBlock: ActionBlock = {
       id: uid(`${processType}-${type.toLowerCase()}`),
       type,
@@ -712,12 +742,12 @@ export function MethodBuilder({
       inputs: [],
       outputs:
         type === "VALIDAR"
-          ? createValidationFields("approval", validationTarget?.id)
+          ? createValidationFields("approval")
           : createSuggestedHumanFields(processType, type),
       validation:
         type === "VALIDAR"
           ? {
-              targetBlockId: validationTarget?.id,
+              targetBlockId: "",
               mode: "approval",
               onReject: "retry_target",
               maxAttempts: 3,
@@ -768,6 +798,7 @@ export function MethodBuilder({
                   setDraftName(name);
                   editVersionRef.current += 1;
                   rememberMethodDraft(channelId, processType, {
+                    contractVersion: 3,
                     name,
                     imageUrl: draftImageUrl,
                     processType,
@@ -788,6 +819,53 @@ export function MethodBuilder({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Dialog
+              open={deleteOpen}
+              onOpenChange={(open) => {
+                if (!deleting) setDeleteOpen(open);
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-destructive"
+                  disabled={!blocks.length || deleting || saveStatus === "saving"}
+                >
+                  <Trash2 className="size-3.5" /> {t("Apagar Método")}
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{t("Apagar este Método e todos os seus Blocos?")}</DialogTitle>
+                  <DialogDescription>
+                    {t(
+                      "O Processo ficará sem Método configurado. Coleções e resultados já produzidos serão preservados.",
+                    )}
+                  </DialogDescription>
+                </DialogHeader>
+                <p data-i18n-ignore className="break-words text-sm font-medium">
+                  {draftName}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    disabled={deleting}
+                    onClick={() => setDeleteOpen(false)}
+                  >
+                    {t("Cancelar")}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={deleting}
+                    onClick={() => void deleteMethod()}
+                  >
+                    {deleting && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                    {t("Apagar Método")}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
             <input
               ref={fileInputRef}
               type="file"
@@ -1056,10 +1134,30 @@ export function MethodBuilder({
       <Dialog
         open={Boolean(selectedBlock)}
         onOpenChange={(open) => {
-          if (!open) setSelectedBlockId(null);
+          if (!open) {
+            if (pluginPanelBlockId === selectedBlock?.id) {
+              setPluginPanelBlockId(null);
+              return;
+            }
+            setPluginPanelBlockId(null);
+            setSelectedBlockId(null);
+          }
         }}
       >
-        <DialogContent className="sm:max-w-3xl lg:max-w-4xl">
+        <DialogContent
+          className={cn(
+            "p-0 transition-[width,max-width,height] duration-200",
+            pluginPanelBlockId === selectedBlock?.id
+              ? "h-[min(92vh,56rem)] w-[calc(100vw-1rem)] overflow-hidden sm:w-[calc(100vw-2rem)] sm:max-w-[80rem] [&>button:last-child]:hidden lg:[&>button:last-child]:grid"
+              : "max-h-[90vh] overflow-y-auto sm:max-w-3xl lg:max-w-4xl",
+          )}
+          onEscapeKeyDown={(event) => {
+            if (pluginPanelBlockId === selectedBlock?.id) {
+              event.preventDefault();
+              setPluginPanelBlockId(null);
+            }
+          }}
+        >
           <DialogHeader className="sr-only">
             <DialogTitle>Configurar bloco de ação</DialogTitle>
             <DialogDescription>
@@ -1075,9 +1173,13 @@ export function MethodBuilder({
               processType={processType}
               channelMethods={channel.methods}
               processOrder={effectiveProcessOrder(channel)}
-              plugins={availablePlugins}
+              plugins={readinessPlugins}
               index={blocks.indexOf(selectedBlock)}
               total={blocks.length}
+              pluginConfigurationOpen={pluginPanelBlockId === selectedBlock.id}
+              onPluginConfigurationOpenChange={(open) =>
+                setPluginPanelBlockId(open ? selectedBlock.id : null)
+              }
               onChange={(patch) => updateBlock(selectedBlock.id, patch)}
               onRemove={() => removeBlock(selectedBlock.id)}
             />
@@ -1315,9 +1417,15 @@ function MethodBlockCardContent({
     block.type === "ESCOLHER" && collectionName
       ? `Coleção: ${collectionName}`
       : block.instructions?.trim() || "Sem instruções";
-  const outputCount = block.outputs?.length ?? 0;
-  const inputLabels = (block.inputs ?? []).map(instructionInputLabel).filter(Boolean);
-  const outputLabels = (block.outputs ?? []).map(instructionInputLabel).filter(Boolean);
+  const outputCount = (block.outputs ?? []).filter(isMethodContentField).length;
+  const inputLabels = (block.inputs ?? [])
+    .filter(isMethodContentField)
+    .map(instructionInputLabel)
+    .filter(Boolean);
+  const outputLabels = (block.outputs ?? [])
+    .filter(isMethodContentField)
+    .map(instructionInputLabel)
+    .filter(Boolean);
 
   return (
     <>
@@ -1390,6 +1498,8 @@ function BlockEditor({
   plugins,
   index,
   total,
+  pluginConfigurationOpen,
+  onPluginConfigurationOpenChange,
   onChange,
   onRemove,
 }: {
@@ -1403,14 +1513,50 @@ function BlockEditor({
   plugins: DiscoveredPlugin[];
   index: number;
   total: number;
+  pluginConfigurationOpen: boolean;
+  onPluginConfigurationOpenChange: (open: boolean) => void;
   onChange: (patch: Partial<ActionBlock>) => void;
   onRemove: () => void;
 }) {
-  const [pluginExpanded, setPluginExpanded] = useState(!block.plugin);
+  const { language, t } = useAppPreferences();
+  const [pluginDraft, setPluginDraft] = useState<BlockPluginBinding | undefined>(() =>
+    block.plugin ? clonePluginConfigurationDraft(block.plugin) : undefined,
+  );
+  const [pluginDraftInvalid, setPluginDraftInvalid] = useState(false);
+  const [portDraftBlock, setPortDraftBlock] = useState(() => structuredClone(block));
+  const portDefinitionRef = useRef(JSON.stringify([block.id, block.inputs, block.outputs]));
+  useEffect(() => {
+    const definition = JSON.stringify([block.id, block.inputs, block.outputs]);
+    if (portDefinitionRef.current === definition) return;
+    portDefinitionRef.current = definition;
+    setPortDraftBlock(structuredClone(block));
+  }, [block]);
+  const pluginTriggerRef = useRef<HTMLButtonElement>(null);
+  const previousPluginConfigurationOpenRef = useRef(pluginConfigurationOpen);
+  useEffect(() => {
+    setPluginDraft(block.plugin ? clonePluginConfigurationDraft(block.plugin) : undefined);
+    setPluginDraftInvalid(false);
+  }, [block.id, block.plugin]);
+  useEffect(() => {
+    const wasOpen = previousPluginConfigurationOpenRef.current;
+    previousPluginConfigurationOpenRef.current = pluginConfigurationOpen;
+    if (wasOpen && !pluginConfigurationOpen) {
+      requestAnimationFrame(() => pluginTriggerRef.current?.focus());
+    }
+  }, [pluginConfigurationOpen]);
+  const setPluginConfigurationVisibility = (open: boolean) => {
+    onPluginConfigurationOpenChange(open);
+    setPluginDraftInvalid(false);
+    setPluginDraft(open && block.plugin ? clonePluginConfigurationDraft(block.plugin) : undefined);
+    setPortDraftBlock(structuredClone(block));
+    if (!open) requestAnimationFrame(() => pluginTriggerRef.current?.focus());
+  };
   const meta = BLOCK_META[block.type];
   const Icon = meta.icon;
-  const compatibleCapabilities = plugins.flatMap((plugin) =>
-    plugin.manifest.capabilities
+  const compatibleCapabilities = plugins.flatMap((plugin) => {
+    if (!plugin.enabled || !plugin.executable) return [];
+    const manifest = localizePluginManifest(plugin.manifest, language);
+    return manifest.capabilities
       .filter(
         (capability) =>
           capability.operator === block.operator &&
@@ -1418,54 +1564,30 @@ function BlockEditor({
             (capability.blockTypes.includes(block.type) &&
               (!capability.processTypes || capability.processTypes.includes(processType)))),
       )
-      .map((capability) => ({ plugin, capability })),
-  );
+      .map((capability) => ({
+        plugin,
+        manifest,
+        capability,
+      }));
+  });
   const selectedPlugin = plugins.find((plugin) => plugin.id === block.plugin?.pluginId);
-  const selectedCapability = selectedPlugin?.manifest.capabilities.find(
+  const selectedManifest = selectedPlugin
+    ? localizePluginManifest(selectedPlugin.manifest, language)
+    : undefined;
+  const selectedCapability = selectedManifest?.capabilities.find(
     (capability) => capability.id === block.plugin?.capabilityId,
   );
+  const selectedPluginUnavailable = Boolean(
+    selectedPlugin && (!selectedPlugin.enabled || !selectedPlugin.executable),
+  );
+  const selectedPluginMissing = Boolean(block.plugin && !selectedPlugin);
+  const savedPluginLabel = block.plugin
+    ? `${selectedManifest?.name ?? block.plugin.pluginId} · ${
+        selectedCapability ? pluginCapabilityLabel(selectedCapability) : block.plugin.capabilityId
+      }`
+    : t("Selecione quem executará esta ação");
+  const profileSetup = selectedManifest?.profileSetup;
   const isManualHumanTool = selectedCapability?.operator === "Humano";
-  const configProperties = selectedCapability?.blockConfigSchema.properties ?? {};
-  const profileSetup = selectedPlugin?.manifest.profileSetup;
-  const profileConfigurationKeys = [
-    profileSetup?.configurationKey,
-    profileSetup?.fallbackConfigurationKey,
-  ].filter((key): key is string => Boolean(key));
-  const generationModeSchema = configProperties.generationMode;
-  const generationModeOptions = [
-    ...(generationModeSchema?.enum ?? []),
-    ...(generationModeSchema?.oneOf?.map((option) => option.const) ?? []),
-  ];
-  const sequenceModeValue = generationModeOptions.includes("sequence")
-    ? "sequence"
-    : generationModeOptions.includes("outline_sequence")
-      ? "outline_sequence"
-      : undefined;
-  const supportsItemSequence =
-    generationModeOptions.includes("single") && Boolean(sequenceModeValue);
-  const generationMode = block.plugin?.configuration.generationMode;
-  const simpleGenerationMode = generationModeOptions.includes(
-    generationMode as string | number | boolean,
-  )
-    ? String(generationMode)
-    : String(generationModeSchema?.default ?? "single");
-  const isConfigurationVisible = (schema: JsonSchema) => {
-    const rule = schema.visibleWhen;
-    return !rule || rule.values.includes(block.plugin?.configuration[rule.property] as never);
-  };
-  const primaryConfigurationEntries = Object.entries(configProperties).filter(
-    ([key, schema]) =>
-      ["model", "voice_id", "productionMode"].includes(key) && isConfigurationVisible(schema),
-  );
-  const advancedConfigurationEntries = Object.entries(configProperties).filter(
-    ([key, schema]) =>
-      isConfigurationVisible(schema) &&
-      !(supportsItemSequence && key === "generationMode") &&
-      !profileConfigurationKeys.includes(key) &&
-      !primaryConfigurationEntries.some(([primaryKey]) => primaryKey === key),
-  );
-  const isCompactConfigurationField = ([, schema]: [string, JsonSchema]) =>
-    schema.type === "integer" || schema.type === "number" || schema.type === "boolean";
   const conversationSources = processOrder.flatMap((candidateProcess) => {
     const processIndex = processOrder.indexOf(candidateProcess);
     const currentProcessIndex = processOrder.indexOf(processType);
@@ -1482,23 +1604,50 @@ function BlockEditor({
     const used = new Set<string>();
     return (block.inputs ?? []).map((input) => {
       const compatible = selectedCapability.inputPorts.filter(
-        (port) => port.acceptedTypes.includes(input.type) && (port.multiple || !used.has(port.key)),
+        (port) => areValueShapesCompatible(input.shape, port.shape) && !used.has(port.key),
       );
       const selected = input.portKey
         ? compatible.find((port) => port.key === input.portKey)
         : compatible.length === 1
           ? compatible[0]
           : undefined;
-      if (selected && !selected.multiple) used.add(selected.key);
+      if (selected) used.add(selected.key);
       return { input, compatible, selected, ambiguous: !input.portKey && compatible.length > 1 };
     });
+  })();
+  const validationTarget =
+    block.type === "VALIDAR"
+      ? methodBlocks.find((candidate) => candidate.id === block.validation?.targetBlockId)
+      : undefined;
+  const validationTargetOutput = validationTarget?.outputs?.find(
+    (output) => output.key === block.validation?.targetOutputKey,
+  );
+  const validationTargetPortState = (() => {
+    if (!selectedCapability || isManualHumanTool || !validationTargetOutput) return undefined;
+    const used = new Set(
+      inputPortState.flatMap((item) => (item.selected ? [item.selected.key] : [])),
+    );
+    const compatible = selectedCapability.inputPorts.filter(
+      (port) =>
+        areValueShapesCompatible(validationTargetOutput.shape, port.shape) && !used.has(port.key),
+    );
+    const selected = block.validation?.targetPortKey
+      ? compatible.find((port) => port.key === block.validation?.targetPortKey)
+      : compatible.length === 1
+        ? compatible[0]
+        : undefined;
+    return {
+      compatible,
+      selected,
+      ambiguous: !block.validation?.targetPortKey && compatible.length > 1,
+    };
   })();
   const outputPortState = isManualHumanTool
     ? []
     : (block.outputs ?? []).map((field) => {
         const compatible =
           selectedCapability?.outputPorts.filter((port) =>
-            port.producedTypes.includes(field.type),
+            areValueShapesCompatible(port.shape, field.shape),
           ) ?? [];
         const selected = field.portKey
           ? compatible.find((port) => port.key === field.portKey)
@@ -1512,190 +1661,81 @@ function BlockEditor({
       ? []
       : selectedCapability?.inputPorts.filter(
           (port) =>
-            port.required && !inputPortState.some((item) => item.selected?.key === port.key),
+            port.required &&
+            !inputPortState.some((item) => item.selected?.key === port.key) &&
+            validationTargetPortState?.selected?.key !== port.key,
         )) ?? [];
+  const unboundInputPorts =
+    selectedCapability?.inputPorts.filter(
+      (port) =>
+        !inputPortState.some((item) => item.selected?.key === port.key) &&
+        validationTargetPortState?.selected?.key !== port.key,
+    ) ?? [];
   const contractIssues =
     [
       ...inputPortState.filter((item) => !item.selected),
       ...outputPortState.filter((item) => !item.selected),
-    ].length + requiredPortsMissing.length;
-
-  const renderConfigurationField = ([key, schema]: [string, JsonSchema]) => (
-    <PluginConfigurationField
-      key={key}
-      propertyKey={key}
-      schema={schema}
-      value={
-        block.plugin?.configuration[key] ??
-        (typeof schema.default === "string" ||
-        typeof schema.default === "number" ||
-        typeof schema.default === "boolean"
-          ? schema.default
-          : undefined)
-      }
-      onChange={(value) =>
-        onChange({
-          plugin: {
-            ...block.plugin!,
-            configuration: { ...block.plugin!.configuration, [key]: value },
-          },
-        })
-      }
-    />
-  );
+    ].length +
+    requiredPortsMissing.length +
+    (validationTargetOutput && !validationTargetPortState?.selected ? 1 : 0);
 
   return (
-    <div className="min-w-0">
-      <div className="flex items-start justify-between gap-3 pr-8">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <span className={cn("grid size-10 place-items-center rounded-md border", meta.className)}>
-            <Icon className="size-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium uppercase text-muted-foreground">{meta.label}</p>
-            <Label htmlFor={`${block.id}-name`} className="sr-only">
-              Nome da ação
-            </Label>
-            <Input
-              id={`${block.id}-name`}
-              value={block.name ?? meta.label}
-              onChange={(event) => onChange({ name: event.target.value })}
-              placeholder={meta.label}
-              className="h-auto border-0 bg-transparent p-0 text-xl font-semibold shadow-none focus-visible:ring-1 focus-visible:ring-brand"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Bloco {index + 1} de {total}
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 text-muted-foreground hover:text-destructive"
-            onClick={onRemove}
-            aria-label="Remover bloco"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      <div className="mt-6 space-y-5 rounded-xl border border-brand/30 bg-card/35 p-4 sm:p-5">
-        <InstructionEditor
-          block={block}
-          capability={selectedCapability}
-          methodBlocks={methodBlocks}
-          blockIndex={index}
-          processType={processType}
-          channelMethods={channelMethods}
-          processOrder={processOrder}
-          collections={collections}
-          onChange={onChange}
-        />
-
-        <div className="space-y-1.5 border-t border-border/60 pt-4">
-          <Label>Operador responsável</Label>
-          <Select
-            value={block.operator}
-            onValueChange={(value) =>
-              onChange({ operator: value as BlockOperator, plugin: undefined })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(OPERATOR_META) as BlockOperator[]).map((operator) => {
-                const item = OPERATOR_META[operator];
-                const OperatorIcon = item.icon;
-                return (
-                  <SelectItem key={operator} value={operator}>
-                    <span className="flex items-center gap-2">
-                      <OperatorIcon className="size-3.5" /> {item.label}
-                    </span>
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {block.type === "ESCOLHER" && (
-          <div className="space-y-4 border-t border-border/60 pt-4">
-            <div className="space-y-1.5">
-              <Label>Coleção estratégica</Label>
-              {collections.length ? (
-                <Select
-                  value={block.collectionId}
-                  onValueChange={(collectionId) => onChange({ collectionId })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione a coleção deste bloco" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {collections.map((collection) => (
-                      <SelectItem key={collection.id} value={collection.id}>
-                        {collection.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-                  Nenhuma coleção criada. Acesse a{" "}
-                  <a
-                    href={`/channel/${channelId}/library`}
-                    className="font-medium text-brand-soft hover:underline"
-                  >
-                    Biblioteca Estratégica
-                  </a>{" "}
-                  para criar a primeira.
-                </div>
-              )}
+    <div
+      className={cn(
+        "min-w-0",
+        pluginConfigurationOpen &&
+          "grid h-full min-h-0 lg:grid-cols-[minmax(22rem,0.82fr)_minmax(32rem,1.18fr)]",
+      )}
+      data-plugin-workspace={pluginConfigurationOpen ? "open" : "closed"}
+    >
+      <div
+        className={cn(
+          "min-w-0 p-6",
+          pluginConfigurationOpen &&
+            "hidden min-h-0 overflow-y-auto lg:block lg:border-r lg:border-border/70",
+        )}
+      >
+        <div className="flex items-start justify-between gap-3 pr-8">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span
+              className={cn("grid size-10 place-items-center rounded-md border", meta.className)}
+            >
+              <Icon className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium uppercase text-muted-foreground">{meta.label}</p>
+              <Label htmlFor={`${block.id}-name`} className="sr-only">
+                Nome da ação
+              </Label>
+              <Input
+                id={`${block.id}-name`}
+                value={block.name ?? meta.label}
+                onChange={(event) => onChange({ name: event.target.value })}
+                placeholder={meta.label}
+                className="h-auto border-0 bg-transparent p-0 text-xl font-semibold shadow-none focus-visible:ring-1 focus-visible:ring-brand"
+              />
               <p className="text-[11px] text-muted-foreground">
-                Obrigatório: Escolher sempre seleciona entre itens preexistentes desta coleção. Para
-                decidir entre resultados produzidos durante o método, use um bloco Validar.
+                Bloco {index + 1} de {total}
               </p>
             </div>
-
-            <ContextInputsEditor
-              block={block}
-              methodBlocks={methodBlocks}
-              blockIndex={index}
-              processType={processType}
-              channelMethods={channelMethods}
-              processOrder={processOrder}
-              collections={collections}
-              onChange={onChange}
-            />
           </div>
-        )}
-
-        {block.type === "VALIDAR" && (
-          <div className="space-y-4 border-t border-border/60 pt-4">
-            <ValidationEditor
-              block={block}
-              methodBlocks={methodBlocks}
-              index={index}
-              onChange={onChange}
-            />
-            <ContextInputsEditor
-              block={block}
-              methodBlocks={methodBlocks}
-              blockIndex={index}
-              processType={processType}
-              channelMethods={channelMethods}
-              processOrder={processOrder}
-              collections={collections}
-              onChange={onChange}
-            />
+          <div className="flex shrink-0 gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+              aria-label="Remover bloco"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
           </div>
-        )}
+        </div>
 
-        {block.type !== "ESCOLHER" && block.type !== "VALIDAR" && (
-          <DataContractEditor
+        <div className="mt-6 space-y-5 rounded-xl border border-brand/30 bg-card/35 p-4 sm:p-5">
+          <InstructionEditor
             block={block}
+            capability={selectedCapability}
             methodBlocks={methodBlocks}
             blockIndex={index}
             processType={processType}
@@ -1704,25 +1744,151 @@ function BlockEditor({
             collections={collections}
             onChange={onChange}
           />
-        )}
-      </div>
 
-      <details
-        className="group mt-4 rounded-xl border border-brand/30 bg-brand/5"
-        open={pluginExpanded}
-        onToggle={(event) => setPluginExpanded(event.currentTarget.open)}
-      >
-        <summary className="flex cursor-pointer list-none items-center gap-3 p-4 sm:p-5 [&::-webkit-details-marker]:hidden">
-          <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">Plugin executor</p>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {selectedPlugin && selectedCapability
-                ? `${selectedPlugin.manifest.name} · ${pluginCapabilityLabel(selectedCapability)}`
-                : "Selecione quem executará esta ação"}
-            </p>
+          <div className="space-y-1.5 border-t border-border/60 pt-4">
+            <Label>Operador responsável</Label>
+            <Select
+              value={block.operator}
+              onValueChange={(value) =>
+                onChange({ operator: value as BlockOperator, plugin: undefined })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(OPERATOR_META) as BlockOperator[]).map((operator) => {
+                  const item = OPERATOR_META[operator];
+                  const OperatorIcon = item.icon;
+                  return (
+                    <SelectItem key={operator} value={operator}>
+                      <span className="flex items-center gap-2">
+                        <OperatorIcon className="size-3.5" /> {item.label}
+                      </span>
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
           </div>
-          {selectedCapability && (
+
+          {block.type === "ESCOLHER" && (
+            <div className="space-y-4 border-t border-border/60 pt-4">
+              <div className="space-y-1.5">
+                <Label>Coleção estratégica</Label>
+                {collections.length ? (
+                  <Select
+                    value={block.collectionId}
+                    onValueChange={(collectionId) => onChange({ collectionId })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione a coleção deste bloco" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {collections.map((collection) => (
+                        <SelectItem key={collection.id} value={collection.id}>
+                          {collection.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                    Nenhuma coleção criada. Acesse a{" "}
+                    <a
+                      href={`/channel/${channelId}/library`}
+                      className="font-medium text-brand-soft hover:underline"
+                    >
+                      Biblioteca Estratégica
+                    </a>{" "}
+                    para criar a primeira.
+                  </div>
+                )}
+                <p className="text-[11px] text-muted-foreground">
+                  Obrigatório: Escolher sempre seleciona entre itens preexistentes desta coleção.
+                  Para decidir entre resultados produzidos durante o método, use um bloco Validar.
+                </p>
+              </div>
+
+              <ContextInputsEditor
+                block={block}
+                methodBlocks={methodBlocks}
+                blockIndex={index}
+                processType={processType}
+                channelMethods={channelMethods}
+                processOrder={processOrder}
+                collections={collections}
+                onChange={onChange}
+              />
+            </div>
+          )}
+
+          {block.type === "VALIDAR" && (
+            <div className="space-y-4 border-t border-border/60 pt-4">
+              <ValidationEditor
+                block={block}
+                methodBlocks={methodBlocks}
+                index={index}
+                capability={selectedCapability}
+                onChange={onChange}
+              />
+              <ContextInputsEditor
+                block={block}
+                methodBlocks={methodBlocks}
+                blockIndex={index}
+                processType={processType}
+                channelMethods={channelMethods}
+                processOrder={processOrder}
+                collections={collections}
+                onChange={onChange}
+              />
+            </div>
+          )}
+
+          {block.type !== "ESCOLHER" && block.type !== "VALIDAR" && (
+            <DataContractEditor
+              block={block}
+              methodBlocks={methodBlocks}
+              blockIndex={index}
+              processType={processType}
+              channelMethods={channelMethods}
+              processOrder={processOrder}
+              collections={collections}
+              onChange={onChange}
+            />
+          )}
+        </div>
+
+        <button
+          ref={pluginTriggerRef}
+          type="button"
+          className="mt-4 flex w-full items-center gap-3 rounded-xl border border-brand/30 bg-brand/5 p-4 text-left transition hover:border-brand/50 hover:bg-brand/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand sm:p-5"
+          onClick={(event) => {
+            event.stopPropagation();
+            setPluginConfigurationVisibility(true);
+          }}
+        >
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">{t("Plugin executor")}</p>
+            <p className="truncate text-[11px] text-muted-foreground">{savedPluginLabel}</p>
+            {block.plugin && (
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {t("Configuração salva")} · {Object.keys(block.plugin.configuration ?? {}).length}{" "}
+                {t("campos")}
+                {block.plugin.profileExecution
+                  ? ` · ${t("Perfis")}: ${block.plugin.profileExecution.profileIds.length}`
+                  : ""}
+              </p>
+            )}
+          </div>
+          {selectedPluginMissing || selectedPluginUnavailable ? (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-amber-500/50 text-[9px] font-normal text-amber-700 dark:text-amber-300"
+            >
+              {selectedPluginMissing ? t("Plugin ausente") : t("Plugin desativado ou indisponível")}
+            </Badge>
+          ) : selectedCapability ? (
             <Badge
               variant="outline"
               className={cn(
@@ -1732,380 +1898,675 @@ function BlockEditor({
                   : "border-emerald-500/50 text-emerald-700 dark:text-emerald-300",
               )}
             >
-              {contractIssues ? "Requer ajustes" : "Pronto para executar"}
+              {contractIssues ? t("Requer ajustes") : t("Pronto para executar")}
             </Badge>
-          )}
-        </summary>
-        <div className="space-y-4 border-t border-brand/20 p-4 sm:p-5">
-          <div className="space-y-1.5">
-            <Label>Plugin e capacidade</Label>
-            <p className="text-[11px] text-muted-foreground">
-              Escolha a ferramenta que realizará esta ação com o contrato definido acima.
-            </p>
-            {compatibleCapabilities.length ? (
-              <Select
-                value={block.plugin ? `${block.plugin.pluginId}::${block.plugin.capabilityId}` : ""}
-                onValueChange={(value) => {
-                  const [pluginId, capabilityId] = value.split("::");
-                  const selection = compatibleCapabilities.find(
-                    (item) => item.plugin.id === pluginId && item.capability.id === capabilityId,
-                  );
-                  const properties = selection?.capability.blockConfigSchema.properties ?? {};
-                  const managedProfileKeys = [
-                    selection?.plugin.manifest.profileSetup?.configurationKey,
-                    selection?.plugin.manifest.profileSetup?.fallbackConfigurationKey,
-                  ].filter((key): key is string => Boolean(key));
-                  const configuration = Object.fromEntries(
-                    Object.entries(properties)
-                      .filter(
-                        ([key, schema]) =>
-                          schema.default !== undefined && !managedProfileKeys.includes(key),
-                      )
-                      .map(([key, schema]) => [key, schema.default as string | number | boolean]),
-                  );
-                  const requestedInputs = block.inputs?.map((input) => {
-                    const compatiblePorts =
-                      selection?.capability.inputPorts.filter((candidate) =>
-                        candidate.acceptedTypes.includes(input.type),
-                      ) ?? [];
-                    const port = compatiblePorts[0];
-                    const current = normalizeFieldPresentation(input.type, input.presentation);
-                    return {
-                      ...input,
-                      portKey: compatiblePorts.length === 1 ? port?.key : undefined,
-                      presentation: normalizeFieldPresentation(
-                        input.type,
-                        current.renderer === "auto" ? (port?.presentation ?? current) : current,
-                      ),
-                    };
-                  });
-                  const requestedOutputs = block.outputs?.map((output) => {
-                    const compatiblePorts =
-                      selection?.capability.outputPorts.filter((candidate) =>
-                        candidate.producedTypes.includes(output.type),
-                      ) ?? [];
-                    const port = compatiblePorts[0];
-                    const current = normalizeFieldPresentation(output.type, output.presentation);
-                    return {
-                      ...output,
-                      portKey: compatiblePorts.length === 1 ? port?.key : undefined,
-                      presentation: normalizeFieldPresentation(
-                        output.type,
-                        current.renderer === "auto" ? (port?.presentation ?? current) : current,
-                      ),
-                    };
-                  });
-                  onChange({
-                    plugin: {
+          ) : null}
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </div>
+
+      {pluginConfigurationOpen && (
+        <section
+          className="flex min-h-0 min-w-0 flex-col bg-popover"
+          aria-labelledby={`${block.id}-plugin-panel-title`}
+          data-testid="plugin-configuration-panel"
+        >
+          <header className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-4 sm:px-6">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                {t("Bloco")} · <span className="normal-case">{block.name ?? meta.label}</span>
+              </p>
+              <h2 id={`${block.id}-plugin-panel-title`} className="mt-1 text-xl font-semibold">
+                {t("Configurar plugin executor")}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t("Revise o executor, o contrato e as configurações locais desta ação.")}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="shrink-0 gap-1.5 lg:hidden"
+              aria-label={t("Fechar configuração do plugin")}
+              onClick={(event) => {
+                event.stopPropagation();
+                setPluginConfigurationVisibility(false);
+              }}
+            >
+              <ArrowLeft className="size-4" />
+              <span>{t("Voltar ao bloco")}</span>
+            </Button>
+          </header>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+            {(selectedPluginMissing || selectedPluginUnavailable) && block.plugin && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-900 dark:text-amber-100">
+                <p className="font-medium">
+                  {selectedPluginMissing
+                    ? t("A configuração histórica foi preservada, mas o plugin não está instalado.")
+                    : t(
+                        "A configuração histórica foi preservada, mas o plugin está desativado ou indisponível.",
+                      )}
+                </p>
+                <p className="mt-1 break-all text-[11px] opacity-80">
+                  {block.plugin.pluginId} · {block.plugin.capabilityId}
+                </p>
+                {Object.keys(block.plugin.configuration ?? {}).length > 0 && (
+                  <dl className="mt-3 grid gap-2 rounded-md border border-amber-500/20 bg-background/40 p-3 sm:grid-cols-2">
+                    {Object.entries(block.plugin.configuration).map(([key, value]) => (
+                      <div key={key} className="min-w-0">
+                        <dt className="text-[10px] font-medium opacity-70">{key}</dt>
+                        <dd className="truncate text-[11px]" title={String(value)}>
+                          {String(value)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>Plugin e capacidade</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Escolha a ferramenta que realizará esta ação com o contrato definido acima.
+              </p>
+              {compatibleCapabilities.length ? (
+                <Select
+                  value={
+                    block.plugin ? `${block.plugin.pluginId}::${block.plugin.capabilityId}` : ""
+                  }
+                  onValueChange={(value) => {
+                    const [pluginId, capabilityId] = value.split("::");
+                    const selection = compatibleCapabilities.find(
+                      (item) => item.plugin.id === pluginId && item.capability.id === capabilityId,
+                    );
+                    const properties = selection?.capability.blockConfigSchema.properties ?? {};
+                    const managedProfileKeys = [
+                      selection?.plugin.manifest.profileSetup?.configurationKey,
+                      selection?.plugin.manifest.profileSetup?.fallbackConfigurationKey,
+                    ].filter((key): key is string => Boolean(key));
+                    const configuration = Object.fromEntries(
+                      Object.entries(properties)
+                        .filter(
+                          ([key, schema]) =>
+                            schema.default !== undefined && !managedProfileKeys.includes(key),
+                        )
+                        .map(([key, schema]) => [key, schema.default as string | number | boolean]),
+                    );
+                    const requestedInputs = block.inputs?.map((input) => {
+                      const compatiblePorts =
+                        selection?.capability.inputPorts.filter((candidate) =>
+                          areValueShapesCompatible(input.shape, candidate.shape),
+                        ) ?? [];
+                      const port = compatiblePorts[0];
+                      const current = normalizeFieldPresentation(input.shape, input.presentation);
+                      return {
+                        ...input,
+                        portKey: compatiblePorts.length === 1 ? port?.key : undefined,
+                        presentation: current,
+                      };
+                    });
+                    const requestedOutputs = block.outputs?.map((output) => {
+                      const compatiblePorts =
+                        selection?.capability.outputPorts.filter((candidate) =>
+                          areValueShapesCompatible(candidate.shape, output.shape),
+                        ) ?? [];
+                      const port = compatiblePorts[0];
+                      const current = normalizeFieldPresentation(output.shape, output.presentation);
+                      return {
+                        ...output,
+                        portKey: compatiblePorts.length === 1 ? port?.key : undefined,
+                        presentation: current,
+                      };
+                    });
+                    const requestedValidation = block.validation
+                      ? (() => {
+                          const target = methodBlocks.find(
+                            (candidate) => candidate.id === block.validation?.targetBlockId,
+                          );
+                          const targetOutput = target?.outputs?.find(
+                            (output) => output.key === block.validation?.targetOutputKey,
+                          );
+                          if (!targetOutput) {
+                            return { ...block.validation, targetPortKey: undefined };
+                          }
+                          const usedPorts = new Set(
+                            (requestedInputs ?? []).flatMap((input) =>
+                              input.portKey ? [input.portKey] : [],
+                            ),
+                          );
+                          const compatiblePorts =
+                            selection?.capability.inputPorts.filter(
+                              (port) =>
+                                areValueShapesCompatible(targetOutput.shape, port.shape) &&
+                                !usedPorts.has(port.key),
+                            ) ?? [];
+                          return {
+                            ...block.validation,
+                            targetPortKey:
+                              compatiblePorts.length === 1 ? compatiblePorts[0].key : undefined,
+                          };
+                        })()
+                      : undefined;
+                    const nextPlugin: BlockPluginBinding = {
                       pluginId,
                       pluginVersion: selection?.plugin.manifest.version,
                       capabilityId,
                       configuration,
-                      connectionRequired: Boolean(selection?.plugin.manifest.secretKeys?.length),
-                    },
-                    inputs: requestedInputs,
-                    outputs: requestedOutputs,
-                  });
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione um plugin compatível" />
-                </SelectTrigger>
-                <SelectContent>
-                  {compatibleCapabilities.map(({ plugin, capability }) => (
-                    <SelectItem
-                      key={`${plugin.id}::${capability.id}`}
-                      value={`${plugin.id}::${capability.id}`}
-                    >
-                      {plugin.manifest.name} · {pluginCapabilityLabel(capability)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-                Nenhum plugin instalado é compatível com este bloco, processo e contrato de saída.
-              </p>
-            )}
-          </div>
-
-          {selectedCapability && (
-            <div className="space-y-3">
-              <div
-                className={cn(
-                  "rounded-lg border p-3 text-[11px]",
-                  contractIssues
-                    ? "border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-200"
-                    : "border-emerald-500/40 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200",
-                )}
-              >
-                <p className="font-medium">
-                  {contractIssues
-                    ? "Revise o contrato antes de executar"
-                    : "O plugin está recebendo tudo o que precisa"}
-                </p>
-                <p className="mt-0.5 opacity-80">
-                  {contractIssues
-                    ? "Escolha como as entradas e entregas ambíguas serão usadas pelo plugin."
-                    : "Entradas, entregas e formatos são compatíveis com esta capacidade."}
-                </p>
-              </div>
-
-              {(inputPortState.length > 0 || outputPortState.length > 0) && (
-                <details className="rounded-lg border border-border/70 bg-card/60 p-3">
-                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    Dados usados pelo plugin
-                  </summary>
-                  <div className="mt-3 space-y-3">
-                    {inputPortState.map(({ input, compatible, selected, ambiguous }) => (
-                      <div key={input.id} className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <Label className="text-[10px] text-muted-foreground">
-                            Entrada · {instructionInputLabel(input)}
-                          </Label>
-                          {ambiguous && (
-                            <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
-                              Escolha necessária
-                            </span>
-                          )}
-                        </div>
-                        <Select
-                          value={input.portKey ?? (selected ? selected.key : "")}
-                          onValueChange={(portKey) =>
-                            onChange({
-                              inputs: (block.inputs ?? []).map((item) =>
-                                item.id === input.id ? { ...item, portKey } : item,
-                              ),
-                            })
-                          }
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue placeholder="Como o plugin usará este dado?" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {compatible.map((port) => (
-                              <SelectItem key={port.key} value={port.key}>
-                                {port.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {selected?.description && (
-                          <p className="text-[10px] text-muted-foreground">
-                            {selected.description}
-                          </p>
-                        )}
-                        {!compatible.length && (
-                          <p className="text-[10px] text-destructive">
-                            Nenhuma porta aceita o formato {input.type}.
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                    {outputPortState.map(({ field, compatible, selected, ambiguous }) => (
-                      <div key={field.id} className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <Label className="text-[10px] text-muted-foreground">
-                            Entrega · {instructionInputLabel(field)}
-                          </Label>
-                          {ambiguous && (
-                            <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
-                              Escolha necessária
-                            </span>
-                          )}
-                        </div>
-                        <Select
-                          value={field.portKey ?? (selected ? selected.key : "")}
-                          onValueChange={(portKey) =>
-                            onChange({
-                              outputs: (block.outputs ?? []).map((item) =>
-                                item.id === field.id ? { ...item, portKey } : item,
-                              ),
-                            })
-                          }
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue placeholder="O que o plugin entregará aqui?" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {compatible.map((port) => (
-                              <SelectItem key={port.key} value={port.key}>
-                                {port.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {selected?.description && (
-                          <p className="text-[10px] text-muted-foreground">
-                            {selected.description}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                    {requiredPortsMissing.map((port) => (
-                      <p key={port.key} className="text-[10px] text-destructive">
-                        Falta uma entrada para: {port.label}.
-                      </p>
-                    ))}
-                  </div>
-                </details>
-              )}
-              <PluginPromptPreview
-                block={block}
-                capability={selectedCapability}
-                inputs={inputPortState.map(({ input, selected }) => ({
-                  input,
-                  portKey: selected?.key,
-                }))}
-              />
-              <MethodParametersEditor
-                block={block}
-                onChange={(parameters) => onChange({ parameters })}
-              />
-              {selectedCapability.instructionUsage !== "not_applicable" && (
-                <p className="rounded-lg border border-brand/20 bg-brand/5 p-3 text-[11px] text-muted-foreground">
-                  A instrução do bloco define o que deve ser feito. Os templates editáveis do plugin
-                  definem como essa instrução e o contexto são montados e enviados ao provedor.
-                </p>
-              )}
-              {selectedPlugin?.manifest.secretKeys?.length && block.plugin && (
-                <PluginConnectionSelector
-                  plugin={selectedPlugin}
-                  value={block.plugin.connectionId}
-                  onChange={(connectionId) =>
+                      connectionRequired: selection
+                        ? pluginConnectionRequired(selection.plugin.manifest)
+                        : false,
+                    };
+                    setPluginDraft(clonePluginConfigurationDraft(nextPlugin));
+                    setPluginDraftInvalid(false);
                     onChange({
-                      plugin: {
-                        ...block.plugin!,
-                        connectionId,
-                        connectionRequired: true,
-                      },
-                    })
-                  }
-                />
-              )}
-              {profileSetup && block.plugin && (
-                <ManagedProfileSelector
-                  plugin={selectedPlugin}
-                  profileSetup={profileSetup}
-                  configuration={block.plugin.configuration}
-                  onChange={(configuration) =>
-                    onChange({ plugin: { ...block.plugin!, configuration } })
-                  }
-                />
-              )}
-              {selectedPlugin?.manifest.supportsConversationContinuation && block.plugin && (
-                <div className="space-y-1.5">
-                  <Label>Conversa</Label>
-                  <Select
-                    value={
-                      block.plugin.conversation?.mode === "reuse"
-                        ? `${block.plugin.conversation.sourceProcessType}::${block.plugin.conversation.sourceBlockId}`
-                        : "new"
-                    }
-                    onValueChange={(value) => {
-                      const [sourceProcessType, sourceBlockId] = value.split("::");
-                      onChange({
-                        plugin: {
-                          ...block.plugin!,
-                          conversation:
-                            value === "new"
-                              ? { mode: "new" }
-                              : {
-                                  mode: "reuse",
-                                  sourceProcessType: sourceProcessType as UniversalProcess,
-                                  sourceBlockId,
-                                },
-                        },
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="new">Iniciar uma conversa nova</SelectItem>
-                      {conversationSources.map((source) => (
-                        <SelectItem
-                          key={`${source.processType}::${source.block.id}`}
-                          value={`${source.processType}::${source.block.id}`}
-                        >
-                          Continuar: {PROCESS_META[source.processType].label} ·{" "}
-                          {source.block.name ?? source.block.type}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] text-muted-foreground">
-                    Use a mesma conversa para preservar o contexto do provedor. Se o perfil mudar ou
-                    a conversa não abrir, o plugin inicia outra e recebe o contexto do bloco de
-                    origem.
-                  </p>
-                </div>
-              )}
-              {primaryConfigurationEntries.map(renderConfigurationField)}
-              {supportsItemSequence && block.plugin && (
-                <div className="space-y-1.5">
-                  <Label>Como executar</Label>
-                  <Select
-                    value={simpleGenerationMode}
-                    onValueChange={(value) => {
-                      if (!generationModeOptions.includes(value)) return;
-                      onChange({
-                        plugin: {
-                          ...block.plugin!,
-                          configuration: {
-                            ...block.plugin!.configuration,
-                            generationMode: value,
-                          },
-                        },
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="single">Uma vez</SelectItem>
-                      {generationModeOptions.includes("auto") && (
-                        <SelectItem value="auto">Automático conforme a entrada</SelectItem>
-                      )}
-                      {sequenceModeValue && (
-                        <SelectItem value={sequenceModeValue}>
-                          Uma vez por item, na mesma conversa
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] text-muted-foreground">
-                    {simpleGenerationMode === sequenceModeValue
-                      ? "Envia cada item em ordem e mantém todos na mesma conversa do provedor."
-                      : simpleGenerationMode === "auto"
-                        ? "Usa sequência quando a porta de estrutura recebe vários itens; caso contrário, envia uma vez."
-                        : "Executa este bloco uma única vez com todo o contexto recebido."}
-                  </p>
-                </div>
-              )}
-              {advancedConfigurationEntries.length > 0 && (
-                <details className="rounded-lg border border-border/70 bg-card/60 p-3">
-                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    Configurações avançadas do executor ({advancedConfigurationEntries.length})
-                  </summary>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    {advancedConfigurationEntries.map((entry) => (
-                      <div
-                        key={entry[0]}
-                        className={isCompactConfigurationField(entry) ? undefined : "md:col-span-2"}
+                      plugin: nextPlugin,
+                      inputs: requestedInputs,
+                      outputs: requestedOutputs,
+                      validation: requestedValidation,
+                    });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione um plugin compatível" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {compatibleCapabilities.map(({ plugin, manifest, capability }) => (
+                      <SelectItem
+                        key={`${plugin.id}::${capability.id}`}
+                        value={`${plugin.id}::${capability.id}`}
                       >
-                        {renderConfigurationField(entry)}
-                      </div>
+                        {manifest.name} · {pluginCapabilityLabel(capability)}
+                      </SelectItem>
                     ))}
-                  </div>
-                </details>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                  Nenhum plugin instalado é compatível com este bloco, processo e contrato de saída.
+                </p>
               )}
             </div>
-          )}
-        </div>
-      </details>
+
+            {selectedPlugin &&
+              selectedCapability &&
+              !selectedPluginUnavailable &&
+              block.plugin &&
+              pluginDraft && (
+                <PluginConfigurationRenderer
+                  pluginId={selectedPlugin.id}
+                  capability={selectedCapability}
+                  connectionId={pluginDraft.connectionId}
+                  configuration={pluginDraft.configuration}
+                  profileSetup={profileSetup}
+                  dataSection={
+                    <div
+                      className="space-y-3 border-t border-border/60 pt-3"
+                      data-testid="plugin-method-data"
+                    >
+                      <p className="text-xs font-medium">{t("Dados entre blocos")}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("Escolha as entregas anteriores que esta capacidade deve receber.")}
+                      </p>
+                      {selectedCapability.inputPorts
+                        .filter((port) => port.shape.kind === "content")
+                        .map((port) => {
+                          const sources = pluginInputSources(methodBlocks, block.id, port);
+                          const input = (portDraftBlock.inputs ?? []).find(
+                            (item) => item.portKey === port.key,
+                          );
+                          const sourceValue =
+                            input?.binding.kind === "previous_block"
+                              ? JSON.stringify([input.binding.blockId, input.binding.outputKey])
+                              : undefined;
+                          const value =
+                            sourceValue && sources.some((source) => source.value === sourceValue)
+                              ? sourceValue
+                              : input
+                                ? "configured"
+                                : "none";
+                          return (
+                            <div key={port.key} className="space-y-1">
+                              <Label htmlFor={`${block.id}-plugin-source-${port.key}`}>
+                                {port.label}
+                              </Label>
+                              <Select
+                                value={value}
+                                onValueChange={(source) => {
+                                  if (source === "configured") return;
+                                  setPortDraftBlock((draft) =>
+                                    bindPluginInput(
+                                      draft,
+                                      methodBlocks,
+                                      port,
+                                      source === "none" ? "" : source,
+                                    ),
+                                  );
+                                }}
+                              >
+                                <SelectTrigger id={`${block.id}-plugin-source-${port.key}`}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">{t("Sem entrega anterior")}</SelectItem>
+                                  {value === "configured" && (
+                                    <SelectItem value="configured">
+                                      {t("Entrada configurada no bloco")}
+                                    </SelectItem>
+                                  )}
+                                  {sources.map((source) => (
+                                    <SelectItem key={source.value} value={source.value}>
+                                      {t("Usar entrega de")}:{" "}
+                                      {source.block.name ?? source.block.type} ·{" "}
+                                      {source.field.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {port.description && (
+                                <p className="text-[11px] text-muted-foreground">
+                                  {port.description}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      {selectedCapability.outputPorts
+                        .filter(
+                          (port) =>
+                            port.shape.kind === "content" &&
+                            !(portDraftBlock.outputs ?? []).some(
+                              (field) => field.portKey === port.key,
+                            ),
+                        )
+                        .map((port) => (
+                          <Button
+                            key={port.key}
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setPortDraftBlock((draft) => addPluginOutput(draft, port))
+                            }
+                          >
+                            <Plus className="mr-1 size-3" />
+                            {t("Disponibilizar entrega")}: {port.label}
+                          </Button>
+                        ))}
+                    </div>
+                  }
+                  onConfigurationChange={(configuration) => {
+                    setPluginDraftInvalid(false);
+                    setPluginDraft({ ...pluginDraft, configuration });
+                  }}
+                  connectionSection={
+                    selectedPlugin.manifest.secretKeys?.length ? (
+                      <PluginConnectionSelector
+                        plugin={selectedPlugin}
+                        value={pluginDraft.connectionId}
+                        onChange={(connectionId) => {
+                          setPluginDraftInvalid(false);
+                          setPluginDraft({
+                            ...pluginDraft,
+                            connectionId,
+                            connectionRequired: true,
+                          });
+                        }}
+                      />
+                    ) : undefined
+                  }
+                  profileSection={
+                    profileSetup ? (
+                      <ManagedProfileSelector
+                        plugin={selectedPlugin}
+                        capability={selectedCapability}
+                        profileSetup={profileSetup}
+                        configuration={pluginDraft.configuration}
+                        profileExecution={pluginDraft.profileExecution}
+                        onProfileExecutionChange={(profileExecution, configuration) => {
+                          setPluginDraftInvalid(false);
+                          setPluginDraft({
+                            ...pluginDraft,
+                            ...(configuration ? { configuration } : {}),
+                            profileExecution,
+                          });
+                        }}
+                      />
+                    ) : undefined
+                  }
+                  conversationSection={
+                    selectedPlugin.manifest.supportsConversationContinuation ? (
+                      <div className="space-y-1.5">
+                        <Label>Conversa</Label>
+                        <Select
+                          value={
+                            pluginDraft.conversation?.mode === "reuse"
+                              ? `${pluginDraft.conversation.sourceProcessType}::${pluginDraft.conversation.sourceBlockId}`
+                              : "new"
+                          }
+                          onValueChange={(value) => {
+                            const [sourceProcessType, sourceBlockId] = value.split("::");
+                            setPluginDraftInvalid(false);
+                            setPluginDraft({
+                              ...pluginDraft,
+                              conversation:
+                                value === "new"
+                                  ? { mode: "new" }
+                                  : {
+                                      mode: "reuse",
+                                      sourceProcessType: sourceProcessType as UniversalProcess,
+                                      sourceBlockId,
+                                    },
+                            });
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="new">Iniciar uma conversa nova</SelectItem>
+                            {conversationSources.map((source) => (
+                              <SelectItem
+                                key={`${source.processType}::${source.block.id}`}
+                                value={`${source.processType}::${source.block.id}`}
+                              >
+                                Continuar: {PROCESS_META[source.processType].label} ·{" "}
+                                {source.block.name ?? source.block.type}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-[11px] text-muted-foreground">
+                          Use a mesma conversa para preservar o contexto do provedor. Se o perfil
+                          mudar ou a conversa não abrir, o plugin inicia outra e recebe o contexto
+                          do bloco de origem.
+                        </p>
+                      </div>
+                    ) : undefined
+                  }
+                />
+              )}
+
+            {selectedCapability && (
+              <div className="space-y-3">
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 text-[11px]",
+                    contractIssues
+                      ? "border-amber-500/40 bg-amber-500/5 text-amber-800 dark:text-amber-200"
+                      : "border-emerald-500/40 bg-emerald-500/5 text-emerald-800 dark:text-emerald-200",
+                  )}
+                >
+                  <p className="font-medium">
+                    {contractIssues
+                      ? "Revise o contrato antes de executar"
+                      : "O plugin está recebendo tudo o que precisa"}
+                  </p>
+                  <p className="mt-0.5 opacity-80">
+                    {contractIssues
+                      ? "Escolha como as entradas e entregas ambíguas serão usadas pelo plugin."
+                      : "Entradas, entregas e formatos são compatíveis com esta capacidade."}
+                  </p>
+                </div>
+
+                {contractIssues > 0 && (
+                  <details className="rounded-lg border border-border/70 bg-card/60 p-3">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                      {t("Dados usados pelo plugin")}
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      {validationTargetPortState && validationTargetOutput && (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground">
+                              {t("Bloco validado")} · {validationTargetOutput.label}
+                            </Label>
+                            {validationTargetPortState.ambiguous && (
+                              <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                                {t("Escolha necessária")}
+                              </span>
+                            )}
+                          </div>
+                          <Select
+                            value={
+                              block.validation?.targetPortKey ??
+                              validationTargetPortState.selected?.key ??
+                              ""
+                            }
+                            onValueChange={(targetPortKey) =>
+                              onChange({
+                                validation: block.validation
+                                  ? { ...block.validation, targetPortKey }
+                                  : undefined,
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder={t("Como o plugin usará este dado?")} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {validationTargetPortState.compatible.map((port) => (
+                                <SelectItem key={port.key} value={port.key}>
+                                  {port.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {!validationTargetPortState.compatible.length && (
+                            <p className="text-[10px] text-destructive">
+                              {t("Nenhuma porta aceita este formato.")}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {inputPortState.map(({ input, compatible, selected, ambiguous }) => (
+                        <div key={input.id} className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground">
+                              Entrada · {instructionInputLabel(input)}
+                            </Label>
+                            {ambiguous && (
+                              <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                                Escolha necessária
+                              </span>
+                            )}
+                          </div>
+                          <Select
+                            value={input.portKey ?? (selected ? selected.key : "")}
+                            onValueChange={(portKey) =>
+                              onChange({
+                                inputs: (block.inputs ?? []).map((item) =>
+                                  item.id === input.id ? { ...item, portKey } : item,
+                                ),
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Como o plugin usará este dado?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {compatible.map((port) => (
+                                <SelectItem key={port.key} value={port.key}>
+                                  {port.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {selected?.description && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {selected.description}
+                            </p>
+                          )}
+                          {!compatible.length && (
+                            <p className="text-[10px] text-destructive">
+                              Nenhuma porta aceita o formato {shapeSummary(input.shape)}.
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {outputPortState.map(({ field, compatible, selected, ambiguous }) => (
+                        <div key={field.id} className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <Label className="text-[10px] text-muted-foreground">
+                              Entrega · {instructionInputLabel(field)}
+                            </Label>
+                            {ambiguous && (
+                              <span className="text-[9px] font-medium text-amber-700 dark:text-amber-300">
+                                Escolha necessária
+                              </span>
+                            )}
+                          </div>
+                          <Select
+                            value={field.portKey ?? (selected ? selected.key : "")}
+                            onValueChange={(portKey) =>
+                              onChange({
+                                outputs: (block.outputs ?? []).map((item) =>
+                                  item.id === field.id ? { ...item, portKey } : item,
+                                ),
+                              })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="O que o plugin entregará aqui?" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {compatible.map((port) => (
+                                <SelectItem key={port.key} value={port.key}>
+                                  {port.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {selected?.description && (
+                            <p className="text-[10px] text-muted-foreground">
+                              {selected.description}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {requiredPortsMissing.map((port) => (
+                        <p key={port.key} className="text-[10px] text-destructive">
+                          Falta uma entrada para: {port.label}.
+                        </p>
+                      ))}
+                      {unboundInputPorts
+                        .filter((port) => port.required)
+                        .map((port) => (
+                          <div
+                            key={`available-${port.key}`}
+                            className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border p-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-[11px] font-medium">{port.label}</p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {port.required ? "Obrigatória" : "Opcional"} ·{" "}
+                                {shapeSummary(port.shape)}
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 shrink-0 text-[10px]"
+                              onClick={() => {
+                                const input: BlockInputBinding = {
+                                  id: uid(`${block.id}-runtime-input`),
+                                  label: port.label,
+                                  shape: structuredClone(port.shape),
+                                  binding: { kind: "runtime" },
+                                  portKey: port.key,
+                                  presentation: normalizeFieldPresentation(
+                                    port.shape,
+                                    port.presentation,
+                                  ),
+                                };
+                                onChange({ inputs: [...(block.inputs ?? []), input] });
+                              }}
+                            >
+                              <Plus className="mr-1 size-3" /> Fornecer na execução
+                            </Button>
+                          </div>
+                        ))}
+                    </div>
+                  </details>
+                )}
+                <PluginPromptPreview
+                  block={block}
+                  capability={selectedCapability}
+                  inputs={inputPortState.map(({ input, selected }) => ({
+                    input,
+                    portKey: selected?.key,
+                  }))}
+                />
+                <MethodParametersEditor
+                  block={block}
+                  onChange={(parameters) => onChange({ parameters })}
+                />
+                {selectedCapability.instructionUsage !== "not_applicable" && (
+                  <p className="rounded-lg border border-brand/20 bg-brand/5 p-3 text-[11px] text-muted-foreground">
+                    A instrução do bloco define o que deve ser feito. Os templates editáveis do
+                    plugin definem como essa instrução e o contexto são montados e enviados ao
+                    provedor.
+                  </p>
+                )}
+                {selectedPlugin && !selectedPluginUnavailable && block.plugin && pluginDraft && (
+                  <div className="space-y-2 border-t border-border/60 pt-3">
+                    {pluginDraftInvalid && (
+                      <p className="text-[11px] text-destructive" role="alert">
+                        {t("Revise os campos inválidos antes de aplicar.")}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setPluginDraft(clonePluginConfigurationDraft(block.plugin!));
+                          setPluginDraftInvalid(false);
+                          setPluginConfigurationVisibility(false);
+                        }}
+                      >
+                        {t("Cancelar")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          const commit = preparePluginConfigurationCommit(
+                            selectedCapability,
+                            pluginDraft,
+                            profileSetup,
+                          );
+                          if (!commit.ok) {
+                            setPluginDraftInvalid(true);
+                            return;
+                          }
+                          setPluginDraft(commit.value);
+                          setPluginDraftInvalid(false);
+                          onChange({
+                            plugin: commit.value,
+                            inputs: portDraftBlock.inputs,
+                            outputs: portDraftBlock.outputs,
+                          });
+                          setPluginConfigurationVisibility(false);
+                        }}
+                      >
+                        {t("Aplicar")}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <footer className="flex shrink-0 border-t border-border px-4 py-3 sm:px-6">
+            <p className="mr-auto self-center text-[10px] text-muted-foreground">
+              {t("Escape fecha a janela e descarta alterações não aplicadas.")}
+            </p>
+          </footer>
+        </section>
+      )}
     </div>
   );
 }
@@ -2485,7 +2946,7 @@ function InstructionEditor({
     { label: "Nome do bloco", token: "{{block.name}}" },
     { label: "Tipo de ação", token: "{{block.type}}" },
   ];
-  const inputVariables = (block.inputs ?? []).map((input) => ({
+  const inputVariables = (block.inputs ?? []).filter(isMethodContentField).map((input) => ({
     label: instructionInputLabel(input),
     token: `{{inputs.${instructionInputKey(input)}}}`,
   }));
@@ -2497,15 +2958,12 @@ function InstructionEditor({
     label: collection.name,
     token: `{{collections.${instructionCollectionKey(collection)}}}`,
   }));
-  const acceptsInputType = (type: HumanFieldType) =>
-    !capability || capability.inputPorts.some((port) => port.acceptedTypes.includes(type));
+  const acceptsInputShape = (shape: ValueShape) =>
+    !capability ||
+    capability.inputPorts.some((port) => areValueShapesCompatible(shape, port.shape));
   const isAlreadyConnected = (candidate: BlockInputBinding) =>
     (block.inputs ?? []).some(
-      (input) =>
-        input.source === candidate.source &&
-        input.sourceProcessType === candidate.sourceProcessType &&
-        input.blockId === candidate.blockId &&
-        input.sourceKey === candidate.sourceKey,
+      (input) => JSON.stringify(input.binding) === JSON.stringify(candidate.binding),
     );
   const toAvailableInput = (input: Omit<BlockInputBinding, "id">, context: string, id: string) => {
     const normalizedInput: BlockInputBinding = { ...input, id };
@@ -2518,16 +2976,17 @@ function InstructionEditor({
   };
   const previousBlockInputs = methodBlocks.slice(0, blockIndex).flatMap((sourceBlock) =>
     getBlockSourceFields(sourceBlock, collections)
-      .filter((output) => acceptsInputType(output.type))
+      .filter((output) => isMethodContentField(output) && acceptsInputShape(output.shape))
       .map((output) =>
         toAvailableInput(
           {
             label: instructionInputLabel(output),
-            type: output.type,
-            source: "previous_block",
-            sourceKey: output.key,
-            blockId: sourceBlock.id,
-            recordFields: output.recordFields,
+            shape: structuredClone(output.shape),
+            binding: {
+              kind: "previous_block",
+              blockId: sourceBlock.id,
+              outputKey: output.key,
+            },
             presentation: output.presentation,
           },
           `Neste processo · ${sourceBlock.name ?? sourceBlock.type}`,
@@ -2554,17 +3013,18 @@ function InstructionEditor({
         ),
       ];
       return sources
-        .filter(({ output }) => acceptsInputType(output.type))
+        .filter(({ output }) => isMethodContentField(output) && acceptsInputShape(output.shape))
         .map(({ blockId, blockLabel, output }) =>
           toAvailableInput(
             {
               label: instructionInputLabel(output),
-              type: output.type,
-              source: "previous_process",
-              sourceKey: output.key,
-              sourceProcessType,
-              blockId,
-              recordFields: output.recordFields,
+              shape: structuredClone(output.shape),
+              binding: {
+                kind: "previous_process",
+                processType: sourceProcessType,
+                outputKey: output.key,
+                ...(blockId === "__process_output__" ? {} : { blockId }),
+              },
               presentation: output.presentation,
             },
             `${PROCESS_META[sourceProcessType].label} · ${blockLabel}`,
@@ -2744,15 +3204,23 @@ function InstructionEditor({
 
 function ManagedProfileSelector({
   plugin,
+  capability,
   profileSetup,
   configuration,
-  onChange,
+  profileExecution,
+  onProfileExecutionChange,
 }: {
   plugin: DiscoveredPlugin;
+  capability: PluginCapability;
   profileSetup: PluginProfileSetup;
   configuration: Record<string, string | number | boolean>;
-  onChange: (configuration: Record<string, string | number | boolean>) => void;
+  profileExecution?: ProfileExecutionPolicy;
+  onProfileExecutionChange: (
+    profileExecution: ProfileExecutionPolicy | undefined,
+    configuration?: Record<string, string | number | boolean>,
+  ) => void;
 }) {
+  const { t } = useAppPreferences();
   const [profiles, setProfiles] = useState<ManagedPluginProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const primaryAlias = String(configuration[profileSetup.configurationKey] ?? "").trim();
@@ -2762,24 +3230,84 @@ function ManagedProfileSelector({
         .map((value) => value.trim())
         .filter((value, index, values) => value && values.indexOf(value) === index)
     : [];
+  const orchestration = capability.execution.itemOrchestration;
+  const parallelDeclaration = orchestration?.profileParallelism;
+  const supportsParallel =
+    parallelDeclaration?.supported === true &&
+    orchestration?.strategies?.includes("continuous_session") === true &&
+    (orchestration.preferredStrategy === "continuous_session" ||
+      (!orchestration.preferredStrategy && orchestration.strategies.length === 1));
+  const legacyProfileIds = [primaryAlias, ...fallbackAliases]
+    .map((alias) => profiles.find((profile) => profile.alias === alias)?.id)
+    .filter((profileId): profileId is string => Boolean(profileId));
+  const selectedProfileIds = (
+    profileExecution?.profileIds.length ? profileExecution.profileIds : legacyProfileIds
+  ).filter((profileId, index, all) => all.indexOf(profileId) === index);
+  const selectedMode = profileExecution?.mode === "parallel" ? "parallel" : "fallback";
+  const revokedProfileIds = loading
+    ? []
+    : selectedProfileIds.filter(
+        (profileId) => !profiles.some((profile) => profile.id === profileId),
+      );
+  const selectedProfiles = selectedProfileIds
+    .map((profileId) => profiles.find((profile) => profile.id === profileId))
+    .filter((profile): profile is ManagedPluginProfile => Boolean(profile));
+  const unpreparedProfiles = selectedProfiles.filter(
+    (profile) => profile.readinessState !== "ready",
+  );
+  const occupiedProfiles = selectedProfiles.filter((profile) => profile.occupied);
+  const parallelLimit = Math.max(
+    1,
+    Math.min(
+      selectedProfileIds.length || 1,
+      profileExecution?.mode === "parallel"
+        ? (profileExecution.maxParallel ?? selectedProfileIds.length)
+        : selectedProfileIds.length || 1,
+      parallelDeclaration?.maxProfiles ?? Number.POSITIVE_INFINITY,
+      capability.execution.maxConcurrency ?? Number.POSITIVE_INFINITY,
+    ),
+  );
+  const distributedInput = orchestration
+    ? (capability.inputPorts.find((port) => port.key === orchestration.inputPort)?.label ??
+      orchestration.inputPort)
+    : undefined;
+  const aggregateOutput = orchestration?.combinedOutputPort
+    ? (capability.outputPorts.find((port) => port.key === orchestration.combinedOutputPort)
+        ?.label ?? orchestration.combinedOutputPort)
+    : orchestration
+      ? (capability.outputPorts.find((port) => port.key === orchestration.outputPort)?.label ??
+        orchestration.outputPort)
+      : undefined;
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    void fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`, {
+    void fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profile-inventory`, {
       signal: controller.signal,
     })
       .then(async (response) => {
         const result = (await response.json()) as {
-          profiles?: ManagedPluginProfile[];
+          linked?: Array<{
+            profile: Omit<ManagedPluginProfile, "pluginId" | "readinessState" | "occupied">;
+            readiness?: { state: string };
+            occupied?: boolean;
+          }>;
           error?: string;
         };
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os perfis.");
-        setProfiles(result.profiles ?? []);
+        if (!response.ok)
+          throw new Error(result.error ?? t("Não foi possível carregar os perfis."));
+        setProfiles(
+          (result.linked ?? []).map((entry) => ({
+            ...entry.profile,
+            pluginId: plugin.id,
+            readinessState: entry.readiness?.state,
+            occupied: entry.occupied === true,
+          })),
+        );
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
-        toast.error("Não foi possível carregar os perfis", {
+        toast.error(t("Não foi possível carregar os perfis"), {
           description: error instanceof Error ? error.message : undefined,
         });
       })
@@ -2789,29 +3317,90 @@ function ManagedProfileSelector({
     return () => {
       controller.abort();
     };
-  }, [plugin.id]);
+  }, [plugin.id, t]);
 
-  function updateFallbacks(nextAliases: string[]) {
-    if (!profileSetup.fallbackConfigurationKey) return;
-    onChange({
-      ...configuration,
-      [profileSetup.fallbackConfigurationKey]: nextAliases.join("\n"),
-    });
+  function aliasesForProfileIds(profileIds: string[]) {
+    return profileIds
+      .map((profileId) => profiles.find((profile) => profile.id === profileId)?.alias)
+      .filter((alias): alias is string => Boolean(alias));
   }
 
-  function toggleFallback(alias: string, checked: boolean) {
-    updateFallbacks(
-      checked
-        ? [...fallbackAliases.filter((value) => value !== alias), alias]
-        : fallbackAliases.filter((value) => value !== alias),
+  function persistPolicy(
+    mode: ProfileExecutionPolicy["mode"],
+    profileIds: string[],
+    maxParallel?: number,
+  ) {
+    const uniqueProfileIds = profileIds.filter(
+      (profileId, index, all) => profileId && all.indexOf(profileId) === index,
+    );
+    if (!uniqueProfileIds.length) {
+      onProfileExecutionChange(undefined);
+      return;
+    }
+    const normalizedMode = mode === "parallel" ? "parallel" : "fallback";
+    // Preserve per-profile named project selections for the remaining profiles only.
+    // No default, no inheritance from the primary profile, no first-entry fallback.
+    const preservedSelections = normalizeProjectSelections(
+      profileExecution?.projectSelections,
+      uniqueProfileIds,
+    );
+    const nextPolicy: ProfileExecutionPolicy =
+      normalizedMode === "parallel"
+        ? {
+            mode: "parallel",
+            profileIds: uniqueProfileIds,
+            maxParallel: Math.max(
+              1,
+              Math.min(maxParallel ?? uniqueProfileIds.length, uniqueProfileIds.length),
+            ),
+            ...(preservedSelections ? { projectSelections: preservedSelections } : {}),
+          }
+        : {
+            mode: normalizedMode,
+            profileIds: uniqueProfileIds,
+            ...(preservedSelections ? { projectSelections: preservedSelections } : {}),
+          };
+    const aliases = aliasesForProfileIds(nextPolicy.profileIds);
+    onProfileExecutionChange(
+      nextPolicy,
+      aliases.length
+        ? {
+            ...configuration,
+            [profileSetup.configurationKey]: aliases[0],
+            ...(profileSetup.fallbackConfigurationKey
+              ? { [profileSetup.fallbackConfigurationKey]: aliases.slice(1).join("\n") }
+              : {}),
+          }
+        : undefined,
     );
   }
 
-  function moveFallback(alias: string, direction: -1 | 1) {
-    const index = fallbackAliases.indexOf(alias);
+  function setMode(mode: ProfileExecutionPolicy["mode"]) {
+    const ordered = [...selectedProfileIds];
+    const minimum = mode === "parallel" ? 2 : 1;
+    for (const profile of profiles) {
+      if (ordered.length >= minimum) break;
+      if (!ordered.includes(profile.id)) ordered.push(profile.id);
+    }
+    persistPolicy(mode, ordered, profileExecution?.maxParallel);
+  }
+
+  function toggleSelectedProfile(profileId: string, checked: boolean) {
+    const next = checked
+      ? [...selectedProfileIds.filter((value) => value !== profileId), profileId]
+      : selectedProfileIds.filter((value) => value !== profileId);
+    persistPolicy(selectedMode, next, profileExecution?.maxParallel);
+  }
+
+  function moveSelectedProfile(profileId: string, direction: -1 | 1) {
+    const index = selectedProfileIds.indexOf(profileId);
     const target = index + direction;
-    if (index < 0 || target < 0 || target >= fallbackAliases.length) return;
-    updateFallbacks(arrayMove(fallbackAliases, index, target));
+    if (index < 0 || target < 0 || target >= selectedProfileIds.length) return;
+    persistPolicy(
+      selectedMode,
+      arrayMove(selectedProfileIds, index, target),
+      profileExecution?.maxParallel,
+    );
   }
 
   return (
@@ -2828,23 +3417,76 @@ function ManagedProfileSelector({
         </Button>
       </div>
 
-      {profiles.length ? (
+      {profiles.length || revokedProfileIds.length ? (
         <>
+          <div className="space-y-1.5">
+            <Label>{t("Modo de execução dos perfis")}</Label>
+            <Select
+              value={selectedMode}
+              onValueChange={(value) => setMode(value as ProfileExecutionPolicy["mode"])}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fallback">{t("Fallback ordenado")}</SelectItem>
+                {supportsParallel && (
+                  <SelectItem value="parallel">{t("Executar perfis simultaneamente")}</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {!supportsParallel && parallelDeclaration?.supported === true && (
+              <p className="text-[10px] text-muted-foreground">
+                {t(
+                  "O modo simultâneo exige sessão contínua com correlação incremental compatível.",
+                )}
+              </p>
+            )}
+            {supportsParallel && (
+              <p className="text-[10px] text-muted-foreground">
+                {t(
+                  "O modo simultâneo só inicia quando a coleção estiver materializada em itens independentes pelo núcleo.",
+                )}
+              </p>
+            )}
+          </div>
+
+          {(revokedProfileIds.length > 0 ||
+            unpreparedProfiles.length > 0 ||
+            occupiedProfiles.length > 0) && (
+            <div className="space-y-1 rounded-md border border-border/70 bg-muted/30 p-2.5 text-[10px] text-muted-foreground">
+              {revokedProfileIds.length > 0 && (
+                <p>
+                  {t(
+                    "Um perfil selecionado foi desvinculado deste plugin. Escolha outro perfil antes de executar.",
+                  )}
+                </p>
+              )}
+              {unpreparedProfiles.length > 0 && (
+                <p>
+                  {t(
+                    "Há perfil selecionado ainda não preparado para este plugin. Prepare-o na Central de Plugins antes de executar.",
+                  )}
+                </p>
+              )}
+              {occupiedProfiles.length > 0 && (
+                <p>
+                  {t(
+                    "Há perfil selecionado ocupado por outra execução. Ele ficará indisponível até o lease atual ser liberado.",
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
           <Select
             value={primaryAlias}
-            onValueChange={(alias) =>
-              onChange({
-                ...configuration,
-                [profileSetup.configurationKey]: alias,
-                ...(profileSetup.fallbackConfigurationKey
-                  ? {
-                      [profileSetup.fallbackConfigurationKey]: fallbackAliases
-                        .filter((value) => value !== alias)
-                        .join("\n"),
-                    }
-                  : {}),
-              })
-            }
+            onValueChange={(alias) => {
+              const profile = profiles.find((candidate) => candidate.alias === alias);
+              if (!profile) return;
+              const rest = selectedProfileIds.filter((profileId) => profileId !== profile.id);
+              persistPolicy(selectedMode, [profile.id, ...rest], profileExecution?.maxParallel);
+            }}
           >
             <SelectTrigger>
               <SelectValue
@@ -2855,80 +3497,219 @@ function ManagedProfileSelector({
               {profiles.map((profile) => (
                 <SelectItem key={profile.id} value={profile.alias}>
                   {profile.name}
+                  {profile.readinessState !== "ready" ? ` · ${t("Não preparado")}` : ""}
+                  {profile.occupied ? ` · ${t("Ocupado")}` : ""}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          {profileSetup.fallbackConfigurationKey && (
-            <div className="space-y-2">
-              <div>
-                <p className="text-[11px] font-medium">Perfis alternativos</p>
-                <p className="text-[10px] text-muted-foreground">
-                  Em caso de falha, serão tentados na ordem abaixo.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                {profiles
-                  .filter((profile) => profile.alias !== primaryAlias)
-                  .map((profile) => {
-                    const fallbackIndex = fallbackAliases.indexOf(profile.alias);
-                    const selected = fallbackIndex >= 0;
-                    return (
-                      <div
-                        key={profile.id}
-                        className="flex items-center gap-2 rounded-md border border-border/70 px-2.5 py-2"
-                      >
-                        <Checkbox
-                          id={`${plugin.id}-${profile.id}-fallback`}
-                          checked={selected}
-                          onCheckedChange={(checked) =>
-                            toggleFallback(profile.alias, checked === true)
-                          }
-                        />
-                        <Label
-                          htmlFor={`${plugin.id}-${profile.id}-fallback`}
-                          className="min-w-0 flex-1 cursor-pointer text-xs font-normal"
+          <div className="space-y-2">
+            <div>
+              <p className="text-[11px] font-medium">
+                {selectedMode === "parallel" ? t("Perfis simultâneos") : t("Perfis alternativos")}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                {selectedMode === "parallel"
+                  ? t("Selecione e ordene os perfis que poderão receber itens desta execução.")
+                  : t("Em caso de falha, serão tentados na ordem abaixo.")}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              {profiles.map((profile) => {
+                const fallbackIndex = selectedProfileIds.indexOf(profile.id);
+                const selected = fallbackIndex >= 0;
+                const isPrimary = fallbackIndex === 0;
+                return (
+                  <div
+                    key={profile.id}
+                    className="flex items-center gap-2 rounded-md border border-border/70 px-2.5 py-2"
+                  >
+                    <Checkbox
+                      id={`${plugin.id}-${profile.id}-fallback`}
+                      checked={selected}
+                      disabled={isPrimary}
+                      onCheckedChange={(checked) =>
+                        toggleSelectedProfile(profile.id, checked === true)
+                      }
+                    />
+                    <Label
+                      htmlFor={`${plugin.id}-${profile.id}-fallback`}
+                      className="min-w-0 flex-1 cursor-pointer text-xs font-normal"
+                    >
+                      {selected && (
+                        <span className="mr-1.5 text-[10px] text-muted-foreground">
+                          {fallbackIndex + 1}.
+                        </span>
+                      )}
+                      {profile.name}
+                      {profile.readinessState !== "ready" && (
+                        <span className="ml-1.5 text-[10px] text-muted-foreground">
+                          · {t("Não preparado")}
+                        </span>
+                      )}
+                      {profile.occupied && (
+                        <span className="ml-1.5 text-[10px] text-muted-foreground">
+                          · {t("Ocupado")}
+                        </span>
+                      )}
+                    </Label>
+                    {selected && (
+                      <div className="flex gap-0.5">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-7"
+                          disabled={fallbackIndex === 0}
+                          aria-label={`${t("Subir")} ${profile.name}`}
+                          onClick={() => moveSelectedProfile(profile.id, -1)}
                         >
-                          {selected && (
-                            <span className="mr-1.5 text-[10px] text-muted-foreground">
-                              {fallbackIndex + 1}.
-                            </span>
-                          )}
-                          {profile.name}
-                        </Label>
-                        {selected && (
-                          <div className="flex gap-0.5">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              className="size-7"
-                              disabled={fallbackIndex === 0}
-                              aria-label={`Subir ${profile.name}`}
-                              onClick={() => moveFallback(profile.alias, -1)}
-                            >
-                              <ChevronUp className="size-3.5" />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              className="size-7"
-                              disabled={fallbackIndex === fallbackAliases.length - 1}
-                              aria-label={`Descer ${profile.name}`}
-                              onClick={() => moveFallback(profile.alias, 1)}
-                            >
-                              <ChevronDown className="size-3.5" />
-                            </Button>
-                          </div>
-                        )}
+                          <ChevronUp className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-7"
+                          disabled={fallbackIndex === selectedProfileIds.length - 1}
+                          aria-label={`${t("Descer")} ${profile.name}`}
+                          onClick={() => moveSelectedProfile(profile.id, 1)}
+                        >
+                          <ChevronDown className="size-3.5" />
+                        </Button>
                       </div>
-                    );
-                  })}
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {selectedMode === "parallel" && supportsParallel && (
+            <div className="space-y-3 rounded-md border border-border/70 bg-background/50 p-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>{t("Máximo de workers")}</Label>
+                  <NumberInput
+                    integer
+                    min={1}
+                    max={Math.max(1, selectedProfileIds.length)}
+                    value={
+                      profileExecution?.mode === "parallel"
+                        ? (profileExecution.maxParallel ?? selectedProfileIds.length)
+                        : selectedProfileIds.length
+                    }
+                    onValueChange={(value) =>
+                      persistPolicy(
+                        "parallel",
+                        selectedProfileIds,
+                        value ?? selectedProfileIds.length,
+                      )
+                    }
+                  />
+                </div>
+                <div className="rounded-md bg-muted/50 p-2.5">
+                  <p className="text-[10px] text-muted-foreground">{t("Workers efetivos")}</p>
+                  <p className="text-sm font-semibold">{parallelLimit}</p>
+                </div>
               </div>
+              {distributedInput && (
+                <p className="text-[10px] text-muted-foreground">
+                  {t("Coleção distribuída")}:{" "}
+                  <span className="font-medium text-foreground">{distributedInput}</span>
+                  {aggregateOutput ? (
+                    <>
+                      {" "}
+                      · {t("Entrega agregada")}:{" "}
+                      <span className="font-medium text-foreground">{aggregateOutput}</span>
+                    </>
+                  ) : null}
+                </p>
+              )}
             </div>
           )}
+
+          {managedProjectUrlConfigurationKey(profileSetup) && selectedProfiles.length > 0 && (
+            <ProfileProjectSelection
+              pluginId={plugin.id}
+              profileSetup={profileSetup}
+              profiles={selectedProfiles.map((profile) => ({
+                id: profile.id,
+                name: profile.name,
+              }))}
+              projectSelections={profileExecution?.projectSelections}
+              onProjectSelectionsChange={(projectSelections) => {
+                if (!selectedProfileIds.length) {
+                  onProfileExecutionChange(undefined);
+                  return;
+                }
+                const normalizedMode = selectedMode === "parallel" ? "parallel" : "fallback";
+                const nextPolicy: ProfileExecutionPolicy =
+                  normalizedMode === "parallel"
+                    ? {
+                        mode: "parallel",
+                        profileIds: [...selectedProfileIds],
+                        maxParallel: Math.max(
+                          1,
+                          Math.min(
+                            profileExecution?.maxParallel ?? selectedProfileIds.length,
+                            selectedProfileIds.length,
+                          ),
+                        ),
+                        ...(projectSelections ? { projectSelections } : {}),
+                      }
+                    : {
+                        mode: normalizedMode,
+                        profileIds: [...selectedProfileIds],
+                        ...(projectSelections ? { projectSelections } : {}),
+                      };
+                const aliases = aliasesForProfileIds(nextPolicy.profileIds);
+                onProfileExecutionChange(
+                  nextPolicy,
+                  aliases.length
+                    ? {
+                        ...configuration,
+                        [profileSetup.configurationKey]: aliases[0],
+                        ...(profileSetup.fallbackConfigurationKey
+                          ? { [profileSetup.fallbackConfigurationKey]: aliases.slice(1).join("\n") }
+                          : {}),
+                      }
+                    : undefined,
+                );
+              }}
+            />
+          )}
+
+          <div
+            className="rounded-md border border-border/70 bg-muted/20 p-3 text-[10px]"
+            role="status"
+            aria-live="polite"
+          >
+            <p className="font-medium text-foreground">{t("Resumo antes de salvar")}</p>
+            <p className="mt-1 text-muted-foreground">
+              {t("Modo")}:{" "}
+              {t(
+                selectedMode === "fallback"
+                  ? "Fallback ordenado"
+                  : "Executar perfis simultaneamente",
+              )}
+              {" · "}
+              {t("Perfis selecionados")}: {selectedProfileIds.length}
+              {selectedMode === "parallel" ? (
+                <>
+                  {" · "}
+                  {t("Workers efetivos")}: {parallelLimit}
+                </>
+              ) : null}
+            </p>
+            {selectedProfiles.length > 0 && (
+              <p className="mt-1 text-muted-foreground">
+                {t("Ordem dos perfis")}:{" "}
+                {selectedProfiles.map((profile) => profile.name).join(" → ")}
+              </p>
+            )}
+          </div>
         </>
       ) : (
         <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
@@ -2941,131 +3722,23 @@ function ManagedProfileSelector({
   );
 }
 
-function PluginConfigurationField({
-  propertyKey,
-  schema,
-  value,
-  options,
-  onChange,
-}: {
-  propertyKey: string;
-  schema: JsonSchema;
-  value: string | number | boolean | undefined;
-  options?: Array<{ value: string; label: string }>;
-  onChange: (value: string | number | boolean) => void;
-}) {
-  const { t } = useAppPreferences();
-  const label =
-    propertyKey === "startMinimized" ? t("Iniciar minimizado") : (schema.title ?? propertyKey);
-  const choices =
-    options ??
-    (schema.oneOf ?? []).flatMap((option) =>
-      typeof option.const === "string" || typeof option.const === "number"
-        ? [{ value: String(option.const), label: option.title ?? String(option.const) }]
-        : [],
-    );
-  if (schema.type === "boolean") {
-    return (
-      <label className="flex items-center gap-2 text-xs">
-        <Checkbox
-          checked={Boolean(value)}
-          onCheckedChange={(checked) => onChange(checked === true)}
-        />
-        {label}
-      </label>
-    );
-  }
-  if (choices.length) {
-    return (
-      <div className="space-y-1.5">
-        <Label>{label}</Label>
-        <Select value={String(value ?? "")} onValueChange={onChange}>
-          <SelectTrigger>
-            <SelectValue placeholder={`Selecione ${label.toLowerCase()}`} />
-          </SelectTrigger>
-          <SelectContent>
-            {choices.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {schema.description && (
-          <p className="text-[11px] text-muted-foreground">{schema.description}</p>
-        )}
-      </div>
-    );
-  }
-  if (schema.enum?.length) {
-    return (
-      <div className="space-y-1.5">
-        <Label>{label}</Label>
-        <Select value={String(value ?? "")} onValueChange={onChange}>
-          <SelectTrigger>
-            <SelectValue placeholder={`Selecione ${label.toLowerCase()}`} />
-          </SelectTrigger>
-          <SelectContent>
-            {schema.enum.map((option) => (
-              <SelectItem key={String(option)} value={String(option)}>
-                {String(option)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    );
-  }
-  if (schema.format === "textarea") {
-    return (
-      <div className="space-y-1.5">
-        <Label>{label}</Label>
-        <Textarea
-          value={String(value ?? "")}
-          rows={4}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      {schema.type === "number" || schema.type === "integer" ? (
-        <NumberInput
-          value={typeof value === "number" ? value : null}
-          integer={schema.type === "integer"}
-          min={schema.minimum}
-          max={schema.maximum}
-          step={schema.type === "number" ? "0.1" : undefined}
-          onValueChange={(nextValue) => {
-            if (nextValue !== null) onChange(nextValue);
-          }}
-        />
-      ) : (
-        <Input value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} />
-      )}
-      {schema.description && (
-        <p className="text-[11px] text-muted-foreground">{schema.description}</p>
-      )}
-    </div>
-  );
-}
-
 function ValidationEditor({
   block,
   methodBlocks,
   index,
+  capability,
   onChange,
 }: {
   block: ActionBlock;
   methodBlocks: ActionBlock[];
   index: number;
+  capability?: PluginCapability;
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
+  const { t } = useAppPreferences();
   const previousBlocks = methodBlocks.slice(0, index).filter((item) => item.type !== "VALIDAR");
   const validation = block.validation ?? {
-    targetBlockId: previousBlocks.at(-1)?.id,
+    targetBlockId: "",
     mode: "approval" as ValidationMode,
     onReject: "retry_target" as const,
     maxAttempts: 3,
@@ -3075,13 +3748,7 @@ function ValidationEditor({
   const targetOutputs = target?.outputs ?? [];
 
   function sourceOutputFor(targetBlock: ActionBlock | undefined, key?: string) {
-    return (
-      targetBlock?.outputs?.find((output) => output.key === key) ??
-      targetBlock?.outputs?.find((output) =>
-        ["list", "files", "multiselect"].includes(output.type),
-      ) ??
-      targetBlock?.outputs?.[0]
-    );
+    return key ? targetBlock?.outputs?.find((output) => output.key === key) : undefined;
   }
 
   function applyValidation(
@@ -3092,19 +3759,31 @@ function ValidationEditor({
     ),
   ) {
     const nextValidation = { ...validation, ...patch };
-    const sourceOutput =
-      nextMode === "approval"
-        ? undefined
-        : sourceOutputFor(nextTarget, patch.targetOutputKey ?? nextValidation.targetOutputKey);
-    if (nextMode !== "approval") nextValidation.targetOutputKey = sourceOutput?.key;
-    else nextValidation.targetOutputKey = undefined;
+    const sourceOutput = sourceOutputFor(nextTarget, nextValidation.targetOutputKey);
+    if (!sourceOutput) {
+      nextValidation.targetOutputKey = undefined;
+      nextValidation.targetPortKey = undefined;
+    } else if (capability) {
+      const usedPorts = new Set(
+        (block.inputs ?? [])
+          .map((input) => input.portKey)
+          .filter((key): key is string => Boolean(key)),
+      );
+      const compatiblePorts = capability.inputPorts.filter(
+        (port) =>
+          areValueShapesCompatible(sourceOutput.shape, port.shape) && !usedPorts.has(port.key),
+      );
+      const configured = compatiblePorts.find((port) => port.key === nextValidation.targetPortKey);
+      nextValidation.targetPortKey =
+        configured?.key ?? (compatiblePorts.length === 1 ? compatiblePorts[0].key : undefined);
+    }
     onChange({
       validation: nextValidation,
       outputs: createValidationFields(
         nextMode,
         nextValidation.targetBlockId,
         nextValidation.targetOutputKey,
-        sourceOutput?.type,
+        sourceOutput?.shape,
       ),
     });
   }
@@ -3177,6 +3856,34 @@ function ValidationEditor({
               O bloco selecionado precisa declarar uma saída para oferecer opções.
             </p>
           )}
+        </div>
+      )}
+
+      {validation.mode === "approval" && capability && (
+        <div className="space-y-1.5">
+          <Label>{t("Saída enviada ao plugin")}</Label>
+          <Select
+            value={validation.targetOutputKey ?? "__whole_block__"}
+            onValueChange={(targetOutputKey) =>
+              applyValidation({
+                targetOutputKey:
+                  targetOutputKey === "__whole_block__" ? undefined : targetOutputKey,
+                targetPortKey: undefined,
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__whole_block__">{t("Aprovar o bloco inteiro")}</SelectItem>
+              {targetOutputs.map((output) => (
+                <SelectItem key={output.id} value={output.key}>
+                  {output.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
@@ -3259,8 +3966,8 @@ function ChannelHistoryToggle({
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const inputs = block.inputs ?? [];
-  const historyInputs = inputs.filter((input) => input.source === "channel_history");
-  const regularInputs = inputs.filter((input) => input.source !== "channel_history");
+  const historyInputs = inputs.filter((input) => input.binding.kind === "channel_history");
+  const regularInputs = inputs.filter((input) => input.binding.kind !== "channel_history");
   const usesChoiceHistory = block.type === "ESCOLHER";
 
   const setEnabled = (enabled: boolean) => {
@@ -3273,25 +3980,31 @@ function ChannelHistoryToggle({
     const input: BlockInputBinding = {
       id: uid(`${block.id}-history`),
       label: usesChoiceHistory ? "Histórico de escolhas" : "Histórico de criações",
-      type: "records",
-      source: "channel_history",
-      sourceProcessType: processType,
-      blockId: usesChoiceHistory ? block.id : "__process_output__",
-      sourceKey: usesChoiceHistory ? "selectedItemId" : processOutput.key,
-      historyLimit: 10,
-      historyEligibility: "completed",
-      recordFields: createChannelHistoryRecordFields(
-        usesChoiceHistory ? "text" : processOutput.type,
+      shape: recordShape(
+        "many",
+        createChannelHistoryRecordFields(
+          usesChoiceHistory ? controlShape("identifier") : processOutput.shape,
+        ),
       ),
-      presentation: { renderer: "table", itemType: "record" },
+      binding: {
+        kind: "channel_history",
+        processType,
+        blockId: usesChoiceHistory ? block.id : "__process_output__",
+        outputKey: usesChoiceHistory ? "selectedItemId" : processOutput.key,
+        limit: 10,
+        eligibility: "completed",
+      },
+      presentation: { renderer: "table" },
     };
     onChange({ inputs: [...regularInputs, input] });
   };
 
-  const setLimit = (historyLimit: number) => {
+  const setLimit = (limit: number) => {
     onChange({
       inputs: inputs.map((input) =>
-        input.source === "channel_history" ? { ...input, historyLimit } : input,
+        input.binding.kind === "channel_history"
+          ? { ...input, binding: { ...input.binding, limit } }
+          : input,
       ),
     });
   };
@@ -3328,7 +4041,11 @@ function ChannelHistoryToggle({
             max={100}
             integer
             className="h-8 text-xs"
-            value={historyInputs[0]?.historyLimit ?? 10}
+            value={
+              historyInputs[0]?.binding.kind === "channel_history"
+                ? historyInputs[0].binding.limit
+                : 10
+            }
             onValueChange={(historyLimit) => setLimit(historyLimit ?? 10)}
           />
         </div>
@@ -3357,13 +4074,15 @@ function ContextInputsEditor({
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const inputs = block.inputs ?? [];
-  const regularInputs = inputs.filter((input) => input.source !== "channel_history");
+  const regularInputs = inputs
+    .filter(isMethodContentField)
+    .filter((input) => input.binding.kind !== "channel_history");
   const addInput = () => {
     const input: BlockInputBinding = {
       id: uid(`${block.id}-input`),
       label: nextManualInputLabel(inputs),
-      type: "text",
-      source: "previous_block",
+      shape: contentShape("text"),
+      binding: { kind: "previous_block", blockId: "", outputKey: "" },
       presentation: { renderer: "auto" },
     };
     onChange({
@@ -3405,6 +4124,7 @@ function ContextInputsEditor({
             channelMethods={channelMethods}
             processOrder={processOrder}
             collections={collections}
+            allowRuntime={Boolean(block.plugin && block.operator !== "Humano")}
             onChange={(patch) => {
               const nextInput = { ...input, ...patch };
               onChange({
@@ -3460,14 +4180,17 @@ function DataContractEditor({
   onChange: (patch: Partial<ActionBlock>) => void;
 }) {
   const inputs = block.inputs ?? [];
-  const regularInputs = inputs.filter((input) => input.source !== "channel_history");
+  const regularInputs = inputs
+    .filter(isMethodContentField)
+    .filter((input) => input.binding.kind !== "channel_history");
   const outputs = block.outputs ?? [];
+  const visibleOutputs = outputs.filter(isMethodContentField);
   const addInput = () => {
     const input: BlockInputBinding = {
       id: uid(`${block.id}-input`),
       label: nextManualInputLabel(inputs),
-      type: "text",
-      source: "previous_block",
+      shape: contentShape("text"),
+      binding: { kind: "previous_block", blockId: "", outputKey: "" },
       presentation: { renderer: "auto" },
     };
     onChange({
@@ -3480,7 +4203,7 @@ function DataContractEditor({
       id: uid(`${block.id}-output`),
       label: "Nova entrega",
       key: `output_${outputs.length + 1}`,
-      type: "text",
+      shape: contentShape("text"),
       required: true,
       presentation: { renderer: "auto" },
     };
@@ -3517,6 +4240,7 @@ function DataContractEditor({
               channelMethods={channelMethods}
               processOrder={processOrder}
               collections={collections}
+              allowRuntime={Boolean(block.plugin && block.operator !== "Humano")}
               onChange={(patch) => {
                 const nextInput = { ...input, ...patch };
                 onChange({
@@ -3565,7 +4289,12 @@ function DataContractEditor({
               variant="ghost"
               className="h-8 px-2 text-[10px]"
               onClick={() =>
-                onChange({ outputs: createSuggestedHumanFields(processType, block.type) })
+                onChange({
+                  outputs: replaceMethodContentFields(
+                    outputs,
+                    createSuggestedHumanFields(processType, block.type),
+                  ),
+                })
               }
             >
               Usar sugestão
@@ -3576,7 +4305,7 @@ function DataContractEditor({
           </div>
         </div>
         <div className="space-y-3">
-          {outputs.map((output) => (
+          {visibleOutputs.map((output) => (
             <OutputFieldEditor
               key={output.id}
               field={output}
@@ -3610,6 +4339,7 @@ function InputBindingEditor({
   channelMethods,
   processOrder,
   collections,
+  allowRuntime,
   onChange,
   onRemove,
 }: {
@@ -3619,17 +4349,22 @@ function InputBindingEditor({
   channelMethods: Record<UniversalProcess, ProcessMethod>;
   processOrder: UniversalProcess[];
   collections: StrategicCollection[];
+  allowRuntime: boolean;
   onChange: (patch: Partial<BlockInputBinding>) => void;
   onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const sourceBlock = availableBlocks.find((block) => block.id === input.blockId);
-  const sourceFields = getBlockSourceFields(sourceBlock, collections);
+  const binding = input.binding;
+  const sourceBlock =
+    binding.kind === "previous_block"
+      ? availableBlocks.find((block) => block.id === binding.blockId)
+      : undefined;
+  const sourceFields = getBlockSourceFields(sourceBlock, collections).filter(isMethodContentField);
   const previousProcesses = processOrder.slice(0, processOrder.indexOf(processType));
   const previousDeliverySources = previousProcesses.flatMap((sourceProcessType) => {
     const method = channelMethods[sourceProcessType];
     const blockOutputs = (method?.blocks ?? []).flatMap((sourceBlock) =>
-      (sourceBlock.outputs ?? []).map((output) => ({
+      (sourceBlock.outputs ?? []).filter(isMethodContentField).map((output) => ({
         id: `${sourceProcessType}::${sourceBlock.id}::${output.key}`,
         processType: sourceProcessType,
         blockId: sourceBlock.id,
@@ -3637,28 +4372,26 @@ function InputBindingEditor({
         output,
       })),
     );
-    const officialOutput = createProcessOutputFields(sourceProcessType)[0];
-    return [
-      {
-        id: `${sourceProcessType}::process::${officialOutput.key}`,
+    const officialOutputs = createProcessOutputFields(sourceProcessType)
+      .filter(isMethodContentField)
+      .map((output) => ({
+        id: `${sourceProcessType}::process::${output.key}`,
         processType: sourceProcessType,
-        blockId: "__process_output__",
+        blockId: undefined,
         blockLabel: "Resultado oficial",
-        output: officialOutput,
-      },
-      ...blockOutputs,
-    ];
+        output,
+      }));
+    return [...officialOutputs, ...blockOutputs];
   });
   const selectedPreviousDelivery =
-    previousDeliverySources.find(
-      (source) =>
-        source.processType === input.sourceProcessType &&
-        source.blockId === input.blockId &&
-        source.output.key === input.sourceKey,
-    ) ??
-    previousDeliverySources.find(
-      (source) => !input.sourceProcessType && source.output.key === input.sourceKey,
-    );
+    binding.kind === "previous_process"
+      ? previousDeliverySources.find(
+          (source) =>
+            source.processType === binding.processType &&
+            source.blockId === binding.blockId &&
+            source.output.key === binding.outputKey,
+        )
+      : undefined;
   return (
     <div className="rounded-xl border border-border/70 bg-card p-3">
       <div className="flex items-center gap-2">
@@ -3676,7 +4409,7 @@ function InputBindingEditor({
           />
           <span className="truncate text-sm font-medium">{instructionInputLabel(input)}</span>
           <Badge variant="outline" className="ml-auto shrink-0 text-[9px] font-normal">
-            {FIELD_TYPES.find((type) => type.value === input.type)?.label ?? input.type}
+            {shapeSummary(input.shape)}
           </Badge>
         </button>
         <Button
@@ -3700,72 +4433,69 @@ function InputBindingEditor({
               className="h-8 text-xs"
             />
             <PresentationSelector
-              type={input.type}
+              shape={input.shape}
               value={input.presentation}
               onChange={(presentation) => onChange({ presentation })}
             />
           </div>
 
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Formato</Label>
-            <Select
-              value={input.type ?? "text"}
-              onValueChange={(type) => {
-                const nextType = type as HumanFieldType;
-                onChange({
-                  type: nextType,
-                  presentation: normalizeFieldPresentation(nextType, input.presentation),
-                  recordFields:
-                    type === "records" ? (input.recordFields ?? [newRecordField(0)]) : undefined,
-                });
-              }}
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FIELD_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
-                    {type.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <ShapeEditor
+            shape={input.shape}
+            onChange={(shape) =>
+              onChange({
+                shape,
+                presentation: normalizeFieldPresentation(shape, input.presentation),
+              })
+            }
+          />
 
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="space-y-1">
               <Label className="text-[10px] text-muted-foreground">Origem</Label>
               <Select
-                value={input.source}
+                value={binding.kind}
                 onValueChange={(source) => {
                   if (source === "previous_process") {
                     const selected = previousDeliverySources.at(-1);
                     const output = selected?.output;
+                    if (!selected || !output) return;
                     onChange({
-                      source: "previous_process",
-                      label: output ? instructionInputLabel(output) : input.label,
-                      sourceKey: output?.key,
-                      sourceProcessType: selected?.processType,
-                      blockId: selected?.blockId,
-                      staticValue: undefined,
-                      historyLimit: undefined,
-                      historyEligibility: undefined,
-                      type: output?.type ?? input.type,
-                      presentation: output?.presentation ?? input.presentation,
-                      recordFields: output?.recordFields,
+                      label: instructionInputLabel(output),
+                      shape: structuredClone(output.shape),
+                      binding: {
+                        kind: "previous_process",
+                        processType: selected.processType,
+                        outputKey: output.key,
+                        ...(selected.blockId ? { blockId: selected.blockId } : {}),
+                      },
+                      presentation: output.presentation,
                     });
                     return;
                   }
-                  onChange({
-                    source: source as BlockInputBinding["source"],
-                    sourceKey: source === "project" ? "title" : undefined,
-                    sourceProcessType: undefined,
-                    blockId: undefined,
-                    staticValue: undefined,
-                    historyLimit: undefined,
-                    historyEligibility: undefined,
-                  });
+                  if (source === "project")
+                    onChange({ binding: { kind: "project", key: "title" } });
+                  if (source === "runtime") onChange({ binding: { kind: "runtime" } });
+                  if (source === "static") onChange({ binding: { kind: "static", value: "" } });
+                  if (source === "previous_block") {
+                    const candidate = availableBlocks.at(-1);
+                    const output = getBlockSourceFields(candidate, collections).filter(
+                      isMethodContentField,
+                    )[0];
+                    onChange({
+                      ...(output
+                        ? {
+                            label: instructionInputLabel(output),
+                            shape: structuredClone(output.shape),
+                            presentation: output.presentation,
+                          }
+                        : {}),
+                      binding: {
+                        kind: "previous_block",
+                        blockId: candidate?.id ?? "",
+                        outputKey: output?.key ?? "",
+                      },
+                    });
+                  }
                 }}
               >
                 <SelectTrigger className="h-8 text-xs">
@@ -3777,28 +4507,42 @@ function InputBindingEditor({
                     Entrega anterior
                   </SelectItem>
                   <SelectItem value="project">Dados do projeto</SelectItem>
+                  {allowRuntime && <SelectItem value="runtime">Fornecido na execução</SelectItem>}
                   <SelectItem value="static">Valor fixo</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {input.source === "previous_block" && (
+            {binding.kind === "previous_block" && (
               <div className="space-y-1">
                 <Label className="text-[10px] text-muted-foreground">Bloco</Label>
                 <Select
-                  value={input.blockId ?? "automatic"}
-                  onValueChange={(blockId) =>
+                  value={binding.blockId}
+                  onValueChange={(blockId) => {
+                    const candidate = availableBlocks.find((item) => item.id === blockId);
+                    const output = getBlockSourceFields(candidate, collections).filter(
+                      isMethodContentField,
+                    )[0];
                     onChange({
-                      blockId: blockId === "automatic" ? undefined : blockId,
-                      sourceKey: undefined,
-                    })
-                  }
+                      ...(output
+                        ? {
+                            label: instructionInputLabel(output),
+                            shape: structuredClone(output.shape),
+                            presentation: output.presentation,
+                          }
+                        : {}),
+                      binding: {
+                        kind: "previous_block",
+                        blockId,
+                        outputKey: output?.key ?? "",
+                      },
+                    });
+                  }}
                 >
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="automatic">Compatível mais recente</SelectItem>
                     {availableBlocks.map((candidate) => (
                       <SelectItem key={candidate.id} value={candidate.id}>
                         {candidate.order + 1}. {candidate.name ?? candidate.type}
@@ -3809,7 +4553,7 @@ function InputBindingEditor({
               </div>
             )}
 
-            {input.source === "previous_process" && (
+            {binding.kind === "previous_process" && (
               <div className="space-y-1">
                 <Label className="text-[10px] text-muted-foreground">
                   Processo, bloco e entrega
@@ -3821,14 +4565,17 @@ function InputBindingEditor({
                       (candidate) => candidate.id === sourceId,
                     );
                     const output = selected?.output;
+                    if (!selected || !output) return;
                     onChange({
-                      label: output ? instructionInputLabel(output) : input.label,
-                      sourceProcessType: selected?.processType,
-                      blockId: selected?.blockId,
-                      sourceKey: output?.key,
-                      type: output?.type ?? input.type,
-                      presentation: output?.presentation ?? input.presentation,
-                      recordFields: output?.recordFields,
+                      label: instructionInputLabel(output),
+                      shape: structuredClone(output.shape),
+                      binding: {
+                        kind: "previous_process",
+                        processType: selected.processType,
+                        outputKey: output.key,
+                        ...(selected.blockId ? { blockId: selected.blockId } : {}),
+                      },
+                      presentation: output.presentation,
                     });
                   }}
                 >
@@ -3847,12 +4594,14 @@ function InputBindingEditor({
               </div>
             )}
 
-            {input.source === "project" && (
+            {binding.kind === "project" && (
               <div className="space-y-1">
                 <Label className="text-[10px] text-muted-foreground">Dado</Label>
                 <Select
-                  value={input.sourceKey ?? "title"}
-                  onValueChange={(sourceKey) => onChange({ sourceKey })}
+                  value={binding.key}
+                  onValueChange={(key) =>
+                    onChange({ binding: { kind: "project", key: key as "title" | "deadline" } })
+                  }
                 >
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue />
@@ -3865,32 +4614,37 @@ function InputBindingEditor({
               </div>
             )}
 
-            {input.source === "static" && (
+            {binding.kind === "static" && (
               <div className="space-y-1">
                 <Label className="text-[10px] text-muted-foreground">Valor</Label>
                 <Input
                   className="h-8 text-xs"
-                  value={input.staticValue ?? ""}
-                  onChange={(event) => onChange({ staticValue: event.target.value })}
+                  value={binding.value}
+                  onChange={(event) =>
+                    onChange({ binding: { kind: "static", value: event.target.value } })
+                  }
                   placeholder="Valor usado nesta entrada"
                 />
               </div>
             )}
           </div>
 
-          {input.source === "previous_block" && input.blockId && (
+          {binding.kind === "previous_block" && binding.blockId && (
             <div className="space-y-1">
               <Label className="text-[10px] text-muted-foreground">Saída do bloco</Label>
               <Select
-                value={input.sourceKey ?? "automatic"}
-                onValueChange={(sourceKey) => {
-                  const output = sourceFields.find((candidate) => candidate.key === sourceKey);
+                value={binding.outputKey}
+                onValueChange={(outputKey) => {
+                  const output = sourceFields.find((candidate) => candidate.key === outputKey);
                   onChange({
-                    label: output ? instructionInputLabel(output) : input.label,
-                    sourceKey: sourceKey === "automatic" ? undefined : sourceKey,
-                    type: output?.type ?? input.type,
-                    presentation: output?.presentation ?? input.presentation,
-                    recordFields: output?.recordFields,
+                    ...(output
+                      ? {
+                          label: instructionInputLabel(output),
+                          shape: structuredClone(output.shape),
+                          presentation: output.presentation,
+                        }
+                      : {}),
+                    binding: { ...binding, outputKey },
                   });
                 }}
               >
@@ -3898,7 +4652,6 @@ function InputBindingEditor({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="automatic">Saída compatível</SelectItem>
                   {sourceFields.map((output) => (
                     <SelectItem key={output.id} value={output.key}>
                       {instructionInputLabel(output)}
@@ -3907,12 +4660,6 @@ function InputBindingEditor({
                 </SelectContent>
               </Select>
             </div>
-          )}
-          {input.type === "records" && input.source !== "channel_history" && (
-            <RecordFieldsEditor
-              fields={input.recordFields ?? []}
-              onChange={(recordFields) => onChange({ recordFields })}
-            />
           )}
         </div>
       )}
@@ -3930,7 +4677,6 @@ function OutputFieldEditor({
   onRemove: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const usesOptions = field.type === "select" || field.type === "multiselect";
   return (
     <div className="rounded-xl border border-border/70 bg-card p-3">
       <div className="flex items-center gap-2">
@@ -3948,7 +4694,7 @@ function OutputFieldEditor({
           />
           <span className="truncate text-sm font-medium">{instructionInputLabel(field)}</span>
           <Badge variant="outline" className="ml-auto shrink-0 text-[9px] font-normal">
-            {FIELD_TYPES.find((type) => type.value === field.type)?.label ?? field.type}
+            {shapeSummary(field.shape)}
           </Badge>
         </button>
         <Button
@@ -3971,78 +4717,123 @@ function OutputFieldEditor({
               className="h-8 text-xs"
             />
             <PresentationSelector
-              type={field.type}
+              shape={field.shape}
               value={field.presentation}
               onChange={(presentation) => onChange({ presentation })}
             />
           </div>
-          <div className="space-y-1">
-            <Label className="text-[10px] text-muted-foreground">Formato</Label>
-            <Select
-              value={field.type}
-              onValueChange={(type) => {
-                const nextType = type as HumanFieldType;
-                onChange({
-                  type: nextType,
-                  presentation: normalizeFieldPresentation(nextType, field.presentation),
-                  recordFields:
-                    type === "records" ? (field.recordFields ?? [newRecordField(0)]) : undefined,
-                });
-              }}
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {FIELD_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
-                    {type.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {usesOptions && (
-            <div>
-              <LineListTextarea
-                value={field.options ?? []}
-                onChange={(options) => onChange({ options })}
-                placeholder="Opções fixas, uma por linha (opcional)"
-                rows={3}
-                className="text-xs"
-              />
-              <p className="mt-1.5 text-[10px] text-muted-foreground">
-                Se ficar vazio, o sistema usa automaticamente a lista mais recente produzida pelo
-                método.
-              </p>
-            </div>
-          )}
-          {field.type === "records" && (
-            <RecordFieldsEditor
-              fields={field.recordFields ?? []}
-              onChange={(recordFields) => onChange({ recordFields })}
-            />
-          )}
+          <ShapeEditor
+            shape={field.shape}
+            onChange={(shape) =>
+              onChange({
+                shape,
+                presentation: normalizeFieldPresentation(shape, field.presentation),
+              })
+            }
+          />
         </div>
       )}
     </div>
   );
 }
 
-function PresentationSelector({
-  type,
+function ShapeEditor({
+  shape,
+  onChange,
+}: {
+  shape: ValueShape;
+  onChange: (shape: ContentShape) => void;
+}) {
+  const { t } = useAppPreferences();
+  if (shape.kind !== "content") return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-border/70 bg-background/30 p-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="space-y-1">
+          <Label className="text-[10px] text-muted-foreground">{t("Conteúdo")}</Label>
+          <Select
+            value={shape.family}
+            onValueChange={(family) =>
+              onChange(contentShape(family as ContentFamily, shape.cardinality))
+            }
+          >
+            <SelectTrigger className="h-8 text-xs" aria-label={t("Tipo de conteúdo")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="text">{t("Texto")}</SelectItem>
+              <SelectItem value="image">{t("Imagem")}</SelectItem>
+              <SelectItem value="audio">{t("Áudio")}</SelectItem>
+              <SelectItem value="video">{t("Vídeo")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <CardinalityEditor
+          value={shape.cardinality}
+          onChange={(cardinality) => onChange({ ...shape, cardinality })}
+        />
+      </div>
+      {shape.family === "text" && (
+        <div className="space-y-1">
+          <Label className="text-[10px] text-muted-foreground">{t("Representação")}</Label>
+          <Select
+            value={shape.representation}
+            onValueChange={(representation) =>
+              onChange({ ...shape, representation: representation as ContentRepresentation })
+            }
+          >
+            <SelectTrigger className="h-8 text-xs" aria-label={t("Representação")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inline">{t("Direto")}</SelectItem>
+              <SelectItem value="artifact">{t("Arquivo")}</SelectItem>
+              <SelectItem value="either">{t("Direto ou arquivo")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardinalityEditor({
   value,
   onChange,
 }: {
-  type: HumanFieldType;
+  value: ContentCardinality;
+  onChange: (value: ContentCardinality) => void;
+}) {
+  const { t } = useAppPreferences();
+  return (
+    <div className="space-y-1">
+      <Label className="text-[10px] text-muted-foreground">{t("Quantidade")}</Label>
+      <Select value={value} onValueChange={(next) => onChange(next as ContentCardinality)}>
+        <SelectTrigger className="h-8 text-xs" aria-label={t("Quantidade")}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="one">{t("Um")}</SelectItem>
+          <SelectItem value="many">{t("Vários")}</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function PresentationSelector({
+  shape,
+  value,
+  onChange,
+}: {
+  shape: ValueShape;
   value?: FieldPresentation;
   onChange: (presentation: FieldPresentation) => void;
 }) {
-  const normalized = normalizeFieldPresentation(type, value);
-  const compatible = getCompatiblePresentationRenderers(type);
+  const normalized = normalizeFieldPresentation(shape, value);
+  const compatible = getCompatiblePresentationRenderers(shape);
   const selected = compatible.includes(normalized.renderer) ? normalized.renderer : "auto";
   const [previewId, setPreviewId] = useState<PresentationRendererId>(selected);
-  const [mimeDraft, setMimeDraft] = useState((normalized.acceptedMimeTypes ?? []).join(", "));
   const groups = PRESENTATION_RENDERERS.filter((renderer) =>
     compatible.includes(renderer.id),
   ).reduce((result, renderer) => {
@@ -4054,42 +4845,12 @@ function PresentationSelector({
   const preview = PRESENTATION_RENDERER_REGISTRY[previewId] ?? PRESENTATION_RENDERER_REGISTRY.auto;
   const selectedDefinition = PRESENTATION_RENDERER_REGISTRY[selected];
   const SelectedIcon = selectedDefinition.icon;
-  const supportsRestrictions = [
-    "file",
-    "files",
-    "image",
-    "audio",
-    "video",
-    "list",
-    "records",
-  ].includes(type);
-  const itemTypeOptions =
-    type === "list" || type === "multiselect"
-      ? (["text"] as const)
-      : type === "records"
-        ? (["record"] as const)
-        : type === "image"
-          ? (["image"] as const)
-          : type === "audio"
-            ? (["audio"] as const)
-            : type === "video"
-              ? (["video"] as const)
-              : (["file", "image", "audio", "video"] as const);
-  const itemTypeLabels = {
-    text: "Texto",
-    record: "Registro",
-    file: "Arquivo",
-    image: "Imagem",
-    audio: "Áudio",
-    video: "Vídeo",
-  } as const;
 
   return (
     <Dialog
       onOpenChange={(open) => {
         if (!open) return;
         setPreviewId(selected);
-        setMimeDraft((normalized.acceptedMimeTypes ?? []).join(", "));
       }}
     >
       <DialogTrigger asChild>
@@ -4148,62 +4909,6 @@ function PresentationSelector({
                 </div>
               </fieldset>
             ))}
-            {supportsRestrictions && (
-              <div className="grid gap-3 rounded-xl border border-border/70 p-3 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <Label className="text-[10px] text-muted-foreground">
-                    Tipo de item esperado (opcional)
-                  </Label>
-                  <Select
-                    value={normalized.itemType ?? "any"}
-                    onValueChange={(itemType) =>
-                      onChange(
-                        normalizeFieldPresentation(type, {
-                          ...normalized,
-                          itemType:
-                            itemType === "any"
-                              ? undefined
-                              : (itemType as FieldPresentation["itemType"]),
-                        }),
-                      )
-                    }
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="any">Qualquer item compatível</SelectItem>
-                      {itemTypeOptions.map((itemType) => (
-                        <SelectItem key={itemType} value={itemType}>
-                          {itemTypeLabels[itemType]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {["file", "files", "image", "audio", "video"].includes(type) && (
-                  <div className="space-y-1">
-                    <Label className="text-[10px] text-muted-foreground">
-                      MIME aceitos (opcional)
-                    </Label>
-                    <Input
-                      className="h-8 text-xs"
-                      value={mimeDraft}
-                      onChange={(event) => setMimeDraft(event.target.value)}
-                      onBlur={() =>
-                        onChange(
-                          normalizeFieldPresentation(type, {
-                            ...normalized,
-                            acceptedMimeTypes: mimeDraft.split(","),
-                          }),
-                        )
-                      }
-                      placeholder="image/*, image/png"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
           </div>
           <aside className="md:sticky md:top-0 md:self-start">
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -4212,7 +4917,7 @@ function PresentationSelector({
             <div className="min-h-56 rounded-xl border border-border/70 bg-card p-4">
               <p className="mb-3 text-xs font-semibold">{preview.label}</p>
               <RuntimeValueViewer
-                type={preview.preview.type}
+                shape={preview.preview.shape}
                 value={preview.preview.value}
                 presentation={{ renderer: preview.id }}
                 compact
@@ -4225,113 +4930,5 @@ function PresentationSelector({
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function RecordFieldsEditor({
-  fields,
-  onChange,
-}: {
-  fields: RecordFieldDefinition[];
-  onChange: (fields: RecordFieldDefinition[]) => void;
-}) {
-  function update(id: string, patch: Partial<RecordFieldDefinition>) {
-    onChange(fields.map((field) => (field.id === id ? { ...field, ...patch } : field)));
-  }
-
-  return (
-    <div className="rounded-lg border border-border/70 bg-background/30 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <p className="text-xs font-semibold">Campos de cada registro</p>
-          <p className="text-[10px] text-muted-foreground">
-            Ex.: cena, narração, descrição visual e duração.
-          </p>
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1 text-[10px]"
-          onClick={() => onChange([...fields, newRecordField(fields.length)])}
-        >
-          <Plus className="size-3" /> Campo
-        </Button>
-      </div>
-      <div className="mt-3 space-y-2">
-        {fields.map((recordField, index) => (
-          <div
-            key={recordField.id}
-            className="grid gap-2 rounded-lg border border-border/60 p-2 sm:grid-cols-[minmax(0,1fr)_120px_32px]"
-          >
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Input
-                className="h-8 text-xs"
-                value={recordField.label}
-                onChange={(event) => update(recordField.id, { label: event.target.value })}
-                placeholder={`Campo ${index + 1}`}
-              />
-              <Input
-                className="h-8 font-mono text-xs"
-                value={recordField.key}
-                onChange={(event) => update(recordField.id, { key: event.target.value })}
-                placeholder="chave_tecnica"
-              />
-            </div>
-            <Select
-              value={recordField.type}
-              onValueChange={(type) => update(recordField.id, { type: type as RecordFieldType })}
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {RECORD_FIELD_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
-                    {type.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-8 text-muted-foreground hover:text-destructive"
-              disabled={fields.length === 1}
-              onClick={() => onChange(fields.filter((field) => field.id !== recordField.id))}
-              aria-label="Remover campo do registro"
-            >
-              <Trash2 className="size-3" />
-            </Button>
-            <label className="flex items-center gap-2 text-[10px] text-muted-foreground sm:col-span-3">
-              <Checkbox
-                checked={recordField.required}
-                onCheckedChange={(checked) =>
-                  update(recordField.id, { required: checked === true })
-                }
-              />
-              Obrigatório
-            </label>
-            {recordField.type === "select" && (
-              <LineListTextarea
-                className="min-h-20 text-xs sm:col-span-3"
-                value={recordField.options ?? []}
-                onChange={(options) => update(recordField.id, { options })}
-                placeholder="Uma opção por linha"
-              />
-            )}
-          </div>
-        ))}
-        {!fields.length && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-full"
-            onClick={() => onChange([newRecordField(0)])}
-          >
-            Definir primeiro campo
-          </Button>
-        )}
-      </div>
-    </div>
   );
 }

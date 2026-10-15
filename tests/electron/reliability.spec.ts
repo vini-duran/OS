@@ -45,8 +45,7 @@ test("inicia a aplicação desktop isolada e mantém API e navegação responsiv
   const consoleErrors: string[] = [];
   window.on("pageerror", (error) => pageErrors.push(error.message));
   window.on("console", (message) => {
-    if (message.type() === "error")
-      consoleErrors.push(`${message.text()} @ ${message.location().url}`);
+    if (message.type() === "error") consoleErrors.push(message.text());
   });
 
   await expect(window.getByRole("heading", { name: "Visão geral" })).toBeVisible();
@@ -91,41 +90,25 @@ test("inicia a aplicação desktop isolada e mantém API e navegação responsiv
     .poll(async () => (await readdir(path.join(dataDirectory, "data"))).length)
     .toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);
-  expect(
-    consoleErrors.filter(
-      (message) =>
-        !message.includes("503 (Service Unavailable) @") ||
-        !message.includes("/api/plugins/updates"),
-    ),
-  ).toEqual([]);
+  expect(consoleErrors).toEqual([]);
 });
 
 test("mostra a quantidade de validações pendentes no ícone da barra de tarefas", async () => {
   const window = await electronApp.firstWindow();
   await expect(window.getByRole("heading", { name: "Visão geral" })).toBeVisible();
-  await electronApp.evaluate(({ app, BrowserWindow }) => {
+  await electronApp.evaluate(({ BrowserWindow }) => {
     const target = BrowserWindow.getAllWindows()[0];
     const testState = globalThis as typeof globalThis & {
       __contentflowBadgeCalls?: Array<{ description: string; hasIcon: boolean }>;
     };
     testState.__contentflowBadgeCalls = [];
-    if (target?.setOverlayIcon) {
-      const original = target.setOverlayIcon.bind(target);
-      target.setOverlayIcon = (overlay, description) => {
-        testState.__contentflowBadgeCalls?.push({
-          description,
-          hasIcon: Boolean(overlay && !overlay.isEmpty()),
-        });
-        original(overlay, description);
-      };
-    }
-    const originalBadgeCount = app.setBadgeCount.bind(app);
-    app.setBadgeCount = (count) => {
+    const original = target.setOverlayIcon.bind(target);
+    target.setOverlayIcon = (overlay, description) => {
       testState.__contentflowBadgeCalls?.push({
-        description: `${count} tarefas humanas pendentes`,
-        hasIcon: count > 0,
+        description,
+        hasIcon: Boolean(overlay && !overlay.isEmpty()),
       });
-      return originalBadgeCount(count);
+      original(overlay, description);
     };
   });
 
@@ -145,7 +128,12 @@ test("mostra a quantidade de validações pendentes no ícone da barra de tarefa
           id: "desktop-human-theme-output",
           key: "theme",
           label: "Tema",
-          type: "textarea",
+          shape: {
+            kind: "content",
+            family: "text",
+            cardinality: "one",
+            representation: "inline",
+          },
           required: true,
         },
       ],

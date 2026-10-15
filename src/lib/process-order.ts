@@ -1,13 +1,13 @@
 import {
   PROCESS_ORDER,
   type Channel,
-  type HumanFieldType,
   type ProcessMethod,
   type ProcessState,
   type Project,
   type UniversalProcess,
 } from "./domain";
 import { createProcessOutputFields } from "./human-workflow";
+import { areInputShapesCompatible } from "./data-shape";
 
 export function isProcessOrder(value: unknown): value is UniversalProcess[] {
   return (
@@ -70,8 +70,22 @@ export function captureProjectStrategy(project: Project, channel: Channel, hasEx
   };
 }
 
-function compatible(source: HumanFieldType, target: HumanFieldType) {
-  return source === target || (source === "text" && target === "textarea");
+/** An explicit full-process restart adopts the Channel's latest Method for that process only. */
+export function refreshProjectProcessStrategy(
+  project: Project,
+  channel: Channel,
+  processType: UniversalProcess,
+) {
+  const current = project.strategySnapshot;
+  project.strategySnapshot = {
+    processOrder: current?.processOrder ?? effectiveProcessOrder(channel),
+    methods: {
+      ...(current?.methods ?? structuredClone(channel.methods)),
+      [processType]: structuredClone(channel.methods[processType]),
+    },
+    definitionRevision: channel.definitionRevision ?? 0,
+    capturedAt: new Date().toISOString(),
+  };
 }
 
 /** Inspect only the final channel definition; never mutate an old reference. */
@@ -87,20 +101,28 @@ export function validateProcessDependencies(
     for (const [index, block] of blocks.entries()) {
       const label = `${processType}/${block.name ?? block.type}`;
       for (const input of block.inputs ?? []) {
-        if (input.source !== "previous_process") continue;
-        const source = input.sourceProcessType;
+        const binding = input.binding;
+        const sourceKind = binding?.kind;
+        if (sourceKind !== "previous_process") continue;
+        const source = binding?.kind === "previous_process" ? binding.processType : undefined;
+        const outputKey = binding?.kind === "previous_process" ? binding.outputKey : undefined;
+        const blockId = binding?.kind === "previous_process" ? binding.blockId : undefined;
         if (!source || (positions.get(source) ?? Infinity) >= (positions.get(processType) ?? -1)) {
           errors.push(`${label}: processo anterior inválido na entrada “${input.label}”.`);
           continue;
         }
         const output =
-          input.blockId === "__process_output__"
-            ? createProcessOutputFields(source).find((field) => field.key === input.sourceKey)
+          blockId === "__process_output__" || blockId === undefined
+            ? createProcessOutputFields(source).find((field) => field.key === outputKey)
             : methods[source]?.blocks
-                .find((candidate) => candidate.id === input.blockId)
-                ?.outputs?.find((field) => field.key === input.sourceKey);
+                .find((candidate) => candidate.id === blockId)
+                ?.outputs?.find((field) => field.key === outputKey);
         if (!output) errors.push(`${label}: saída anterior não encontrada para “${input.label}”.`);
-        else if (!compatible(output.type, input.type))
+        else if (
+          !output.shape ||
+          !input.shape ||
+          !areInputShapesCompatible(output.shape, input.shape)
+        )
           errors.push(`${label}: tipo incompatível na entrada “${input.label}”.`);
       }
       const reuse = block.plugin?.conversation;
@@ -151,7 +173,10 @@ export function resolveProcessOrderForMethods(
   for (const processType of PROCESS_ORDER) {
     for (const block of methods[processType]?.blocks ?? []) {
       for (const input of block.inputs ?? []) {
-        if (input.source === "previous_process") addEdge(input.sourceProcessType, processType);
+        const binding = input.binding;
+        if (binding?.kind === "previous_process") {
+          addEdge(binding.processType, processType);
+        }
       }
       const conversation = block.plugin?.conversation;
       if (conversation?.mode === "reuse") addEdge(conversation.sourceProcessType, processType);

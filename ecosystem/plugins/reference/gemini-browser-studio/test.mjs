@@ -6,6 +6,32 @@ const manifest = JSON.parse(
   await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
 );
 const handlerSource = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+function outputContractFor(capabilityId, validation, fields) {
+  const selected =
+    fields ??
+    (capabilityId === "search-web-in-browser"
+      ? [
+          { key: "result", type: "textarea" },
+          { key: "sources", type: "list" },
+        ]
+      : capabilityId === "validate-content-in-browser"
+        ? validation?.mode === "select_one"
+          ? [
+              { key: "selected_value", type: "text" },
+              { key: "feedback", type: "textarea" },
+            ]
+          : validation?.mode === "select_many"
+            ? [
+                { key: "selected_values", type: "list" },
+                { key: "feedback", type: "textarea" },
+              ]
+            : [
+                { key: "decision", type: "approval" },
+                { key: "feedback", type: "textarea" },
+              ]
+        : [{ key: "result", type: "textarea" }]);
+  return selected.map((field) => ({ ...field, portKey: field.portKey ?? field.key }));
+}
 function req(o = {}) {
   return {
     capabilityId: o.capabilityId ?? "generate-text-in-browser",
@@ -29,7 +55,11 @@ function req(o = {}) {
       ...o.context,
     },
     validation: o.validation,
-    outputContract: o.outputContract,
+    outputContract: outputContractFor(
+      o.capabilityId ?? "generate-text-in-browser",
+      o.validation,
+      o.outputContract,
+    ),
   };
 }
 
@@ -44,7 +74,7 @@ test("não repete no contexto uma entrada já interpolada na instrução", () =>
 });
 test("manifesto possui oito capabilities e permissões mínimas", () => {
   assert.equal(manifest.id, "local.contentflow.gemini-browser-studio");
-  assert.equal(manifest.version, "1.0.9");
+  assert.equal(manifest.version, "2.0.1");
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
   assert.equal(manifest.capabilities[0].instructionUsage, "required");
   assert.deepEqual(Object.keys(manifest.capabilities[0].blockConfigSchema.properties), [
@@ -185,9 +215,9 @@ test("ignora partes personalizadas", () =>
 test("preserva partes individuais", () =>
   assert.deepEqual(
     __test.generationValues("A B", [{ text: "A" }, { text: "B" }], {
-      outputContract: [{ key: "parts" }],
+      outputContract: [{ key: "parts", portKey: "parts" }],
     }),
-    { result: "A B", parts: ["A", "B"] },
+    { parts: ["A", "B"] },
   ));
 test("monta busca com instrução e entradas", () =>
   assert.match(
@@ -209,11 +239,11 @@ test("respeita contrato de busca", () =>
   assert.deepEqual(
     __test.searchValues("- A\n- B", ["https://example.com"], {
       outputContract: [
-        { key: "items", type: "list" },
-        { key: "sources", type: "list" },
+        { key: "items", portKey: "result", type: "list" },
+        { key: "sources", portKey: "sources", type: "list" },
       ],
     }),
-    { items: ["A", "B"], sources: ["https://example.com"] },
+    { result: ["A", "B"], sources: ["https://example.com"] },
   ));
 test("Escolher exige ID real", () => {
   const r = req({ context: { selectedCollection: { items: [{ id: "a" }, { id: "b" }] } } });
@@ -338,7 +368,8 @@ test("identifica detecção de bot e atividade incomum com backoff adaptativo", 
   };
   const botErr = __test.classifyGeminiError(botState);
   assert.ok(botErr);
-  assert.equal(botErr.code, "RATE_LIMIT");
+  assert.equal(botErr.code, "PROVIDER_SECURITY_CHALLENGE");
+  assert.equal(botErr.retryable, false);
   assert.equal(botErr.isUnusualActivity, true);
   assert.equal(botErr.retryAfterMs, 45000);
 });
@@ -363,9 +394,13 @@ test("calcula jitter e atraso dinâmico de timing", () => {
   assert.ok(delay >= 800 && delay <= 1250);
 });
 
-test("lança Chrome com flags anti-detecção e resolução realista", async () => {
-  const source = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
-  assert.ok(source.includes("--disable-blink-features=AutomationControlled"));
-  assert.ok(source.includes("--window-size=1280,900"));
-  assert.doesNotMatch(source, /if\s*\(\/limite\|rate limit\|upgrade\/i\.test\(st\.body\)\)/);
+test("o núcleo lança Chrome com flags anti-detecção e resolução realista", async () => {
+  const handler = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+  const core = await readFile(
+    new URL("../../../../server/browser-session-manager.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(core.includes("--disable-blink-features=AutomationControlled"));
+  assert.ok(core.includes("--window-size=1280,800"));
+  assert.doesNotMatch(handler, /if\s*\(\/limite\|rate limit\|upgrade\/i\.test\(st\.body\)\)/);
 });

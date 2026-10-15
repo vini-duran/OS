@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
@@ -16,8 +15,9 @@ import type { RegisteredPlugin } from "./plugin-runner";
 
 const temporaryDataDirectory = mkdtempSync(path.join(tmpdir(), "contentflow-sandbox-data-"));
 process.env.CONTENTFLOW_DATA_DIR = temporaryDataDirectory;
-const { executeRegisteredPlugin, windowsExecutableDiscoveryReadPaths } =
-  await import("./plugin-runner");
+const executableDiscoveryRoot = path.join(temporaryDataDirectory, "LocalAppData");
+process.env.LOCALAPPDATA = executableDiscoveryRoot;
+const { executeRegisteredPlugin } = await import("./plugin-runner");
 
 const pluginDirectory = realpathSync(
   path.resolve(process.cwd(), "ecosystem", "plugins", "examples", "community-reference"),
@@ -49,13 +49,20 @@ function request(configuration: Record<string, unknown> = {}): PluginExecutionRe
     configuration,
     settings: {},
     inputs: { content: "Sandbox comunitária funcionando." },
-    inputContract: [{ id: "content", portKey: "content", label: "Conteúdo", type: "text" }],
+    inputContract: [
+      {
+        id: "content",
+        portKey: "content",
+        label: "Conteúdo",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+      },
+    ],
     outputContract: [
       {
         key: "result",
         portKey: "result",
         label: "Arquivo criado",
-        type: "file",
+        shape: { kind: "content", family: "text", cardinality: "one", representation: "artifact" },
         required: true,
       },
     ],
@@ -73,9 +80,7 @@ function request(configuration: Record<string, unknown> = {}): PluginExecutionRe
 }
 
 const result = await executeRegisteredPlugin(registered("handler.mjs"), request(), 30_000);
-if (result.status !== "success") {
-  throw new Error(`O plugin de referência não concluiu: ${JSON.stringify(result)}.`);
-}
+if (result.status !== "success") throw new Error("O plugin de referência não concluiu.");
 const file = result.values.result;
 if (!file || typeof file !== "object" || Array.isArray(file) || !("url" in file)) {
   throw new Error("O artifact não foi convertido em arquivo gerenciado.");
@@ -101,65 +106,29 @@ if (probe.status !== "success" || !String(probe.values.result).includes("ERR_ACC
   throw new Error(`A sandbox não bloqueou a leitura externa: ${JSON.stringify(probe)}.`);
 }
 
-// 1. Verificação de windowsExecutableDiscoveryReadPaths com platform explícita e retorno vazio em darwin/Linux
-const mockWinEnv: NodeJS.ProcessEnv = {
-  PROGRAMFILES: "C:\\Program Files",
-  "PROGRAMFILES(X86)": "C:\\Program Files (x86)",
-  LOCALAPPDATA: "C:\\Users\\Test\\AppData\\Local",
-};
-
-// Em plataformas não-Windows, a descoberta retorna sempre vazio (sem ampliação indevida de permissões)
-assert.deepEqual(windowsExecutableDiscoveryReadPaths(mockWinEnv, "darwin"), []);
-assert.deepEqual(windowsExecutableDiscoveryReadPaths(mockWinEnv, "linux"), []);
-
-// No Windows, a descoberta inclui os caminhos de instalação e AppData esperados
-const winDiscoveryPaths = windowsExecutableDiscoveryReadPaths(mockWinEnv, "win32");
-assert.ok(winDiscoveryPaths.length >= 3);
-assert.ok(winDiscoveryPaths.some((p) => p.includes("AppData\\Local")));
-assert.ok(winDiscoveryPaths.some((p) => p.includes("Program Files")));
-
-// 2. Verificação de integração em execução da sandbox
-const testExecutableDirectory = path.join(
-  temporaryDataDirectory,
-  "LocalAppData",
+const chromeExecutable = path.join(
+  executableDiscoveryRoot,
   "Google",
   "Chrome",
   "Application",
+  "chrome.exe",
 );
-const chromeExecutable = path.join(testExecutableDirectory, "chrome.exe");
-mkdirSync(testExecutableDirectory, { recursive: true });
+mkdirSync(path.dirname(chromeExecutable), { recursive: true });
 writeFileSync(chromeExecutable, "probe", "utf8");
-
-if (process.platform === "win32") {
-  // No Windows, a descoberta é autorizada para leitura quando permissão process for concedida
-  const executableProbe = await executeRegisteredPlugin(
-    registered("executable-read-probe.mjs", ["process"]),
-    request({ executablePath: chromeExecutable }),
-    30_000,
+const executableProbe = await executeRegisteredPlugin(
+  registered("executable-read-probe.mjs", ["process"]),
+  request({ executablePath: chromeExecutable }),
+  30_000,
+);
+const expectedExecutableProbeResult =
+  process.platform === "win32" ? "EXECUTABLE_READ_ALLOWED" : "ERR_ACCESS_DENIED:FileSystemRead";
+if (
+  executableProbe.status !== "success" ||
+  executableProbe.values.result !== expectedExecutableProbeResult
+) {
+  throw new Error(
+    `A sandbox devolveu um resultado inesperado para a descoberta de executável: ${JSON.stringify(executableProbe)}.`,
   );
-  if (
-    executableProbe.status !== "success" ||
-    executableProbe.values.result !== "EXECUTABLE_READ_ALLOWED"
-  ) {
-    throw new Error(
-      `A sandbox bloqueou a descoberta autorizada do executável no Windows: ${JSON.stringify(executableProbe)}.`,
-    );
-  }
-} else {
-  // Em macOS / Linux: LOCALAPPDATA não amplia permissão; leitura externa fora da sandbox deve ser bloqueada
-  const nonWinProbe = await executeRegisteredPlugin(
-    registered("executable-read-probe.mjs", ["process"]),
-    request({ executablePath: chromeExecutable }),
-    30_000,
-  );
-  if (
-    nonWinProbe.status !== "success" ||
-    !String(nonWinProbe.values.result).includes("ERR_ACCESS_DENIED")
-  ) {
-    throw new Error(
-      `A sandbox não deve autorizar leitura externa de executável fora do Windows: ${JSON.stringify(nonWinProbe)}.`,
-    );
-  }
 }
 
 const localServer = createServer((_incoming, outgoing) => outgoing.end("reachable"));

@@ -7,6 +7,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
+import { planDatabaseMigration } from "./user-data-upgrade";
 import {
   createEmptyMethods,
   PROCESS_ORDER,
@@ -42,7 +44,10 @@ async function api<T>(base: string, route: string, method = "GET", body?: unknow
     body: body ? JSON.stringify(body) : undefined,
   });
   const payload = (await response.json()) as T & { error?: string };
-  assert.ok(response.ok, `${method} ${route}: ${response.status} ${payload.error ?? ""}`);
+  assert.ok(
+    response.ok,
+    `${method} ${route} ${(body as { action?: string } | undefined)?.action ?? ""}: ${response.status} ${payload.error ?? ""}`,
+  );
   return payload;
 }
 
@@ -102,12 +107,25 @@ test(
         id: "source-collection",
         channelId: "source-channel",
         name: "Referências visuais",
-        fields: [{ id: "source-image", label: "Imagem", type: "image", required: true }],
+        fields: [
+          {
+            id: "source-image",
+            label: "Imagem",
+            shape: {
+              kind: "content",
+              family: "image",
+              cardinality: "one",
+              representation: "artifact",
+            },
+            required: true,
+          },
+        ],
         createdAt: new Date().toISOString(),
       };
       const methods = createEmptyMethods();
       const titleOutput = createProcessOutputFields("title")[0];
       methods.title = {
+        contractVersion: 3,
         name: "Título portátil controlado",
         processType: "title",
         blocks: [
@@ -202,8 +220,8 @@ test(
       assert.equal(importResponse.status, 200);
       const importedPayload = (await importResponse.json()) as { manifest: string };
       const imported = parseMethodImportFile(importedPayload.manifest);
-      assert.equal(imported.version, 2);
-      if (imported.version !== 2) return;
+      assert.equal(imported.version, 3);
+      if (!("methods" in imported) || !("items" in imported)) return;
       const importedItems = imported.items ?? [];
       assert.equal(imported.itemsIncluded, true);
       assert.equal(importedItems.length, 1);
@@ -252,6 +270,20 @@ test(
         thumbHue: 0,
       };
       await api(targetServer.base, "/api/projects", "POST", project);
+      const inspection = new Database(path.join(targetDirectory, "contentflow.sqlite"), {
+        readonly: true,
+      });
+      try {
+        const plan = planDatabaseMigration(inspection, targetDirectory);
+        assert.deepEqual(plan.context.diagnostics, []);
+        assert.deepEqual(
+          plan.updates,
+          [],
+          "an imported v3 Method must be ready without data migration",
+        );
+      } finally {
+        inspection.close();
+      }
       const started = await api<{ result: ProcessExecution }>(
         targetServer.base,
         "/api/commands",
@@ -259,6 +291,15 @@ test(
         { id: randomUUID(), action: "start", projectId: project.id, processType: "title" },
       );
       assert.equal(started.result.status, "awaiting_human");
+      const afterStartInspection = new Database(path.join(targetDirectory, "contentflow.sqlite"), {
+        readonly: true,
+      });
+      try {
+        const plan = planDatabaseMigration(afterStartInspection, targetDirectory);
+        assert.deepEqual(plan.updates, [], "starting a current Method must not create a migration");
+      } finally {
+        afterStartInspection.close();
+      }
       const chosen = await api<{ result: boolean }>(targetServer.base, "/api/commands", "POST", {
         id: randomUUID(),
         action: "choose",
@@ -268,6 +309,19 @@ test(
         itemId: applied.items[0].id,
       });
       assert.equal(chosen.result, true);
+      const afterChoiceInspection = new Database(path.join(targetDirectory, "contentflow.sqlite"), {
+        readonly: true,
+      });
+      try {
+        const plan = planDatabaseMigration(afterChoiceInspection, targetDirectory);
+        assert.deepEqual(
+          plan.updates,
+          [],
+          "choosing a current collection item must not create a migration",
+        );
+      } finally {
+        afterChoiceInspection.close();
+      }
       const afterChoice = await api<{ execution: ProcessExecution }>(
         targetServer.base,
         `/api/executions/${started.result.id}/state`,

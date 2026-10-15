@@ -42,20 +42,65 @@ export type BlockOperator = (typeof BLOCK_OPERATORS)[number];
 export type BlockType = (typeof BLOCK_TYPES)[number];
 export type BlockParameterType = "text" | "number" | "select" | "boolean" | "textarea";
 
-export type HumanFieldType =
-  | BlockParameterType
-  | "multiselect"
-  | "list"
-  | "records"
+export const CONTENT_FAMILIES = ["text", "image", "audio", "video"] as const;
+export const CONTENT_CARDINALITIES = ["one", "many"] as const;
+export const CONTENT_REPRESENTATIONS = ["inline", "artifact", "either"] as const;
+
+export type ContentFamily = (typeof CONTENT_FAMILIES)[number];
+export type ContentCardinality = (typeof CONTENT_CARDINALITIES)[number];
+export type ContentRepresentation = (typeof CONTENT_REPRESENTATIONS)[number];
+
+export type ContentFormatConstraints = {
+  mimeTypes?: string[];
+  extensions?: string[];
+};
+
+export type ContentShape = {
+  kind: "content";
+  family: ContentFamily;
+  cardinality: ContentCardinality;
+  representation: ContentRepresentation;
+  formats?: ContentFormatConstraints;
+};
+
+export type ControlKind =
+  | "identifier"
+  | "number"
+  | "boolean"
+  | "selection"
   | "datetime"
   | "url"
-  | "file"
-  | "image"
-  | "audio"
-  | "video"
-  | "files"
   | "approval"
   | "thumbnail_layout";
+
+export type ControlShape = {
+  kind: "control";
+  control: ControlKind;
+  cardinality: ContentCardinality;
+  options?: string[];
+};
+
+export type AtomicValueShape = ContentShape | ControlShape;
+
+export type ShapeRecordFieldDefinition = {
+  id: string;
+  label: string;
+  key: string;
+  shape: AtomicValueShape;
+  required: boolean;
+  /** Campo identifier que referencia itens da entrada indicada no mesmo Bloco. */
+  referencesInputId?: string;
+};
+
+export type RecordShape = {
+  kind: "record";
+  cardinality: ContentCardinality;
+  fields: ShapeRecordFieldDefinition[];
+  /** Porta polimórfica de plugin; o schema concreto continua pertencendo ao Método. */
+  open?: true;
+};
+
+export type ValueShape = ContentShape | ControlShape | RecordShape;
 
 export const PRESENTATION_RENDERER_IDS = [
   "auto",
@@ -74,59 +119,56 @@ export const PRESENTATION_RENDERER_IDS = [
 
 export type PresentationRendererId = (typeof PRESENTATION_RENDERER_IDS)[number];
 
-export type PresentationItemType = "text" | "record" | "file" | "image" | "audio" | "video";
-
 export type FieldPresentation = {
   renderer: PresentationRendererId;
-  itemType?: PresentationItemType;
-  acceptedMimeTypes?: string[];
 };
 
-export type RecordFieldType =
-  | "text"
-  | "textarea"
-  | "number"
-  | "boolean"
-  | "select"
-  | "datetime"
-  | "url"
-  | "file"
-  | "image"
-  | "audio"
-  | "video";
-
-export type RecordFieldDefinition = {
-  id: string;
-  label: string;
-  key: string;
-  type: RecordFieldType;
-  required: boolean;
-  options?: string[];
-};
-
-export type BlockInputSource =
-  | "project"
-  | "previous_process"
-  | "previous_block"
-  | "channel_history"
-  | "channel_library"
-  | "static";
+export type RecordFieldDefinition = ShapeRecordFieldDefinition;
 
 export type ChannelHistoryEligibility = "completed" | "published";
+
+export type BlockInputSourceBinding =
+  | {
+      kind: "project";
+      key: "title" | "deadline";
+    }
+  | {
+      kind: "previous_process";
+      processType: UniversalProcess;
+      outputKey: string;
+      blockId?: string;
+    }
+  | {
+      kind: "previous_block";
+      blockId: string;
+      outputKey: string;
+    }
+  | {
+      kind: "channel_history";
+      processType: UniversalProcess;
+      blockId: string;
+      outputKey: string;
+      limit: number;
+      eligibility: ChannelHistoryEligibility;
+    }
+  | {
+      kind: "channel_library";
+      collectionId: string;
+      fieldId: string;
+    }
+  | {
+      kind: "runtime";
+    }
+  | {
+      kind: "static";
+      value: string;
+    };
 
 export type BlockInputBinding = {
   id: string;
   label: string;
-  type: HumanFieldType;
-  source: BlockInputSource;
-  sourceKey?: string;
-  sourceProcessType?: UniversalProcess;
-  blockId?: string;
-  collection?: string;
-  staticValue?: string;
-  historyLimit?: number;
-  historyEligibility?: ChannelHistoryEligibility;
-  recordFields?: RecordFieldDefinition[];
+  shape: ValueShape;
+  binding: BlockInputSourceBinding;
   presentation?: FieldPresentation;
   /** Stable semantic input port selected from the plugin capability. */
   portKey?: string;
@@ -136,14 +178,12 @@ export type BlockFieldDefinition = {
   id: string;
   label: string;
   key: string;
-  type: HumanFieldType;
+  shape: ValueShape;
   required: boolean;
   placeholder?: string;
   helpText?: string;
-  options?: string[];
   optionsSourceBlockId?: string;
   optionsSourceKey?: string;
-  recordFields?: RecordFieldDefinition[];
   presentation?: FieldPresentation;
   /** Stable semantic output port selected from the plugin capability. */
   portKey?: string;
@@ -162,12 +202,26 @@ export type BlockParameter = {
 export type ValidationMode = "approval" | "select_one" | "select_many";
 
 export type BlockValidationConfig = {
-  targetBlockId?: string;
+  targetBlockId: string;
   targetOutputKey?: string;
+  /** Capability input port that receives the explicitly selected target output. */
+  targetPortKey?: string;
   mode: ValidationMode;
   onReject: "retry_target" | "pause";
   maxAttempts: number;
   retryMode?: "full" | "conversation_feedback";
+};
+
+export type ProfileExecutionPolicy = {
+  mode: "single" | "fallback" | "parallel";
+  profileIds: string[];
+  maxParallel?: number;
+  /**
+   * Opt-in named project selection per physical profile (local only).
+   * Maps physical profile id -> stable catalog entry id. Never portable,
+   * never sent to plugins; the core resolves the ordinary URL at invocation.
+   */
+  projectSelections?: Record<string, string>;
 };
 
 export type BlockPluginBinding = {
@@ -175,6 +229,8 @@ export type BlockPluginBinding = {
   pluginVersion?: string;
   capabilityId: string;
   configuration: Record<string, string | number | boolean>;
+  /** Local browser-profile policy owned by the core. Never portable to plugins or Method exports. */
+  profileExecution?: ProfileExecutionPolicy;
   connectionId?: string;
   connectionRequired?: boolean;
   conversation?:
@@ -202,53 +258,12 @@ export type ActionBlock = {
 };
 
 export type ProcessMethod = {
+  /** Version of the only supported Method contract. */
+  contractVersion: 3;
   name: string;
   imageUrl?: string;
   processType: UniversalProcess;
   blocks: ActionBlock[];
-};
-
-/** A factual monitor belongs to a channel, never to one video project. */
-export type ChannelResearchConfig = {
-  pluginId: string;
-  capabilityId: string;
-  connectionId?: string;
-  cadence: "manual";
-  configuration: Record<string, string | number | boolean>;
-  recordsKey: string;
-  summaryKey: string;
-  minimumBriefRecords: number;
-};
-
-export type ChannelResearchRun = {
-  id: string;
-  channelId: string;
-  status: "completed" | "failed" | "running";
-  startedAt: string;
-  completedAt?: string;
-  updatedAt: string;
-  planSnapshot: ChannelResearchConfig;
-  records: Array<Record<string, RuntimeValue>>;
-  summary?: string;
-  usage?: Record<string, unknown>;
-  logs?: string[];
-  error?: { code: string; message: string; retryable: boolean };
-};
-
-export type ChannelResearchBrief = {
-  id: string;
-  channelId: string;
-  status: "draft" | "approved" | "rejected";
-  createdAt: string;
-  updatedAt: string;
-  sourceRunIds: string[];
-  sourceRecordCount: number;
-  provider: "local";
-  summary: string;
-  evidence: string;
-  antiCopy: string;
-  limitations: string;
-  approvedLibraryItemId?: string;
 };
 
 export type Channel = {
@@ -275,7 +290,6 @@ export type Channel = {
   status: "healthy" | "attention" | "paused";
   trend: number[];
   methods: Record<UniversalProcess, ProcessMethod>;
-  research?: ChannelResearchConfig;
   createdAt: string;
 };
 
@@ -342,8 +356,7 @@ export type ProjectDelivery = {
   blockId: string;
   outputKey: string;
   label: string;
-  type: HumanFieldType;
-  cardinality: "one" | "many";
+  shape: ValueShape;
   attempt: number;
   status: DeliveryStatus;
   items: DeliveryItem[];
@@ -366,7 +379,16 @@ export type ThumbnailLayout = {
   boxes: ThumbnailLayoutBox[];
 };
 
-export type StructuredRecord = Record<string, string | number | boolean | StoredFile | null>;
+export type StructuredRecord = Record<
+  string,
+  | string
+  | number
+  | boolean
+  | StoredFile
+  | ThumbnailLayout
+  | null
+  | Array<string | number | boolean | StoredFile>
+>;
 
 export type RuntimeValue =
   | string
@@ -375,6 +397,7 @@ export type RuntimeValue =
   | string[]
   | StoredFile
   | StoredFile[]
+  | StructuredRecord
   | StructuredRecord[]
   | ThumbnailLayout
   | null;
@@ -403,16 +426,73 @@ export type BlockItemProgress = {
   failedIndex?: number;
 };
 
+export type ProfileLaneExecutionCounts = {
+  total: number;
+  completed: number;
+  active: number;
+  pending: number;
+  failed: number;
+};
+
+export type ProfileLaneExecutionProgress = {
+  counts: ProfileLaneExecutionCounts;
+  complete: boolean;
+  lanes: Array<{
+    laneId: string;
+    /** ID local opaco; a interface não o usa como nome de conta. */
+    profileId: string;
+    state:
+      | "planned"
+      | "leased"
+      | "running"
+      | "completed"
+      | "failed"
+      | "cancelled"
+      | "reconciliation_required";
+    counts: ProfileLaneExecutionCounts;
+    reconciliationRequired: number;
+    reasonCode?: string;
+  }>;
+};
+
 export type BlockExecutionItemStatus =
   "pending" | "in_progress" | "completed" | "failed" | "cancelled";
 
+export type BlockExecutionItemDurableState =
+  | "planned"
+  | "pending"
+  | "leased"
+  | "submitted"
+  | "awaiting_result"
+  | "completed"
+  | "failed"
+  | "awaiting_human"
+  | "cancelled";
+
 export type BlockExecutionItemValue = RuntimeValue | StructuredRecord;
 
+export type BlockExecutionItemKind = "scalar" | "list_item" | "derived";
+
+export type BlockExecutionItemProvenance = {
+  /** Como esta unidade entrou no grafo persistente do núcleo. */
+  origin: "block_input" | "plugin_derived" | "legacy_job";
+  /** Porta de entrada que originou a unidade, quando conhecida. */
+  inputPort?: string;
+  /** Delivery de origem sem copiar a delivery para a unidade. */
+  sourceDeliveryId?: string;
+  /** Item da delivery de origem, quando a entrada veio de uma entrega anterior. */
+  sourceDeliveryItemId?: string;
+};
+
 export type BlockExecutionItemAttempt = {
+  /** Identidade estável atribuída pelo núcleo; ausente apenas em snapshots legados ainda não normalizados. */
+  id?: string;
   attempt: number;
   status: BlockExecutionItemStatus;
   input: BlockExecutionItemValue;
   output?: BlockExecutionItemValue;
+  artifacts?: StoredFile[];
+  externalReceipt?: string;
   error?: string;
   startedAt?: string;
   completedAt?: string;
@@ -427,12 +507,38 @@ export type BlockExecutionItemAttempt = {
  */
 export type BlockExecutionItem = {
   id: string;
+  /** Forma estrutural da unidade; snapshots antigos são normalizados na leitura/migração. */
+  kind?: BlockExecutionItemKind;
+  /** Relação hierárquica para unidades derivadas. */
+  parentItemId?: string;
+  /** Chave estável proposta pelo plugin para reencontrar o mesmo filho derivado na tentativa lógica. */
+  semanticKey?: string;
   sourceItemId?: string;
+  /** Proveniência persistida sem duplicar ProjectDelivery/DeliveryItem. */
+  provenance?: BlockExecutionItemProvenance;
+  /** Correlação declarada pelo plugin para um slot incremental desta tentativa. */
+  pluginCorrelation?: {
+    key: string;
+    /** Identidade do item de lote atribuída pelo núcleo, nunca pelo plugin. */
+    batchItemId?: string;
+    /** Chave local da variante dentro do item de lote. */
+    variantKey?: string;
+    outputPort: string;
+    outputKey: string;
+  };
   order: number;
+  /** Seleção editorial local; não altera a ordem nem o valor materializado do item. */
+  selected?: boolean;
   input: BlockExecutionItemValue;
   status: BlockExecutionItemStatus;
+  /** Estado durável mais preciso da unidade durante uma sessão incremental. */
+  durableState?: BlockExecutionItemDurableState;
+  /** Revisão material incrementada pelo núcleo após cada publishItemUpdate confirmado. */
+  revision?: number;
   attempt: number;
   output?: BlockExecutionItemValue;
+  artifacts?: StoredFile[];
+  externalReceipt?: string;
   error?: string;
   attempts: BlockExecutionItemAttempt[];
 };
@@ -441,16 +547,27 @@ export type BlockExecution = {
   blockId: string;
   status: BlockExecutionStatus;
   values: Record<string, RuntimeValue>;
+  collectionSelection?: {
+    item: ChannelLibraryItem;
+    collection: StrategicCollection;
+    usage: "fixed" | "consumable";
+  };
+  /** Valores fornecidos pela interface durante esta execução, sem contaminar o Método. */
+  runtimeInputs?: Record<string, RuntimeValue>;
   attempt?: number;
   retryFeedback?: Record<string, RuntimeValue>;
   error?: string;
+  /** Structured project-selection failure code (e.g. PROJECT_DESTINATION_CHANGED); legacy errors omit it. */
+  errorCode?: string;
   logs?: string[];
   jobId?: string;
   traceId?: string;
   progress?: number;
   progressMessage?: string;
-  /** Resumo compacto do validador universal de uma entrada executada item a item. */
+  /** Resumo compacto dos itens persistidos durante a execução do bloco. */
   itemProgress?: BlockItemProgress;
+  /** Progresso multiperfil derivado apenas das unidades persistidas pelo núcleo. */
+  profileLaneProgress?: ProfileLaneExecutionProgress;
   /** Itens operacionais persistentes quando o bloco executa uma coleção. */
   items?: BlockExecutionItem[];
   /** Política escolhida pelo usuário para a próxima tentativa manual do lote. */
@@ -464,6 +581,8 @@ export type BlockExecution = {
     pluginId: string;
     connectionId?: string;
     profile?: string;
+    /** Identidade física local opaca usada para validar continuidade sem expô-la ao plugin. */
+    profileId?: string;
     id: string;
     fallbackContext?: string;
   };
@@ -472,50 +591,6 @@ export type BlockExecution = {
   retryConversationContext?: string;
   /** Imagens da tentativa reprovada, anexadas somente se o plugin abrir outra conversa. */
   retryConversationAttachments?: StoredFile[];
-  /** Snapshot de recuperação reportado pelo executor externo em caso de falha. */
-  recoverySnapshot?: PluginExternalRecoverySnapshot;
-  /** Autorização explícita vigente emitida por ação humana para recuperar este bloco. */
-  recoveryAuthorization?: PluginRecoveryAuthorization;
-  /** Histórico cumulativo de autorizações concedidas a este bloco. */
-  recoveryHistory?: PluginRecoveryAuthorization[];
-};
-
-export type PluginExternalRecoveryTarget = {
-  system: string;
-  runId: string;
-  targetId: string;
-  cycle: number;
-  snapshotRevision: string;
-};
-
-export type PluginExternalRecoverySnapshot = {
-  format: "contentflow-external-recovery-snapshot-v1";
-  system: string;
-  runId: string;
-  targetId: string;
-  cycle: number;
-  snapshotRevision: string;
-  recordedAt: string;
-  reason?: string;
-  metadata?: Record<string, unknown>;
-};
-
-export type PluginRecoveryAuthorizationTarget = {
-  executionId: string;
-  blockId: string;
-  attempt: number;
-  externalTarget?: PluginExternalRecoveryTarget;
-};
-
-export type PluginRecoveryAuthorization = {
-  version: "1";
-  token: string;
-  authorizedAt: string;
-  origin: "user_action";
-  keyId: string;
-  algorithm: "ed25519";
-  target: PluginRecoveryAuthorizationTarget;
-  signature: string;
 };
 
 export type ProcessExecutionStatus =
@@ -542,6 +617,13 @@ export type ProcessExecution = {
   channelId: string;
   processType: UniversalProcess;
   methodSnapshot: ProcessMethod;
+  /** Snapshots substituídos somente por uma decisão humana explícita de refazer um Bloco. */
+  methodSnapshotHistory?: Array<{
+    method: ProcessMethod;
+    replacedAt: string;
+    fromBlockId: string;
+    channelDefinitionRevision?: number;
+  }>;
   blocks: BlockExecution[];
   /** Registro derivado e persistido de todas as entregas produzidas pela execução. */
   deliveries?: ProjectDelivery[];
@@ -549,6 +631,8 @@ export type ProcessExecution = {
   outputStatus: "pending" | "awaiting_human" | "completed";
   output?: ProcessOutput;
   error?: string;
+  /** Structured project-selection failure code mirrored from the failed block; legacy errors omit it. */
+  errorCode?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -556,7 +640,7 @@ export type ProcessExecution = {
 export type StrategicCollectionField = {
   id: string;
   label: string;
-  type: "text" | "textarea" | "number" | "image" | "url" | "thumbnail_layout";
+  shape: ValueShape;
   required: boolean;
 };
 
@@ -564,6 +648,8 @@ export type StrategicCollection = {
   id: string;
   channelId: string;
   name: string;
+  /** Missing in existing collections means fixed. */
+  usage?: "fixed" | "consumable";
   fields: StrategicCollectionField[];
   createdAt: string;
 };
@@ -572,8 +658,10 @@ export type ChannelLibraryItem = {
   id: string;
   channelId: string;
   collectionId: string;
-  values: Record<string, string | number | StoredFile | ThumbnailLayout>;
+  values: Record<string, RuntimeValue>;
   createdAt: string;
+  /** Read projection of the owning execution; never writable by a client. */
+  reservation?: { executionId: string; blockId: string };
 };
 
 export const PROCESS_META: Record<ProcessId, { label: string; icon: LucideIcon }> = {
@@ -609,7 +697,12 @@ export function createEmptyMethods(): Record<UniversalProcess, ProcessMethod> {
   return Object.fromEntries(
     PROCESS_ORDER.map((processType) => [
       processType,
-      { name: `Método de ${PROCESS_META[processType].label}`, processType, blocks: [] },
+      {
+        contractVersion: 3,
+        name: `Método de ${PROCESS_META[processType].label}`,
+        processType,
+        blocks: [],
+      },
     ]),
   ) as unknown as Record<UniversalProcess, ProcessMethod>;
 }

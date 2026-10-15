@@ -2,16 +2,16 @@ import type {
   ActionBlock,
   BlockFieldDefinition,
   DeliveryItem,
-  HumanFieldType,
   ProcessExecution,
   ProjectDelivery,
   RuntimeValue,
   StoredFile,
   StructuredRecord,
+  ValueShape,
 } from "@/lib/domain";
 import { createProcessOutputFields } from "@/lib/human-workflow";
-
-const MANY_TYPES = new Set<HumanFieldType>(["list", "multiselect", "records", "files"]);
+import { areValueShapesCompatible, controlShape } from "@/lib/data-shape";
+import { runtimeValueMatchesShape } from "@/lib/runtime-value-validation";
 
 export function deliveryIdFor(
   execution: Pick<ProcessExecution, "id">,
@@ -47,7 +47,7 @@ export function materializeBlockDeliveries({
             id: `${block.id}-selected-item`,
             label: "Item estratégico escolhido",
             key: "selectedItemId",
-            type: "text",
+            shape: controlShape("identifier"),
             required: true,
           },
         ]
@@ -59,28 +59,64 @@ export function materializeBlockDeliveries({
     }
     const id = deliveryIdFor(execution, block.id, output.key, attempt);
     const previous = execution.deliveries?.find((item) => item.id === id);
-    const rawItems = MANY_TYPES.has(output.type) && Array.isArray(value) ? value : [value];
+    const shape = fieldValueShape(output);
+    if (!runtimeValueMatchesShape(shape, value)) {
+      throw new Error(
+        `Delivery ${block.id}.${output.key} recebeu valor incompatível com o ValueShape.`,
+      );
+    }
+    const rawItems = shape.cardinality === "many" && Array.isArray(value) ? value : [value];
     const blockExecution = execution.blocks.find((item) => item.blockId === block.id);
+    const matchingOutputExecutionItems = (blockExecution?.items ?? []).filter(
+      (item) => !item.pluginCorrelation || item.pluginCorrelation.outputKey === output.key,
+    );
+    // Core-owned work units are the canonical lineage for outputs materialized from
+    // block inputs. Incremental plugin-derived units may coexist in older/partial
+    // snapshots, but must not change the positional alignment or erase derived_from.
+    const coreOwnedOutputExecutionItems = matchingOutputExecutionItems.filter(
+      (item) => item.provenance?.origin !== "plugin_derived",
+    );
+    const outputExecutionItems =
+      coreOwnedOutputExecutionItems.length > 0
+        ? coreOwnedOutputExecutionItems
+        : matchingOutputExecutionItems;
+    const sortedOutputExecutionItems = [...outputExecutionItems].sort(
+      (left, right) => left.order - right.order,
+    );
+    const expandedOutputExecutionItems = sortedOutputExecutionItems.flatMap((item) =>
+      Array.isArray(item.output) ? item.output.map(() => item) : [item],
+    );
     const executionItems =
-      MANY_TYPES.has(output.type) && blockExecution?.items?.length === rawItems.length
-        ? [...blockExecution.items].sort((left, right) => left.order - right.order)
+      shape.cardinality === "many" && expandedOutputExecutionItems.length === rawItems.length
+        ? expandedOutputExecutionItems
         : undefined;
+    const executionItemOccurrences = new Map<string, number>();
+    for (const item of executionItems ?? []) {
+      executionItemOccurrences.set(item.id, (executionItemOccurrences.get(item.id) ?? 0) + 1);
+    }
     const usedIdentities = new Set<string>();
     const items = rawItems.map((item, order) => {
       const externalKey = externalItemKey(item);
-      const sourceExecutionItemId = executionItems?.[order]?.id;
-      const baseIdentity = sourceExecutionItemId ?? externalKey ?? String(order + 1);
+      const executionItem = executionItems?.[order];
+      const sourceExecutionItemId = executionItem?.id;
+      const sourceHasVariants =
+        sourceExecutionItemId && (executionItemOccurrences.get(sourceExecutionItemId) ?? 0) > 1;
+      const baseIdentity = sourceHasVariants
+        ? `${sourceExecutionItemId}:${externalKey ?? String(order + 1)}`
+        : (sourceExecutionItemId ?? externalKey ?? String(order + 1));
       let identity = baseIdentity;
       let duplicate = 2;
       while (usedIdentities.has(identity)) identity = `${baseIdentity}-${duplicate++}`;
       usedIdentities.add(identity);
       const generatedItemId = deliveryItemIdFor(id, identity);
       const previousItem =
-        previous?.items.find(
-          (candidate) =>
-            sourceExecutionItemId && candidate.sourceExecutionItemId === sourceExecutionItemId,
-        ) ??
         previous?.items.find((candidate) => candidate.id === generatedItemId) ??
+        (!sourceHasVariants
+          ? previous?.items.find(
+              (candidate) =>
+                sourceExecutionItemId && candidate.sourceExecutionItemId === sourceExecutionItemId,
+            )
+          : undefined) ??
         previous?.items.find(
           (candidate) =>
             candidate.order === order &&
@@ -93,7 +129,18 @@ export function materializeBlockDeliveries({
         order,
         value: structuredClone(item) as RuntimeValue | StructuredRecord,
         externalKey,
-        references: previousItem?.references,
+        references: mergeReferences(
+          previousItem?.references,
+          executionItem?.provenance?.sourceDeliveryItemId
+            ? [
+                {
+                  itemId: executionItem.provenance.sourceDeliveryItemId,
+                  role: "derived_from",
+                },
+              ]
+            : undefined,
+          declaredRecordReferences(output.shape, item),
+        ),
       } satisfies DeliveryItem;
     });
     attachValidationReferences(execution, block, items);
@@ -107,8 +154,7 @@ export function materializeBlockDeliveries({
         blockId: block.id,
         outputKey: output.key,
         label: output.label,
-        type: output.type,
-        cardinality: MANY_TYPES.has(output.type) ? "many" : "one",
+        shape,
         attempt,
         status,
         items,
@@ -117,6 +163,27 @@ export function materializeBlockDeliveries({
       } satisfies ProjectDelivery,
     ];
   });
+}
+
+function declaredRecordReferences(shape: ValueShape, value: unknown): DeliveryItem["references"] {
+  if (shape.kind !== "record" || !isStructuredRecord(value)) return undefined;
+  const references = shape.fields.flatMap((field) => {
+    if (!field.referencesInputId) return [];
+    const raw = value[field.key];
+    const values = Array.isArray(raw) ? raw : [raw];
+    return values.flatMap((itemId) =>
+      typeof itemId === "string" ? [{ itemId, role: field.key }] : [],
+    );
+  });
+  return references.length ? references : undefined;
+}
+
+function mergeReferences(...groups: Array<DeliveryItem["references"]>): DeliveryItem["references"] {
+  const merged = new Map<string, NonNullable<DeliveryItem["references"]>[number]>();
+  for (const reference of groups.flatMap((group) => group ?? [])) {
+    merged.set(`${reference.itemId}:${reference.role ?? ""}`, reference);
+  }
+  return merged.size ? [...merged.values()] : undefined;
 }
 
 export function recordBlockDeliveries(
@@ -147,6 +214,15 @@ export function recordProcessOutputDelivery(
   values: Record<string, RuntimeValue>,
   now = new Date().toISOString(),
 ) {
+  const promoted = promotedProcessOutputDeliveries(execution, values);
+  if (promoted.length === createProcessOutputFields(execution.processType).length) {
+    execution.deliveries = (execution.deliveries ?? []).map((delivery) =>
+      delivery.blockId === "__process_output__" && delivery.status !== "invalidated"
+        ? { ...delivery, status: "invalidated" as const, updatedAt: now }
+        : delivery,
+    );
+    return promoted;
+  }
   const syntheticBlock: ActionBlock = {
     id: "__process_output__",
     type: "CRIAR",
@@ -158,6 +234,58 @@ export function recordProcessOutputDelivery(
     order: execution.methodSnapshot.blocks.length,
   };
   return recordBlockDeliveries(execution, syntheticBlock, values, "completed", now);
+}
+
+export function processOutputDeliveryFor(
+  execution: ProcessExecution,
+  outputKey: string,
+): ProjectDelivery | undefined {
+  const synthetic = [...(execution.deliveries ?? [])]
+    .reverse()
+    .find(
+      (delivery) =>
+        delivery.blockId === "__process_output__" &&
+        delivery.outputKey === outputKey &&
+        delivery.status !== "invalidated",
+    );
+  if (synthetic) return synthetic;
+
+  const value = execution.output?.values[outputKey];
+  if (value === undefined || !execution.output?.sourceBlockId) return undefined;
+  return promotedProcessOutputDeliveries(execution, { [outputKey]: value }).find((delivery) =>
+    deepEqual(deliveryRuntimeValue(delivery), value),
+  );
+}
+
+function promotedProcessOutputDeliveries(
+  execution: ProcessExecution,
+  values: Record<string, RuntimeValue>,
+) {
+  const sourceBlockId = execution.output?.sourceBlockId;
+  if (!sourceBlockId) return [];
+
+  return createProcessOutputFields(execution.processType).flatMap((output) => {
+    const value = values[output.key];
+    if (value === undefined) return [];
+    const delivery = [...(execution.deliveries ?? [])]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.blockId === sourceBlockId &&
+          candidate.status !== "invalidated" &&
+          areDeliveryShapesCompatible(candidate.shape, fieldValueShape(output)) &&
+          deepEqual(deliveryRuntimeValue(candidate), value),
+      );
+    return delivery ? [delivery] : [];
+  });
+}
+
+function fieldValueShape(field: Pick<BlockFieldDefinition, "shape">): ValueShape {
+  return field.shape;
+}
+
+function areDeliveryShapesCompatible(output: ValueShape, input: ValueShape) {
+  return areValueShapesCompatible(output, input);
 }
 
 export function invalidateBlockDeliveries(
@@ -175,9 +303,7 @@ export function invalidateBlockDeliveries(
 
 export function normalizeExecutionDeliveries(execution: ProcessExecution): ProcessExecution {
   const normalized = { ...execution, deliveries: [...(execution.deliveries ?? [])] };
-  if (!normalized.methodSnapshot?.blocks || !Array.isArray(normalized.blocks)) {
-    return normalized;
-  }
+  if (execution.methodSnapshot.contractVersion !== 3) return normalized;
   for (const blockExecution of normalized.blocks) {
     if (
       blockExecution.status !== "completed" &&
@@ -219,7 +345,7 @@ export function activeProjectDeliveries(executions: ProcessExecution[]) {
 }
 
 export function deliveryRuntimeValue(delivery: ProjectDelivery): RuntimeValue {
-  if (delivery.cardinality === "many") {
+  if (delivery.shape.cardinality === "many") {
     return delivery.items.map((item) => structuredClone(item.value)) as RuntimeValue;
   }
   return structuredClone(delivery.items[0]?.value ?? null) as RuntimeValue;
@@ -242,10 +368,16 @@ function attachValidationReferences(
   items: DeliveryItem[],
 ) {
   if (block.type !== "VALIDAR" || !block.validation?.targetBlockId) return;
-  const targets = (execution.deliveries ?? []).filter(
-    (delivery) =>
-      delivery.blockId === block.validation?.targetBlockId && delivery.status !== "invalidated",
-  );
+  const targets = (execution.deliveries ?? [])
+    .filter(
+      (delivery) =>
+        delivery.blockId === block.validation?.targetBlockId && delivery.status !== "invalidated",
+    )
+    .filter(
+      (delivery) =>
+        !block.validation?.targetOutputKey ||
+        delivery.outputKey === block.validation.targetOutputKey,
+    );
   for (const item of items) {
     const target = targets
       .flatMap((delivery) => delivery.items)

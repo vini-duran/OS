@@ -4,11 +4,19 @@ import {
   invalidateBlockDeliveries,
   normalizeExecutionDeliveries,
   recordBlockDeliveries,
+  recordProcessOutputDelivery,
 } from "../src/lib/deliveries";
-import type { ActionBlock, ProcessExecution, Project } from "../src/lib/domain";
+import { deriveProcessOutput } from "../src/lib/process-output";
+import type { ActionBlock, ProcessExecution, Project, ValueShape } from "../src/lib/domain";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import { projectThumbnail } from "../src/lib/project-thumbnail";
-import { composePluginPortValue } from "./plugin-input-values";
+
+const textShape = (cardinality: "one" | "many" = "one"): ValueShape => ({
+  kind: "content",
+  family: "text",
+  cardinality,
+  representation: "inline",
+});
 
 function executionFor(
   processType: ProcessExecution["processType"],
@@ -19,7 +27,7 @@ function executionFor(
     projectId: "project-1",
     channelId: "channel-1",
     processType,
-    methodSnapshot: { name: "Método de teste", processType, blocks: [block] },
+    methodSnapshot: { contractVersion: 3, name: "Método de teste", processType, blocks: [block] },
     blocks: [{ blockId: block.id, status: "completed", values: {}, attempt: 1 }],
     status: "completed",
     outputStatus: "completed",
@@ -53,6 +61,26 @@ const project = {
   createdAt: "2026-08-11T00:00:00.000Z",
 } satisfies Project;
 
+test("ESCOLHER materializa selectedItemId como identificador universal", () => {
+  const block: ActionBlock = {
+    id: "choose",
+    type: "ESCOLHER",
+    operator: "Humano",
+    parameters: [],
+    order: 0,
+  };
+  const execution = executionFor("theme", block);
+  const [delivery] = recordBlockDeliveries(
+    execution,
+    block,
+    { selectedItemId: "item-1" },
+    "completed",
+  );
+  assert.equal(delivery.outputKey, "selectedItemId");
+  assert.deepEqual(delivery.shape, { kind: "control", control: "identifier", cardinality: "one" });
+  assert.equal(delivery.items[0].value, "item-1");
+});
+
 test("materializa uma entrega e um ID universal por item", () => {
   const block: ActionBlock = {
     id: "generate-titles",
@@ -65,7 +93,7 @@ test("materializa uma entrega e um ID universal por item", () => {
         id: "titles-output",
         label: "Opções de título",
         key: "title_options",
-        type: "list",
+        shape: textShape("many"),
         required: true,
       },
     ],
@@ -86,6 +114,44 @@ test("materializa uma entrega e um ID universal por item", () => {
   );
 });
 
+test("promove a entrega existente quando ela já é o resultado oficial do processo", () => {
+  const block: ActionBlock = {
+    id: "create-script",
+    type: "CRIAR",
+    operator: "IA",
+    name: "Criar roteiro",
+    inputs: [],
+    outputs: [
+      { id: "script-output", label: "Roteiro", key: "script", shape: textShape(), required: true },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const execution = executionFor("script", block);
+  execution.blocks[0].values = { script: "Roteiro final" };
+  recordBlockDeliveries(execution, block, execution.blocks[0].values, "completed");
+  execution.output = deriveProcessOutput(execution);
+  assert.ok(execution.output);
+
+  const [promoted] = recordProcessOutputDelivery(
+    execution,
+    execution.output.values,
+    execution.output.createdAt,
+  );
+
+  assert.equal(promoted.id, execution.deliveries?.[0].id);
+  assert.equal(
+    execution.deliveries?.filter((delivery) => delivery.status !== "invalidated").length,
+    1,
+  );
+  assert.equal(
+    execution.deliveries?.some(
+      (delivery) => delivery.blockId === "__process_output__" && delivery.status === "completed",
+    ),
+    false,
+  );
+});
+
 test("preserva a identidade da entrega quando itens operacionais mudam de posição", () => {
   const block: ActionBlock = {
     id: "generate-scenes",
@@ -98,7 +164,7 @@ test("preserva a identidade da entrega quando itens operacionais mudam de posiç
         id: "scenes-output",
         label: "Cenas",
         key: "scenes",
-        type: "list",
+        shape: textShape("many"),
         required: true,
       },
     ],
@@ -158,6 +224,256 @@ test("preserva a identidade da entrega quando itens operacionais mudam de posiç
   }
 });
 
+test("materializa relações declaradas e propaga linhagem para outputs derivados", () => {
+  const relationShape: ValueShape = {
+    kind: "record",
+    cardinality: "many",
+    fields: [
+      {
+        id: "scenes",
+        label: "Cenas",
+        key: "scene_ids",
+        shape: { kind: "control", control: "identifier", cardinality: "many" },
+        required: true,
+        referencesInputId: "scene-prompts",
+      },
+    ],
+  };
+  const relationBlock: ActionBlock = {
+    id: "characters",
+    type: "CRIAR",
+    operator: "IA",
+    inputs: [],
+    outputs: [
+      {
+        id: "relations",
+        label: "Personagens",
+        key: "characters",
+        shape: relationShape,
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const execution = executionFor("assets", relationBlock);
+  execution.blocks[0].values = { characters: [{ scene_ids: ["scene-1", "scene-3"] }] };
+  recordBlockDeliveries(execution, relationBlock, execution.blocks[0].values, "completed");
+  const characterItem = execution.deliveries?.[0].items[0];
+  assert.deepEqual(characterItem?.references, [
+    { itemId: "scene-1", role: "scene_ids" },
+    { itemId: "scene-3", role: "scene_ids" },
+  ]);
+
+  const imageBlock: ActionBlock = {
+    id: "character-images",
+    type: "CRIAR",
+    operator: "IA",
+    inputs: [],
+    outputs: [
+      {
+        id: "images",
+        label: "Imagens",
+        key: "images",
+        shape: {
+          kind: "content",
+          family: "image",
+          cardinality: "many",
+          representation: "artifact",
+        },
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 1,
+  };
+  execution.methodSnapshot.blocks.push(imageBlock);
+  const image = {
+    id: "image-a",
+    name: "a.png",
+    mimeType: "image/png",
+    size: 1,
+    url: "/api/files/a.png",
+  };
+  execution.blocks.push({
+    blockId: imageBlock.id,
+    status: "completed",
+    values: {},
+    attempt: 1,
+    items: [
+      {
+        id: "work-character-a",
+        order: 0,
+        input: { scene_ids: ["scene-1", "scene-3"] },
+        output: image,
+        status: "completed",
+        attempt: 1,
+        attempts: [],
+        provenance: {
+          origin: "block_input",
+          sourceDeliveryItemId: characterItem?.id,
+        },
+      },
+    ],
+  });
+  execution.blocks[1].values = { images: [image] };
+  recordBlockDeliveries(execution, imageBlock, execution.blocks[1].values, "completed");
+  assert.deepEqual(execution.deliveries?.[1].items[0].references, [
+    { itemId: characterItem?.id, role: "derived_from" },
+  ]);
+});
+
+test("propaga a mesma linhagem para todas as variantes produzidas por uma unidade", () => {
+  const block: ActionBlock = {
+    id: "character-images",
+    type: "CRIAR",
+    operator: "IA",
+    inputs: [],
+    outputs: [
+      {
+        id: "images",
+        label: "Imagens",
+        key: "images",
+        shape: {
+          kind: "content",
+          family: "image",
+          cardinality: "many",
+          representation: "artifact",
+        },
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const execution = executionFor("assets", block);
+  const images = ["a", "b"].map((id) => ({
+    id: `image-${id}`,
+    name: `${id}.png`,
+    mimeType: "image/png",
+    size: 1,
+    url: `/api/files/${id}.png`,
+  }));
+  execution.blocks[0].items = [
+    {
+      id: "work-character",
+      order: 0,
+      input: { name: "Ana" },
+      output: images,
+      status: "completed",
+      attempt: 1,
+      attempts: [],
+      provenance: { origin: "block_input", sourceDeliveryItemId: "character-item" },
+    },
+  ];
+  execution.blocks[0].values = { images };
+
+  const [delivery] = recordBlockDeliveries(
+    execution,
+    block,
+    execution.blocks[0].values,
+    "completed",
+  );
+
+  assert.equal(delivery.items.length, 2);
+  assert.equal(new Set(delivery.items.map((item) => item.id)).size, 2);
+  assert.deepEqual(
+    delivery.items.map((item) => item.sourceExecutionItemId),
+    ["work-character", "work-character"],
+  );
+  assert.deepEqual(
+    delivery.items.map((item) => item.references),
+    [
+      [{ itemId: "character-item", role: "derived_from" }],
+      [{ itemId: "character-item", role: "derived_from" }],
+    ],
+  );
+});
+
+test("preserva a linhagem canônica quando existe item incremental duplicado do plugin", () => {
+  const block: ActionBlock = {
+    id: "character-images",
+    type: "CRIAR",
+    operator: "IA",
+    inputs: [],
+    outputs: [
+      {
+        id: "images",
+        label: "Imagens",
+        key: "images",
+        shape: {
+          kind: "content",
+          family: "image",
+          cardinality: "many",
+          representation: "artifact",
+        },
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const execution = executionFor("assets", block);
+  const images = ["ana", "beto"].map((id) => ({
+    id: `image-${id}`,
+    name: `${id}.png`,
+    mimeType: "image/png",
+    size: 1,
+    url: `/api/files/${id}.png`,
+  }));
+  execution.blocks[0].items = [
+    ...images.map((image, order) => ({
+      id: `work-${image.id}`,
+      order,
+      input: { name: image.name },
+      output: image,
+      status: "completed" as const,
+      attempt: 1,
+      attempts: [],
+      provenance: {
+        origin: "block_input" as const,
+        sourceDeliveryItemId: `character-${order + 1}`,
+      },
+    })),
+    {
+      id: "stale-plugin-duplicate",
+      order: 2,
+      kind: "derived",
+      input: { name: "Ana" },
+      output: images[0],
+      status: "completed",
+      attempt: 1,
+      attempts: [],
+      provenance: { origin: "plugin_derived" },
+      pluginCorrelation: {
+        key: "legacy-image-1",
+        outputPort: "images",
+        outputKey: "images",
+      },
+    },
+  ];
+  execution.blocks[0].values = { images };
+
+  const [delivery] = recordBlockDeliveries(
+    execution,
+    block,
+    execution.blocks[0].values,
+    "completed",
+  );
+
+  assert.deepEqual(
+    delivery.items.map((item) => item.sourceExecutionItemId),
+    ["work-image-ana", "work-image-beto"],
+  );
+  assert.deepEqual(
+    delivery.items.map((item) => item.references),
+    [
+      [{ itemId: "character-1", role: "derived_from" }],
+      [{ itemId: "character-2", role: "derived_from" }],
+    ],
+  );
+});
+
 test("usa a primeira imagem do output concluído como thumbnail do card", () => {
   const block: ActionBlock = {
     id: "create-thumbnails",
@@ -204,9 +520,20 @@ test("resolve uma entrega específica de bloco de processo anterior", () => {
         id: "cues-output",
         label: "Cues da legenda",
         key: "subtitle_cues",
-        type: "records",
+        shape: {
+          kind: "record",
+          cardinality: "many",
+          fields: [
+            {
+              id: "text",
+              label: "Texto",
+              key: "text",
+              shape: textShape() as Extract<ValueShape, { kind: "content" }>,
+              required: true,
+            },
+          ],
+        },
         required: true,
-        recordFields: [{ id: "text", label: "Texto", key: "text", type: "text", required: true }],
       },
     ],
     parameters: [],
@@ -229,11 +556,13 @@ test("resolve uma entrega específica de bloco de processo anterior", () => {
       {
         id: "cues-input",
         label: "Cues",
-        type: "records",
-        source: "previous_process",
-        sourceProcessType: "narration",
-        blockId: "transcribe",
-        sourceKey: "subtitle_cues",
+        shape: sourceBlock.outputs![0].shape,
+        binding: {
+          kind: "previous_process",
+          processType: "narration",
+          blockId: "transcribe",
+          outputKey: "subtitle_cues",
+        },
       },
     ],
     outputs: [],
@@ -265,7 +594,7 @@ test("invalida a revisão anterior e cria novos IDs em outra tentativa", () => {
     type: "CRIAR",
     operator: "IA",
     outputs: [
-      { id: "script-output", label: "Roteiro", key: "script", type: "textarea", required: true },
+      { id: "script-output", label: "Roteiro", key: "script", shape: textShape(), required: true },
     ],
     parameters: [],
     order: 0,
@@ -302,18 +631,18 @@ test("permite resolver campos específicos do mesmo item escolhido", () => {
       {
         id: "angle-name",
         label: "Ângulo",
-        type: "text",
-        source: "previous_block",
-        blockId: chooseBlock.id,
-        sourceKey: "name",
+        shape: textShape(),
+        binding: { kind: "previous_block", blockId: chooseBlock.id, outputKey: "name" },
       },
       {
         id: "angle-description",
         label: "Descrição",
-        type: "textarea",
-        source: "previous_block",
-        blockId: chooseBlock.id,
-        sourceKey: "description",
+        shape: textShape(),
+        binding: {
+          kind: "previous_block",
+          blockId: chooseBlock.id,
+          outputKey: "description",
+        },
       },
     ],
     outputs: [],
@@ -336,8 +665,8 @@ test("permite resolver campos específicos do mesmo item escolhido", () => {
         channelId: "channel-1",
         name: "Ângulos",
         fields: [
-          { id: "name", label: "Ângulo", type: "text", required: true },
-          { id: "description", label: "Descrição", type: "textarea", required: true },
+          { id: "name", label: "Ângulo", shape: textShape(), required: true },
+          { id: "description", label: "Descrição", shape: textShape(), required: true },
         ],
         createdAt: "2026-08-30T00:00:00.000Z",
       },
@@ -363,7 +692,7 @@ test("permite resolver campos específicos do mesmo item escolhido", () => {
   );
 });
 
-test("envia completos todos os itens escolhidos ligados a um bloco Criar", () => {
+test("não infere itens escolhidos completos quando sourceKey está ausente", () => {
   const chooseCategory: ActionBlock = {
     id: "choose-category",
     type: "ESCOLHER",
@@ -392,16 +721,14 @@ test("envia completos todos os itens escolhidos ligados a um bloco Criar", () =>
       {
         id: "category-input",
         label: "Nova entrada",
-        type: "text",
-        source: "previous_block",
-        blockId: chooseCategory.id,
+        shape: textShape(),
+        binding: { kind: "previous_block", blockId: chooseCategory.id, outputKey: "" },
       },
       {
         id: "angle-input",
         label: "Nova entrada",
-        type: "text",
-        source: "previous_block",
-        blockId: chooseAngle.id,
+        shape: textShape(),
+        binding: { kind: "previous_block", blockId: chooseAngle.id, outputKey: "" },
       },
     ],
     outputs: [],
@@ -432,9 +759,9 @@ test("envia completos todos os itens escolhidos ligados a um bloco Criar", () =>
         channelId: "channel-1",
         name: "Linha Editorial",
         fields: [
-          { id: "category", label: "Categoria", type: "text", required: true },
-          { id: "description", label: "Descrição", type: "textarea", required: true },
-          { id: "period", label: "Período", type: "text", required: false },
+          { id: "category", label: "Categoria", shape: textShape(), required: true },
+          { id: "description", label: "Descrição", shape: textShape(), required: true },
+          { id: "period", label: "Período", shape: textShape(), required: false },
         ],
         createdAt: "2026-08-30T00:00:00.000Z",
       },
@@ -443,8 +770,8 @@ test("envia completos todos os itens escolhidos ligados a um bloco Criar", () =>
         channelId: "channel-1",
         name: "Perspectiva do canal",
         fields: [
-          { id: "angle", label: "Ângulo", type: "text", required: true },
-          { id: "approach", label: "Abordagem", type: "textarea", required: true },
+          { id: "angle", label: "Ângulo", shape: textShape(), required: true },
+          { id: "approach", label: "Abordagem", shape: textShape(), required: true },
         ],
         createdAt: "2026-08-30T00:00:00.000Z",
       },
@@ -496,24 +823,14 @@ test("envia completos todos os itens escolhidos ligados a um bloco Criar", () =>
   });
 
   assert.equal(resolved.length, 2);
-  assert.match(String(resolved[0].value), /ITEM ESCOLHIDO — Linha Editorial/);
-  assert.match(String(resolved[0].value), /"Categoria": "Grandes conflitos"/);
-  assert.match(String(resolved[0].value), /"Descrição": "Guerras e disputas decisivas\."/);
-  assert.match(String(resolved[0].value), /"Período": "Antiguidade ao século XX"/);
-  assert.match(String(resolved[1].value), /ITEM ESCOLHIDO — Perspectiva do canal/);
-  assert.match(String(resolved[1].value), /"Ângulo": "Consequências humanas"/);
-  assert.match(
-    String(resolved[1].value),
-    /"Abordagem": "Mostrar como pessoas comuns foram afetadas\."/,
+  assert.deepEqual(
+    resolved.map((item) => item.resolved),
+    [false, false],
   );
-
-  const pluginContext = composePluginPortValue(
-    resolved.map((item) => ({ label: item.input.label, value: item.value ?? null })),
+  assert.deepEqual(
+    resolved.map((item) => item.value),
+    [undefined, undefined],
   );
-  assert.match(String(pluginContext), /ITEM ESCOLHIDO — Linha Editorial/);
-  assert.match(String(pluginContext), /ITEM ESCOLHIDO — Perspectiva do canal/);
-  assert.doesNotMatch(String(pluginContext), /ITEM NÃO ESCOLHIDO/);
-  assert.doesNotMatch(String(pluginContext), /ÂNGULO NÃO ESCOLHIDO/);
 });
 
 test("materializa itens individuais em saídas do tipo list", () => {
@@ -526,7 +843,7 @@ test("materializa itens individuais em saídas do tipo list", () => {
         id: "theme-options-output",
         label: "Opções de tema",
         key: "theme_options",
-        type: "list",
+        shape: textShape("many"),
         required: true,
       },
     ],
@@ -551,4 +868,72 @@ test("materializa itens individuais em saídas do tipo list", () => {
   assert.equal(deliveries[0].items[0].value, themes[0]);
   assert.equal(deliveries[0].items[1].value, themes[1]);
   assert.equal(deliveries[0].items[2].value, themes[2]);
+});
+
+test("seleção de VALIDAR referencia somente a delivery do targetOutputKey explícito", () => {
+  const target: ActionBlock = {
+    id: "generate-options",
+    type: "CRIAR",
+    operator: "Humano",
+    outputs: [
+      { id: "other", label: "Outra", key: "other", shape: textShape("many"), required: true },
+      {
+        id: "candidates",
+        label: "Candidatos",
+        key: "candidates",
+        shape: textShape("many"),
+        required: true,
+      },
+    ],
+    parameters: [],
+    order: 0,
+  };
+  const validation: ActionBlock = {
+    id: "select-option",
+    type: "VALIDAR",
+    operator: "Humano",
+    outputs: [
+      {
+        id: "selected",
+        label: "Selecionado",
+        key: "selected_value",
+        shape: textShape(),
+        required: true,
+      },
+    ],
+    validation: {
+      targetBlockId: target.id,
+      targetOutputKey: "candidates",
+      mode: "select_one",
+      onReject: "pause",
+      maxAttempts: 3,
+    },
+    parameters: [],
+    order: 1,
+  };
+  const execution = executionFor("theme", target);
+  execution.methodSnapshot.blocks.push(validation);
+  execution.blocks.push({
+    blockId: validation.id,
+    status: "completed",
+    values: { selected_value: "B" },
+    attempt: 1,
+  });
+  recordBlockDeliveries(execution, target, { other: ["B"], candidates: ["A", "B"] }, "completed");
+  const candidateDelivery = execution.deliveries?.find(
+    (delivery) => delivery.outputKey === "candidates",
+  );
+  const candidateItem = candidateDelivery?.items.find((item) => item.value === "B");
+  assert.ok(candidateItem);
+
+  const [selectionDelivery] = recordBlockDeliveries(
+    execution,
+    validation,
+    { selected_value: "B" },
+    "completed",
+  );
+
+  assert.deepEqual(selectionDelivery.items[0].references, [
+    { itemId: candidateItem.id, role: "selected_from" },
+  ]);
 });

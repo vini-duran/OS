@@ -1,6 +1,6 @@
 # Codex Skill Runner
 
-Plugin independente compatível com ContentFlow Plugin API v1. Ele automatiza o agente Codex dentro dos blocos do Método como uma pessoa o usaria no chat ou terminal: conversa, pesquisa, análise, criação de scripts e edição no workspace, conforme as permissões concedidas. Skills são a especialização principal, mas não limitam as ferramentas do agente.
+Plugin independente compatível com ContentFlow Plugin API v2. Ele automatiza o agente Codex dentro dos blocos do Método como uma pessoa o usaria no chat ou terminal: conversa, pesquisa, análise, criação de scripts e edição no workspace, conforme as permissões concedidas. Skills são a especialização principal, mas não limitam as ferramentas do agente.
 
 Este pacote não é afiliado, patrocinado nem mantido pela OpenAI. “Codex” e “OpenAI” são usados apenas para identificar o provedor interoperado.
 
@@ -82,3 +82,8 @@ Desative ou desinstale o plugin na Central de Plugins. Para encerrar também a s
 ## Suporte
 
 Compatibilidade inicial: Windows desktop, Node 26, ContentFlow 0.3.5 e Codex CLI com suporte aos flags documentados de `codex exec`.
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

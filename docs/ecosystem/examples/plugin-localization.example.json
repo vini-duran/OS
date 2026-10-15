@@ -1,0 +1,39 @@
+{
+  "$schema": "../schemas/contentflow-plugin-v2.schema.json",
+  "apiVersion": "2",
+  "id": "com.example.localized-transform",
+  "name": "Transformador localizado",
+  "version": "1.0.0",
+  "description": "Exemplo de textos localizados sem alterar chaves técnicas.",
+  "author": "Example",
+  "license": "MIT",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "entrypoint": "handler.mjs",
+  "permissions": [],
+  "localizations": {
+    "en": { "name": "Localized transformer", "description": "Localized metadata example." },
+    "es": { "name": "Transformador localizado", "description": "Ejemplo de metadatos localizados." }
+  },
+  "capabilities": [
+    {
+      "id": "transform",
+      "operator": "Código",
+      "blockTypes": ["CRIAR"],
+      "inputPorts": [],
+      "outputPorts": [
+        {
+          "key": "result",
+          "label": "Resultado",
+          "shape": { "kind": "content", "family": "text", "cardinality": "one", "representation": "inline" },
+          "required": true
+        }
+      ],
+      "execution": { "mode": "immediate" },
+      "sideEffects": [],
+      "cost": { "model": "free", "estimateSupported": true },
+      "dataPolicy": { "sendsDataToThirdParties": false },
+      "blockConfigSchema": { "type": "object" },
+      "outputSchema": { "type": "object" }
+    }
+  ]
+}

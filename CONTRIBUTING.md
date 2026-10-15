@@ -9,8 +9,8 @@ Leia integralmente:
 - [`LICENSE`](LICENSE);
 - [`AI_USAGE_POLICY.md`](AI_USAGE_POLICY.md);
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
-- [`ecosystem/docs/quickstart.md`](ecosystem/docs/quickstart.md), para integrações externas;
-- [`ecosystem/docs/development.md`](ecosystem/docs/development.md), quando precisar do contrato detalhado.
+- [`docs/ecosystem/quickstart.md`](docs/ecosystem/quickstart.md), para integrações externas;
+- [`docs/ecosystem/development.md`](docs/ecosystem/development.md), quando precisar do contrato detalhado.
 
 O ContentFlow é source-available proprietário, não open source. Contribuições destinam-se ao produto oficial. A licença pública não autoriza clones, distribuições modificadas, produtos concorrentes, white-label, rebranding ou reskins.
 
@@ -30,6 +30,12 @@ Antes de enviar uma contribuição:
 ```sh
 npm run check
 ```
+
+## Desenvolvimento e validação
+
+Siga o [processo de desenvolvimento vertical](docs/DEVELOPMENT.md): escolha um Método/plugin real, execute o cenário afetado, observe resultado e invariantes, corrija a causa e repita a jornada com regressão/check quando aplicável. Leia [AGENTS.md](AGENTS.md), o [contrato de conteúdo](docs/CONTENT_CONTRACT.md) e os contratos pertinentes.
+
+O Dev Monitor e a skill `development-contentflow` apoiam o desenvolvimento interno; o aplicativo não depende de agentes de IA. Os [limites de validação](docs/CURRENT_STATE.md) continuam explícitos. O programa separado de confiabilidade foi encerrado e suas tasks não são pré-requisitos para contribuir.
 
 ## Segurança e privacidade
 

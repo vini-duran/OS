@@ -1,6 +1,6 @@
 # Vídeo por Sequência de Imagens (FFmpeg)
 
-Plugin independente Plugin API v1 para o processo universal **Edição**. Recebe imagens na ordem definida pelo Método e uma faixa de áudio; mede a duração real do áudio e gera um MP4 H.264 com áudio AAC. As imagens podem ocupar partes iguais ou seguir os intervalos de um arquivo SRT.
+Plugin independente Plugin API v2 para o processo universal **Edição**. Recebe imagens na ordem definida pelo Método e uma faixa de áudio; mede a duração real do áudio e gera um MP4 H.264 com áudio AAC. As imagens podem ocupar partes iguais ou seguir os intervalos de um arquivo SRT.
 
 ## Capability
 
@@ -31,3 +31,8 @@ npm run plugin:kit -- check ./ecosystem/plugins/reference/ffmpeg-image-sequence-
 ```
 
 Versão do ContentFlow testada: 0.4.1. Runtime: Node 26/ESM. Não há secrets, autenticação ou credenciais para revogar.
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

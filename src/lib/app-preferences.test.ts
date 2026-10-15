@@ -1,469 +1,152 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  PLUGIN_SECTIONS,
-  movePluginInSection,
-  normalizePluginOrganization,
-  organizePluginList,
-  setPluginHidden,
-  setPluginSection,
-  togglePluginFavorite,
-  translate,
-  type PluginLibraryOrganization,
-} from "./app-preferences";
+import { translate } from "./app-preferences";
 
-test("component resources and unavailable catalog messages support all application languages", () => {
-  for (const [phrase, english, spanish] of [
-    ["Consultar plugins", "Browse plugins", "Consultar plugins"],
-    ["Configurar Browser Bridge", "Set up Browser Bridge", "Configurar Browser Bridge"],
-    ["Consultar skill de plugins", "Consult plugin skill", "Consultar skill de plugins"],
-    ["Consultar skill de Métodos", "Consult Methods skill", "Consultar skill de Métodos"],
-    [
-      "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.",
-      "Catalog updates are unavailable. You can update from a folder.",
-      "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
-    ],
-    [
-      "Consulte os componentes e suas instruções. Instale somente os plugins que você precisa pela opção Instalar plugin.",
-      "Consult the components and their instructions. Install only the plugins you need using Install plugin.",
-      "Consulta los componentes y sus instrucciones. Instala solo los plugins que necesitas con la opción Instalar plugin.",
-    ],
-    [
-      "Use o agente guiado ou consulte a skill para trabalhar com seu agente de IA.",
-      "Use the guided agent or consult the skill to work with your AI agent.",
-      "Usa el agente guiado o consulta la skill para trabajar con tu agente de IA.",
-    ],
+test("support diagnostics controls and feedback are localized in three languages", () => {
+  for (const phrase of [
+    "Preferências do aplicativo",
+    "Suporte e diagnóstico",
+    "Inclui códigos de erro, etapas, horários e versões técnicas do aplicativo e dos plugins.",
+    "Exportar diagnóstico",
+    "Abrir pasta de logs",
+    "Aguarde…",
+    "Disponível no aplicativo instalado ou portátil.",
+    "Registros locais por até 24 horas, com limite de 4 MB. Sem prompts, conteúdo, senhas ou cookies.",
+    "Diagnóstico exportado. Você pode enviar o ZIP ao suporte.",
+    "Não foi possível acessar o diagnóstico. Tente novamente.",
   ]) {
     assert.equal(translate(phrase, "pt-BR"), phrase);
-    assert.equal(translate(phrase, "en"), english);
-    assert.equal(translate(phrase, "es"), spanish);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    if (phrase !== "Exportar diagnóstico") assert.notEqual(translate(phrase, "es"), phrase);
   }
 });
 
-test("restored research UI supports all application languages", () => {
+test("whole Method deletion and its confirmation are localized", () => {
+  for (const phrase of [
+    "Apagar Método",
+    "Apagar este Método e todos os seus Blocos?",
+    "O Processo ficará sem Método configurado. Coleções e resultados já produzidos serão preservados.",
+    "Método apagado.",
+    "Não foi possível apagar o Método.",
+  ]) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("strategic item editing labels are localized without changing user values", () => {
+  for (const phrase of [
+    "Editar item",
+    "Salvar alterações",
+    "Item atualizado",
+    "Revise os campos do item antes de salvar.",
+    "Preencha o formato definido para esta coleção.",
+    "Selecionar arquivo",
+    "Substituir arquivo",
+    "Nenhum arquivo selecionado",
+  ]) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("browser cache preservation diagnostics are localized", () => {
+  for (const phrase of [
+    "Perfil de navegador ocupado.",
+    "O navegador não respondeu. A sessão foi preservada.",
+  ]) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("plugin data connections and live Method synchronization are localized", () => {
   const phrases = [
-    "Pesquisa estratégica",
-    "Executar pesquisa",
-    "Gerar brief",
-    "Configure a conexão do plugin de pesquisa.",
+    "Dados entre blocos",
+    "Revise o vínculo da entrega no painel do plugin.",
+    "Escolha as entregas anteriores que esta capacidade deve receber.",
+    "Sem entrega anterior",
+    "Entrada configurada no bloco",
+    "Usar entrega de",
+    "Disponibilizar entrega",
+    "Não é possível remover um bloco com trabalho já iniciado nesta execução.",
+    "A nova ordem do Método interrompe um bloco que já está em execução.",
   ];
   for (const phrase of phrases) {
     assert.equal(translate(phrase, "pt-BR"), phrase);
     assert.notEqual(translate(phrase, "en"), phrase);
+    assert.ok(translate(phrase, "es").length);
   }
 });
 
-test("translates recently added Methods and plugin profile UI in English", () => {
-  assert.equal(
-    translate("Use, compartilhe e gerencie Métodos salvos nos seus canais", "en"),
-    "Use, share, and manage Methods saved in your channels",
-  );
-  assert.equal(
-    translate("Buscar por nome, Canal, processo ou ação...", "en"),
-    "Search by name, Channel, process, or action...",
-  );
-  assert.equal(translate("5 de 8 processos configurados", "en"), "5 of 8 processes configured");
-  assert.equal(translate("2 perfis", "en"), "2 profiles");
-  assert.equal(translate("Acessar a internet", "en"), "Access the internet");
-  assert.equal(translate(", entrega “theme”", "en"), ", output “theme”");
-});
-
-test("translates recently added Methods and plugin profile UI in Spanish", () => {
-  assert.equal(
-    translate("Use, compartilhe e gerencie Métodos salvos nos seus canais", "es"),
-    "Usa, comparte y gestiona los Métodos guardados en tus canales",
-  );
-  assert.equal(
-    translate("Buscar por nome, Canal, processo ou ação...", "es"),
-    "Buscar por nombre, Canal, proceso o acción...",
-  );
-  assert.equal(translate("5 de 8 processos configurados", "es"), "5 de 8 procesos configurados");
-  assert.equal(translate("2 perfis", "es"), "2 perfiles");
-  assert.equal(translate("Acessar a internet", "es"), "Acceder a Internet");
-  assert.equal(translate(", entrega “theme”", "es"), ", salida “theme”");
-});
-
-test("translates the MCP Method builder connection UI", () => {
-  assert.equal(translate("Conectar agente via MCP", "en"), "Connect agent via MCP");
-  assert.equal(translate("Conectar agente via MCP", "es"), "Conectar agente mediante MCP");
-  assert.equal(
-    translate("Configuração do servidor MCP local", "en"),
-    "Local MCP server configuration",
-  );
-  assert.equal(translate("Copiar configuração", "es"), "Copiar configuración");
-  assert.equal(translate("Preparando configuração MCP...", "en"), "Preparing MCP configuration...");
-  assert.equal(
-    translate(
-      "Use esta configuração em qualquer agente compatível com MCP. O ContentFlow precisa permanecer aberto durante a criação e os testes dos Métodos.",
-      "es",
-    ),
-    "Usa esta configuración con cualquier agente compatible con MCP. ContentFlow debe permanecer abierto durante la creación y las pruebas de los Métodos.",
-  );
-});
-
-test("translates plugin credential management in English and Spanish", () => {
-  assert.equal(translate("Credenciais e conexões", "en"), "Credentials and connections");
-  assert.equal(translate("Credenciais e conexões", "es"), "Credenciales y conexiones");
-  assert.equal(translate("1 conexão", "en"), "1 connection");
-  assert.equal(translate("2 conexões", "es"), "2 conexiones");
-  assert.equal(translate("1 de 4 credenciais configuradas", "en"), "1 of 4 credentials configured");
-  assert.equal(
-    translate("1 de 4 credenciais configuradas", "es"),
-    "1 de 4 credenciales configuradas",
-  );
-  assert.equal(
-    translate("Preencha somente as credenciais necessárias para esta conexão.", "en"),
-    "Fill in only the credentials needed for this connection.",
-  );
-});
-
-test("translates the unified block configuration labels", () => {
-  assert.equal(translate("Iniciar minimizado", "en"), "Start minimized");
-  assert.equal(translate("Iniciar minimizado", "es"), "Iniciar minimizado");
-  assert.deepEqual(
-    ["Nome da ação", "Prompt do bloco", "Operador responsável", "Informações de entrada"].map(
-      (label) => translate(label, "en"),
-    ),
-    ["Action name", "Block prompt", "Responsible operator", "Input information"],
-  );
-  assert.deepEqual(
-    ["Nome da ação", "Prompt do bloco", "Operador responsável", "Resultado desta ação"].map(
-      (label) => translate(label, "es"),
-    ),
-    [
-      "Nombre de la acción",
-      "Prompt del bloque",
-      "Operador responsable",
-      "Resultado de esta acción",
-    ],
-  );
-  assert.equal(
-    translate("Defina apenas as entradas adicionais que esta ação precisa.", "en"),
-    "Define only the additional inputs this action needs.",
-  );
-  assert.equal(
-    translate("Cada entrega fica disponível para os próximos blocos.", "es"),
-    "Cada salida queda disponible para los bloques siguientes.",
-  );
-});
-
-test("preserves user-created and plugin-authored content", () => {
-  for (const language of ["en", "es"] as const) {
-    assert.equal(translate("Históricos Contentflow", language), "Históricos Contentflow");
-    assert.equal(translate("Tipos de aberturas/ganchos", language), "Tipos de aberturas/ganchos");
-    assert.equal(
-      translate("Automação modular criada pelo autor do plugin.", language),
-      "Automação modular criada pelo autor do plugin.",
-    );
-  }
-});
-
-test("translates the compact plugin contract validator", () => {
-  assert.equal(translate("Plugin executor", "en"), "Runner plugin");
-  assert.equal(translate("Requer ajustes", "es"), "Requiere ajustes");
-  assert.equal(translate("Entrada · Sequência de prompts", "en"), "Input · Sequência de prompts");
-  assert.equal(translate("Parâmetros do prompt (2)", "es"), "Parámetros del prompt (2)");
-  assert.equal(translate("Prévia do envio à IA", "en"), "AI delivery preview");
-  assert.equal(translate("Prévia do envio à IA", "es"), "Vista previa del envío a la IA");
-});
-
-test("translates execution attention and error notifications", () => {
-  assert.equal(translate("Pendências e erros", "en"), "Tasks and errors");
-  assert.equal(translate("Pendências e erros", "es"), "Tareas y errores");
-  assert.equal(
-    translate("2 erros de execução e 3 tarefas humanas pendentes", "en"),
-    "2 execution errors and 3 pending human tasks",
-  );
-  assert.equal(
-    translate("2 erros de execução e 3 tarefas humanas pendentes", "es"),
-    "2 errores de ejecución y 3 tareas humanas pendientes",
-  );
-  assert.equal(
-    translate("Pendências e erros na barra de tarefas", "en"),
-    "Tasks and errors on the taskbar",
-  );
-  assert.equal(
-    translate("Pendências e erros na barra de tarefas", "es"),
-    "Tareas y errores en la barra de tareas",
-  );
-});
-
-test("translates plugin library organization UI in English and Spanish", () => {
-  const phrases = [
-    "Favoritos",
-    "Geração",
-    "Utilitários",
-    "Sem seção",
-    "Organizar biblioteca",
-    "Gerenciar biblioteca",
-    "Mostrar ocultos",
-    "Ocultar da biblioteca",
-    "Exibir na biblioteca",
-    "Exibir plugins ocultos",
-    "Todas as seções",
+test("content-only Method editor labels are localized in all three languages", () => {
+  const labels = [
+    ["Conteúdo", "Content", "Contenido"],
+    ["Tipo de conteúdo", "Content type", "Tipo de contenido"],
+    ["Quantidade", "Quantity", "Cantidad"],
+    ["Representação", "Representation", "Representación"],
+    ["Texto", "Text", "Texto"],
+    ["Imagem", "Image", "Imagen"],
+    ["Áudio", "Audio", "Audio"],
+    ["Vídeo", "Video", "Vídeo"],
+    ["Um", "One", "Uno"],
+    ["Vários", "Many", "Varios"],
+    ["Direto", "Inline", "Directo"],
+    ["Arquivo", "File", "Archivo"],
+    ["Direto ou arquivo", "Inline or file", "Directo o archivo"],
   ];
-  for (const phrase of phrases) {
+  for (const [source, english, spanish] of labels) {
+    assert.equal(translate(source, "pt-BR"), source);
+    assert.equal(translate(source, "en"), english);
+    assert.equal(translate(source, "es"), spanish);
+  }
+});
+
+test("translates the local service connection state", () => {
+  const phrase =
+    "Sem conexão com o serviço local. Seus dados salvos estão preservados; tentando reconectar…";
+
+  assert.equal(translate(phrase, "pt-BR"), phrase);
+  assert.equal(
+    translate(phrase, "en"),
+    "No connection to the local service. Your saved data is preserved; trying to reconnect…",
+  );
+  assert.equal(
+    translate(phrase, "es"),
+    "Sin conexión con el servicio local. Tus datos guardados están preservados; intentando reconectar…",
+  );
+});
+
+test("translates explicit VALIDAR target and plugin binding controls", () => {
+  for (const phrase of [
+    "Saída enviada ao plugin",
+    "Aprovar o bloco inteiro",
+    "Nenhuma porta aceita este formato.",
+  ]) {
     assert.equal(translate(phrase, "pt-BR"), phrase);
     assert.notEqual(translate(phrase, "en"), phrase);
-  }
-  assert.equal(translate("Favoritos", "en"), "Favorites");
-  assert.equal(translate("Favoritos", "es"), "Favoritos");
-  assert.equal(translate("Geração", "en"), "Generation");
-  assert.equal(translate("Geração", "es"), "Generación");
-  assert.equal(translate("Sem seção", "en"), "No section");
-  assert.equal(translate("Sem seção", "es"), "Sin sección");
-  assert.equal(translate("Mostrar ocultos", "en"), "Show hidden");
-  assert.equal(translate("Mostrar ocultos", "es"), "Mostrar ocultos");
-  assert.equal(translate("Exibir plugins ocultos", "en"), "Show hidden plugins");
-  assert.equal(translate("Exibir plugins ocultos", "es"), "Mostrar plugins ocultos");
-});
-
-test("normalizePluginOrganization handles empty, null, and non-object inputs", () => {
-  const emptyDefaults = [undefined, null, "", 42, [], {}];
-  for (const input of emptyDefaults) {
-    const result = normalizePluginOrganization(input);
-    assert.deepEqual(result.items, {});
-    for (const section of PLUGIN_SECTIONS) {
-      assert.ok(Array.isArray(result.sectionOrder[section]));
-      assert.equal(result.sectionOrder[section].length, 0);
-    }
+    assert.notEqual(translate(phrase, "es"), phrase);
   }
 });
 
-test("normalizePluginOrganization sanitizes IDs and normalizes invalid sections", () => {
-  const input = {
-    items: {
-      "  valid-plugin-1  ": { section: "generation", favorite: true, hidden: false },
-      "": { section: "editing" },
-      "   ": { section: "publishing" },
-      "plugin-invalid-sec": { section: "invalid-section-name", favorite: "yes", hidden: null },
-    },
-    sectionOrder: {
-      generation: ["  valid-plugin-1  ", "valid-plugin-1"],
-      invalid: ["foo"],
-    },
-  };
-
-  const normalized = normalizePluginOrganization(input);
-  assert.ok("valid-plugin-1" in normalized.items);
-  assert.equal(normalized.items["valid-plugin-1"].section, "generation");
-  assert.equal(normalized.items["valid-plugin-1"].favorite, true);
-  assert.equal(normalized.items["valid-plugin-1"].hidden, false);
-
-  assert.ok(!("" in normalized.items));
-  assert.ok(!("   " in normalized.items));
-
-  assert.ok("plugin-invalid-sec" in normalized.items);
-  assert.equal(normalized.items["plugin-invalid-sec"].section, "none");
-  assert.equal(normalized.items["plugin-invalid-sec"].favorite, true);
-  assert.equal(normalized.items["plugin-invalid-sec"].hidden, false);
-
-  // Check sectionOrder deduplication
-  assert.deepEqual(normalized.sectionOrder.generation, ["valid-plugin-1"]);
-  assert.ok(normalized.sectionOrder.none.includes("plugin-invalid-sec"));
-});
-
-test("normalizePluginOrganization migrates legacy format with favorites, hidden, and sections", () => {
-  const legacy = {
-    favorites: ["plugin-a", "plugin-b"],
-    hidden: ["plugin-c"],
-    sections: {
-      generation: ["plugin-a"],
-      editing: ["plugin-b", "plugin-c"],
-      publishing: ["plugin-d"],
-    },
-  };
-
-  const normalized = normalizePluginOrganization(legacy);
-
-  assert.equal(normalized.items["plugin-a"].section, "generation");
-  assert.equal(normalized.items["plugin-a"].favorite, true);
-  assert.equal(normalized.items["plugin-a"].hidden, false);
-
-  assert.equal(normalized.items["plugin-b"].section, "editing");
-  assert.equal(normalized.items["plugin-b"].favorite, true);
-  assert.equal(normalized.items["plugin-b"].hidden, false);
-
-  assert.equal(normalized.items["plugin-c"].section, "editing");
-  assert.equal(normalized.items["plugin-c"].favorite, false);
-  assert.equal(normalized.items["plugin-c"].hidden, true);
-
-  assert.equal(normalized.items["plugin-d"].section, "publishing");
-  assert.equal(normalized.items["plugin-d"].favorite, false);
-  assert.equal(normalized.items["plugin-d"].hidden, false);
-
-  assert.deepEqual(normalized.sectionOrder.generation, ["plugin-a"]);
-  assert.deepEqual(normalized.sectionOrder.editing, ["plugin-b", "plugin-c"]);
-  assert.deepEqual(normalized.sectionOrder.publishing, ["plugin-d"]);
-});
-
-test("togglePluginFavorite toggles favorite state and handles unconfigured IDs", () => {
-  let org: PluginLibraryOrganization = normalizePluginOrganization(null);
-
-  org = togglePluginFavorite(org, "plugin-1");
-  assert.equal(org.items["plugin-1"].favorite, true);
-  assert.equal(org.items["plugin-1"].section, "none");
-
-  org = togglePluginFavorite(org, "plugin-1");
-  assert.equal(org.items["plugin-1"].favorite, false);
-
-  // Invalid IDs are no-ops
-  const unchanged = togglePluginFavorite(org, "   ");
-  assert.deepEqual(unchanged, org);
-});
-
-test("setPluginSection moves plugin between sections and updates sectionOrder", () => {
-  let org: PluginLibraryOrganization = normalizePluginOrganization({
-    items: {
-      p1: { section: "none", favorite: false, hidden: false },
-      p2: { section: "none", favorite: false, hidden: false },
-    },
-    sectionOrder: {
-      none: ["p1", "p2"],
-    },
-  });
-
-  org = setPluginSection(org, "p1", "generation");
-  assert.equal(org.items.p1.section, "generation");
-  assert.deepEqual(org.sectionOrder.generation, ["p1"]);
-  assert.deepEqual(org.sectionOrder.none, ["p2"]);
-
-  // Setting invalid section defaults to 'none'
-  org = setPluginSection(org, "p1", "invalid-sec" as Parameters<typeof setPluginSection>[2]);
-  assert.equal(org.items.p1.section, "none");
-  assert.deepEqual(org.sectionOrder.generation, []);
-  assert.ok(org.sectionOrder.none.includes("p1"));
-});
-
-test("movePluginInSection swaps positions and respects boundary limits", () => {
-  let org: PluginLibraryOrganization = normalizePluginOrganization({
-    items: {
-      a: { section: "generation", favorite: false, hidden: false },
-      b: { section: "generation", favorite: false, hidden: false },
-      c: { section: "generation", favorite: false, hidden: false },
-    },
-    sectionOrder: {
-      generation: ["a", "b", "c"],
-    },
-  });
-
-  // Moving first item up is a no-op
-  const topNoop = movePluginInSection(org, "a", "up");
-  assert.deepEqual(topNoop.sectionOrder.generation, ["a", "b", "c"]);
-
-  // Moving second item up swaps with first
-  org = movePluginInSection(org, "b", "up");
-  assert.deepEqual(org.sectionOrder.generation, ["b", "a", "c"]);
-
-  // Moving last item down is a no-op
-  const bottomNoop = movePluginInSection(org, "c", "down");
-  assert.deepEqual(bottomNoop.sectionOrder.generation, ["b", "a", "c"]);
-
-  // Moving middle item down swaps with successor
-  org = movePluginInSection(org, "a", "down");
-  assert.deepEqual(org.sectionOrder.generation, ["b", "c", "a"]);
-
-  // Moving nonexistent plugin is a no-op
-  const missingNoop = movePluginInSection(org, "nonexistent", "up");
-  assert.deepEqual(missingNoop.sectionOrder.generation, ["b", "c", "a"]);
-});
-
-test("setPluginHidden updates hidden state without changing section or order", () => {
-  let org: PluginLibraryOrganization = normalizePluginOrganization({
-    items: {
-      p1: { section: "utilities", favorite: true, hidden: false },
-    },
-    sectionOrder: {
-      utilities: ["p1"],
-    },
-  });
-
-  org = setPluginHidden(org, "p1", true);
-  assert.equal(org.items.p1.hidden, true);
-  assert.equal(org.items.p1.section, "utilities");
-  assert.equal(org.items.p1.favorite, true);
-  assert.deepEqual(org.sectionOrder.utilities, ["p1"]);
-
-  org = setPluginHidden(org, "p1", false);
-  assert.equal(org.items.p1.hidden, false);
-});
-
-test("organizePluginList organizes favorites, sections, hidden items, and dependencies", () => {
-  const plugins = [
-    { id: "gen-2", manifest: { name: "Gen B" }, methodDependencyCount: 0 },
-    { id: "gen-1", manifest: { name: "Gen A" }, methodDependencyCount: 2 },
-    { id: "edit-1", manifest: { name: "Editor" }, methodDependencyCount: 0 },
-    { id: "hid-in-use", manifest: { name: "Hidden In Use" }, methodDependencyCount: 1 },
-    { id: "hid-normal", manifest: { name: "Hidden Normal" }, methodDependencyCount: 0 },
-    { id: "new-unconfigured", manifest: { name: "Unconfigured" }, methodDependencyCount: 0 },
-  ];
-
-  const org: PluginLibraryOrganization = normalizePluginOrganization({
-    items: {
-      "gen-1": { section: "generation", favorite: true, hidden: false },
-      "gen-2": { section: "generation", favorite: false, hidden: false },
-      "edit-1": { section: "editing", favorite: true, hidden: false },
-      "hid-in-use": { section: "utilities", favorite: false, hidden: true },
-      "hid-normal": { section: "none", favorite: false, hidden: true },
-    },
-    sectionOrder: {
-      generation: ["gen-2", "gen-1"], // Manual order: gen-2 before gen-1
-      editing: ["edit-1"],
-      utilities: ["hid-in-use"],
-      none: ["hid-normal"],
-    },
-  });
-
-  // Default view: showHidden = false
-  const standard = organizePluginList(plugins, org, { showHidden: false });
-
-  // Favorites: gen-1 and edit-1
-  assert.equal(standard.favorites.length, 2);
-  assert.ok(standard.favorites.some((p) => p.id === "gen-1"));
-  assert.ok(standard.favorites.some((p) => p.id === "edit-1"));
-
-  // Generation section preserves manual order (gen-2 before gen-1)
-  assert.deepEqual(
-    standard.sections.generation.map((p) => p.id),
-    ["gen-2", "gen-1"],
+test("translates the sidebar project CTA", () => {
+  assert.equal(
+    translate("Saiba mais sobre o projeto ContentFlow", "en"),
+    "Learn more about the ContentFlow project",
   );
-
-  // Editing section
-  assert.deepEqual(
-    standard.sections.editing.map((p) => p.id),
-    ["edit-1"],
+  assert.equal(
+    translate("Saiba mais sobre o projeto ContentFlow", "es"),
+    "Conoce más sobre el proyecto ContentFlow",
   );
-
-  // Hidden plugins omitted from normal sections
-  assert.equal(standard.sections.utilities.length, 0);
-
-  // Unconfigured plugin automatically placed in "none"
-  assert.deepEqual(
-    standard.sections.none.map((p) => p.id),
-    ["new-unconfigured"],
+  assert.equal(translate("Abrir página em uma nova aba", "en"), "Open page in a new tab");
+  assert.equal(
+    translate("Abrir página em uma nova aba", "es"),
+    "Abrir página en una pestaña nueva",
   );
-
-  // Hidden counters
-  assert.equal(standard.hiddenCount, 2);
-  assert.equal(standard.hiddenWithDependenciesCount, 1); // hid-in-use is used by methods
-
-  // When showHidden = true: hidden plugins are visible
-  const withHidden = organizePluginList(plugins, org, { showHidden: true });
-  assert.equal(withHidden.sections.utilities.length, 1);
-  assert.equal(withHidden.sections.utilities[0].id, "hid-in-use");
-  assert.ok(withHidden.sections.none.some((p) => p.id === "hid-normal"));
-
-  // Section filter for 'favorites'
-  const favOnly = organizePluginList(plugins, org, { sectionFilter: "favorites" });
-  assert.equal(favOnly.favorites.length, 2);
-  assert.equal(favOnly.sections.generation.length, 0);
-
-  // Section filter for 'generation'
-  const genOnly = organizePluginList(plugins, org, { sectionFilter: "generation" });
-  assert.equal(genOnly.favorites.length, 0);
-  assert.equal(genOnly.sections.generation.length, 2);
-  assert.equal(genOnly.sections.editing.length, 0);
 });
 
 test("translates process reordering controls and feedback in all interface languages", () => {
@@ -548,13 +231,218 @@ test("translates the global orchestrator production controls", () => {
   }
 });
 
+test("translates recently added Methods and plugin profile UI in English", () => {
+  assert.equal(
+    translate("Use, compartilhe e gerencie Métodos salvos nos seus canais", "en"),
+    "Use, share, and manage Methods saved in your channels",
+  );
+  assert.equal(
+    translate("Buscar por nome, Canal, processo ou ação...", "en"),
+    "Search by name, Channel, process, or action...",
+  );
+  assert.equal(translate("5 de 8 processos configurados", "en"), "5 of 8 processes configured");
+  assert.equal(translate("2 perfis", "en"), "2 profiles");
+  assert.equal(translate("Acessar a internet", "en"), "Access the internet");
+  assert.equal(translate(", entrega “theme”", "en"), ", output “theme”");
+});
+
+test("translates recently added Methods and plugin profile UI in Spanish", () => {
+  assert.equal(
+    translate("Use, compartilhe e gerencie Métodos salvos nos seus canais", "es"),
+    "Usa, comparte y gestiona los Métodos guardados en tus canales",
+  );
+  assert.equal(
+    translate("Buscar por nome, Canal, processo ou ação...", "es"),
+    "Buscar por nombre, Canal, proceso o acción...",
+  );
+  assert.equal(translate("5 de 8 processos configurados", "es"), "5 de 8 procesos configurados");
+  assert.equal(translate("2 perfis", "es"), "2 perfiles");
+  assert.equal(translate("Acessar a internet", "es"), "Acceder a Internet");
+  assert.equal(translate(", entrega “theme”", "es"), ", salida “theme”");
+});
+
+test("translates shared browser profile linking UI from package 7.4", () => {
+  assert.equal(translate("Usar perfil existente", "en"), "Use existing profile");
+  assert.equal(translate("Usar perfil existente", "es"), "Usar perfil existente");
+  assert.equal(
+    translate("Nenhum perfil existente disponível", "en"),
+    "No existing profile available",
+  );
+  assert.equal(
+    translate("Nenhum perfil existente disponível", "es"),
+    "No hay perfiles existentes disponibles",
+  );
+  assert.equal(
+    translate(
+      "Vincular Perfil Família a Plugin Exemplo? Este plugin poderá usar a sessão local já existente neste perfil.",
+      "es",
+    ),
+    "¿Vincular Perfil Família a Plugin Exemplo? Este plugin podrá usar la sesión local ya guardada en este perfil.",
+  );
+});
+
+test("translates the user-controlled profile preparation window lifecycle", () => {
+  assert.equal(
+    translate(
+      "A janela continuará aberta. Instale ou atualize a extensão, faça login e feche o navegador quando terminar.",
+      "en",
+    ),
+    "The window will remain open. Install or update the extension, sign in, and close the browser when you are finished.",
+  );
+  assert.equal(
+    translate("O perfil está pronto. Feche o navegador quando terminar a configuração.", "es"),
+    "El perfil está listo. Cierra el navegador cuando termines de configurarlo.",
+  );
+  assert.equal(
+    translate(
+      "A janela permanecerá aberta para você corrigir a extensão ou o login. Feche o navegador quando terminar.",
+      "en",
+    ),
+    "The window will remain open so you can fix the extension or sign-in. Close the browser when you are finished.",
+  );
+});
+
+test("translates the MCP Method builder connection UI", () => {
+  assert.equal(translate("Conectar agente via MCP", "en"), "Connect agent via MCP");
+  assert.equal(translate("Conectar agente via MCP", "es"), "Conectar agente mediante MCP");
+  assert.equal(
+    translate("Configuração do servidor MCP local", "en"),
+    "Local MCP server configuration",
+  );
+  assert.equal(translate("Copiar configuração", "es"), "Copiar configuración");
+  assert.equal(translate("Preparando configuração MCP...", "en"), "Preparing MCP configuration...");
+  assert.equal(
+    translate(
+      "Use esta configuração em qualquer agente compatível com MCP. O ContentFlow precisa permanecer aberto durante a criação e os testes dos Métodos.",
+      "es",
+    ),
+    "Usa esta configuración con cualquier agente compatible con MCP. ContentFlow debe permanecer abierto durante la creación y las pruebas de los Métodos.",
+  );
+});
+
+test("translates plugin credential management in English and Spanish", () => {
+  assert.equal(translate("Credenciais e conexões", "en"), "Credentials and connections");
+  assert.equal(translate("Credenciais e conexões", "es"), "Credenciales y conexiones");
+  assert.equal(translate("1 conexão", "en"), "1 connection");
+  assert.equal(translate("2 conexões", "es"), "2 conexiones");
+  assert.equal(translate("1 de 4 credenciais configuradas", "en"), "1 of 4 credentials configured");
+  assert.equal(
+    translate("1 de 4 credenciais configuradas", "es"),
+    "1 de 4 credenciales configuradas",
+  );
+  assert.equal(
+    translate("Preencha somente as credenciais necessárias para esta conexão.", "en"),
+    "Fill in only the credentials needed for this connection.",
+  );
+});
+
+test("translates the unified block configuration labels", () => {
+  for (const phrase of [
+    "Atualizar opções",
+    "Carregando opções…",
+    "Não foi possível carregar as opções.",
+    "Nenhuma opção disponível.",
+    "Opção salva indisponível",
+    "Aplicar",
+    "Revise os campos inválidos antes de aplicar.",
+  ]) {
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+  assert.equal(translate("Coleções", "en"), "Collections");
+  assert.equal(translate("Coleções", "es"), "Colecciones");
+  assert.equal(translate("Iniciar minimizado", "en"), "Start minimized");
+  assert.equal(translate("Iniciar minimizado", "es"), "Iniciar minimizado");
+  assert.deepEqual(
+    ["Nome da ação", "Prompt do bloco", "Operador responsável", "Informações de entrada"].map(
+      (label) => translate(label, "en"),
+    ),
+    ["Action name", "Block prompt", "Responsible operator", "Input information"],
+  );
+  assert.deepEqual(
+    ["Nome da ação", "Prompt do bloco", "Operador responsável", "Resultado desta ação"].map(
+      (label) => translate(label, "es"),
+    ),
+    [
+      "Nombre de la acción",
+      "Prompt del bloque",
+      "Operador responsable",
+      "Resultado de esta acción",
+    ],
+  );
+  assert.equal(
+    translate("Defina apenas as entradas adicionais que esta ação precisa.", "en"),
+    "Define only the additional inputs this action needs.",
+  );
+  assert.equal(
+    translate("Cada entrega fica disponível para os próximos blocos.", "es"),
+    "Cada salida queda disponible para los bloques siguientes.",
+  );
+});
+
+test("preserves user-created and plugin-authored content", () => {
+  for (const language of ["en", "es"] as const) {
+    assert.equal(translate("Históricos Contentflow", language), "Históricos Contentflow");
+    assert.equal(translate("Tipos de aberturas/ganchos", language), "Tipos de aberturas/ganchos");
+    assert.equal(
+      translate("Automação modular criada pelo autor do plugin.", language),
+      "Automação modular criada pelo autor do plugin.",
+    );
+  }
+});
+
+test("translates the compact plugin contract validator", () => {
+  assert.equal(translate("Plugin executor", "en"), "Runner plugin");
+  assert.equal(translate("Fechar configuração do plugin", "en"), "Close plugin configuration");
+  assert.equal(translate("Voltar ao bloco", "es"), "Volver al bloque");
+  assert.equal(translate("Requer ajustes", "es"), "Requiere ajustes");
+  assert.equal(translate("Entrada · Sequência de prompts", "en"), "Input · Sequência de prompts");
+  assert.equal(translate("Parâmetros do prompt (2)", "es"), "Parámetros del prompt (2)");
+  assert.equal(translate("Prévia do envio à IA", "en"), "AI delivery preview");
+  assert.equal(translate("Prévia do envio à IA", "es"), "Vista previa del envío a la IA");
+});
+
 test("translates the simplified plugin capability presentation", () => {
   assert.equal(translate("O que este plugin faz", "en"), "What this plugin does");
   assert.equal(translate("Recursos disponíveis", "es"), "Funciones disponibles");
   assert.equal(translate("Detalhes técnicos", "en"), "Technical details");
 });
 
+test("translates core-owned runtime plugin inputs", () => {
+  assert.equal(translate("Fornecido na execução", "en"), "Provided at runtime");
+  assert.equal(translate("Fornecer na execução", "es"), "Proporcionar durante la ejecución");
+  assert.equal(translate("Arquivos e dados desta execução", "en"), "Files and data for this run");
+  assert.equal(translate("Enviar e executar", "es"), "Enviar y ejecutar");
+  assert.equal(
+    translate("Entradas enviadas. O plugin será iniciado.", "en"),
+    "Inputs sent. The plugin will start.",
+  );
+});
+
+test("translates execution attention and error notifications", () => {
+  assert.equal(translate("Pendências e erros", "en"), "Tasks and errors");
+  assert.equal(translate("Pendências e erros", "es"), "Tareas y errores");
+  assert.equal(
+    translate("2 erros de execução e 3 tarefas humanas pendentes", "en"),
+    "2 execution errors and 3 pending human tasks",
+  );
+  assert.equal(
+    translate("2 erros de execução e 3 tarefas humanas pendentes", "es"),
+    "2 errores de ejecución y 3 tareas humanas pendientes",
+  );
+  assert.equal(
+    translate("Pendências e erros na barra de tarefas", "en"),
+    "Tasks and errors on the taskbar",
+  );
+  assert.equal(
+    translate("Pendências e erros na barra de tarefas", "es"),
+    "Tareas y errores en la barra de tareas",
+  );
+});
+
 test("translates completed output editing controls", () => {
+  assert.equal(translate("Execução do método", "en"), "Method execution");
+  assert.equal(translate("Execução do método", "es"), "Ejecución del método");
   assert.equal(translate("Editar entrega", "en"), "Edit output");
   assert.equal(translate("Editar entrega", "es"), "Editar salida");
   assert.equal(translate("Salvar alterações", "en"), "Save changes");
@@ -658,4 +546,69 @@ test("translates the global orchestrator page in all supported languages", () =>
     assert.notEqual(translate(phrase, "en"), phrase);
     assert.notEqual(translate(phrase, "es"), phrase);
   }
+});
+
+test("translates declarative execution item actions in all supported languages", () => {
+  const phrases = [
+    "Regenerar item",
+    "Item regenerado",
+    "Selecionar item",
+    "Item selecionado",
+    "Selecionado",
+    "Baixar item",
+    "Não foi possível executar a ação no item",
+    "Use apenas as ações declaradas pelo plugin; arraste para reorganizar a sequência.",
+    "Selecione uma opção",
+  ];
+  for (const phrase of phrases) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.notEqual(translate(phrase, "es"), phrase);
+  }
+});
+
+test("strategic library usage and batch interface translate in all languages", () => {
+  for (const phrase of [
+    "Salvando…",
+    "Uso da coleção",
+    "Fixa",
+    "Consumível",
+    "Reservado",
+    "Salvo",
+    "Os itens permanecem na coleção após o uso.",
+    "Os itens são reservados ao escolher e excluídos somente quando o Processo termina. Falha ou cancelamento mantém a reserva até excluir ou reiniciar a execução.",
+    "Importar em lote",
+    "Preencha as linhas ou importe uma coluna por vez. Revise a ordem antes de salvar.",
+    "Preencher por coluna",
+    "Coluna",
+    "Valores da coluna",
+    "Os arquivos preenchem esta coluna na ordem selecionada, a partir da primeira linha.",
+    "Selecionar arquivos",
+    "Edite os layouts diretamente nas linhas.",
+    "Um valor por linha",
+    "Aplicar à coluna",
+    "Linha",
+    "Remover linha",
+    "Adicionar linha",
+    "Preencha os campos obrigatórios e corrija os valores antes de importar.",
+    "Importar itens",
+    "Lote importado.",
+    "Não foi possível importar o lote. Revise os campos e tente novamente.",
+    "Este item está reservado por outra execução.",
+    "Esta coleção possui itens reservados.",
+    "Lote inválido.",
+    "Revise os campos do lote antes de importar.",
+    "Campo desconhecido na coleção.",
+  ]) {
+    assert.equal(translate(phrase, "pt-BR"), phrase);
+    assert.notEqual(translate(phrase, "en"), phrase);
+    assert.ok(translate(phrase, "es").length);
+  }
+});
+
+test("translates the dark Dracula theme label in all interface languages", () => {
+  const phrase = "Escuro · Dracula";
+  assert.equal(translate(phrase, "pt-BR"), phrase);
+  assert.equal(translate(phrase, "en"), "Dark · Dracula");
+  assert.equal(translate(phrase, "es"), "Oscuro · Dracula");
 });

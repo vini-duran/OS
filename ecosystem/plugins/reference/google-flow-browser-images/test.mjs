@@ -2,36 +2,212 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { __test } from "./handler.mjs";
+import { __test, execute } from "./handler.mjs";
 import { testExtensionBridge } from "../../../browser-bridge/test.mjs";
+
+assert.equal(
+  __test.describeCdpParams("Page.navigate", { url: "https://flow.google.com/tools" }),
+  "url=https://flow.google.com/tools",
+);
+assert.equal(__test.describeCdpParams("Target.createTarget", { url: "not a url" }), "url=invalid");
+assert.equal(__test.describeCdpParams("Runtime.evaluate", { expression: "location.href" }), "");
+assert.match(
+  __test.referenceUploadStateExpression("", ["reference.jpg"]),
+  /button, \[role="button"\], \[role="option"\], img/,
+);
+assert.match(
+  __test.existingReferenceSelectionExpression(["reference.jpg"]),
+  /choices\.some\(\(choice\) => choice\.includes\(name\)\)/,
+);
+
+const promptMedia = [
+  {
+    file: {
+      id: "image-1",
+      name: "image-1.png",
+      mimeType: "image/png",
+      size: 10,
+      url: "artifact://image-1",
+    },
+  },
+];
+assert.equal(
+  __test.mediaItemUpdatesForPrompt({
+    continuous: true,
+    index: 1,
+    outputPort: "images",
+    input: "Prompt 2",
+    value: promptMedia,
+  }),
+  undefined,
+);
+assert.deepEqual(
+  __test.mediaItemUpdatesForPrompt({
+    continuous: false,
+    index: 1,
+    outputPort: "images",
+    input: "Prompt 2",
+    value: promptMedia,
+  }),
+  [
+    {
+      key: "prompt:1",
+      variantKey: "image:0",
+      outputPort: "images",
+      state: "completed",
+      input: "Prompt 2",
+      value: promptMedia[0].file,
+    },
+  ],
+);
 
 const manifest = JSON.parse(
   await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
 );
-assert.equal(manifest.version, "1.3.7");
+const canonicalFixture = JSON.parse(
+  await readFile(new URL("./fixtures/asset-generation-canonical-v1.json", import.meta.url), "utf8"),
+);
+assert.equal(canonicalFixture.fixtureId, "asset-generation-canonical-v1");
+assert.deepEqual(
+  canonicalFixture.slots.map((slot) => slot.expectedItemId),
+  ["asset-slot-image-city-dawn", "asset-slot-image-forest-rain", "asset-slot-stock-commute"],
+);
+assert.equal(manifest.version, "3.0.0");
 assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
 assert.equal(manifest.id, "local.contentflow.google-flow-batch-images");
+assert.equal(manifest.apiVersion, "2");
 assert.ok(manifest.permissions.includes("filesystem:read"));
 assert.ok(manifest.permissions.includes("filesystem:write"));
 assert.ok(manifest.permissions.includes("network"));
 assert.ok(manifest.permissions.includes("process"));
-assert.deepEqual(manifest.deliveryTypes, ["image", "video"]);
+assert.deepEqual(
+  manifest.capabilities[0].outputPorts.map((port) => port.shape.family ?? port.shape.control),
+  ["image", "image", "image", "video", "text"],
+);
+
+const emptyContinuousResult = await execute(
+  {
+    capabilityId: "generate-images-in-browser",
+    invocation: { mode: "start" },
+    inputs: { prompts: ["personagem"] },
+    configuration: {},
+    settings: {},
+    context: { locale: "pt-BR" },
+  },
+  {
+    claimItems: async () => [],
+    publishItemUpdate: async () => {
+      throw new Error("não deveria publicar sem unidades concedidas");
+    },
+  },
+);
+assert.equal(emptyContinuousResult.status, "success");
+assert.deepEqual(emptyContinuousResult.values.images, []);
 assert.ok(manifest.networkHosts.includes("flow.google.com"));
 assert.equal(manifest.settingsSchema.properties.keepBrowserOpen.default, false);
+assert.deepEqual(Object.keys(manifest.localizations).sort(), ["en", "es"]);
+for (const locale of ["en", "es"]) {
+  const localization = manifest.localizations[locale];
+  assert.ok(localization.name);
+  assert.ok(localization.description);
+  assert.ok(localization.profileSetup.label);
+  assert.ok(localization.profileSetup.description);
+  for (const capability of manifest.capabilities) {
+    const localizedCapability = localization.capabilities[capability.id];
+    assert.ok(localizedCapability, `${locale} precisa traduzir ${capability.id}`);
+    assert.ok(localizedCapability.name);
+    assert.ok(localizedCapability.description);
+    assert.deepEqual(
+      Object.keys(localizedCapability.inputPorts ?? {}).sort(),
+      capability.inputPorts.map((port) => port.key).sort(),
+      `${locale}/${capability.id} precisa traduzir todas as portas de entrada`,
+    );
+    for (const port of capability.inputPorts) {
+      assert.ok(localizedCapability.inputPorts[port.key].label);
+      if (port.description) assert.ok(localizedCapability.inputPorts[port.key].description);
+    }
+    assert.deepEqual(
+      Object.keys(localizedCapability.outputPorts ?? {}).sort(),
+      capability.outputPorts.map((port) => port.key).sort(),
+      `${locale}/${capability.id} precisa traduzir todas as portas de saída`,
+    );
+    for (const port of capability.outputPorts) {
+      assert.ok(localizedCapability.outputPorts[port.key].label);
+      if (port.description) assert.ok(localizedCapability.outputPorts[port.key].description);
+    }
+    const localizedProperties = localizedCapability.blockConfigSchema?.properties ?? {};
+    assert.deepEqual(
+      Object.keys(localizedProperties).sort(),
+      Object.keys(capability.blockConfigSchema.properties).sort(),
+      `${locale}/${capability.id} precisa traduzir todos os campos do bloco`,
+    );
+    for (const [propertyKey, propertySchema] of Object.entries(
+      capability.blockConfigSchema.properties,
+    )) {
+      assert.ok(localizedProperties[propertyKey].title);
+      if (propertySchema.description) assert.ok(localizedProperties[propertyKey].description);
+      const baseOptions = (propertySchema.oneOf ?? [])
+        .map((option) => option.const)
+        .filter((value) => value !== undefined);
+      if (baseOptions.length > 0) {
+        assert.deepEqual(
+          localizedProperties[propertyKey].options.map((option) => option.value),
+          baseOptions,
+          `${locale}/${capability.id}/${propertyKey} precisa preservar os valores técnicos`,
+        );
+      }
+    }
+  }
+}
+assert.ok(
+  manifest.capabilities.every(
+    (capability) =>
+      capability.promptPreview?.template ===
+      (capability.id === "animate-image-in-browser"
+        ? "{{BLOCK_INSTRUCTIONS}}\n\n{{INPUT:prompts}}"
+        : "{{INPUT:prompts}}"),
+  ),
+);
 
 const cap = manifest.capabilities.find((item) => item.id === "generate-images-in-browser");
 assert.ok(cap);
+assert.equal(cap.configurationOptions, undefined);
 assert.equal(cap.execution.defaultTimeoutMs, 86_400_000);
 assert.deepEqual(
   cap.inputPorts.map((port) => port.key),
-  ["prompts", "reference_images", "project_url"],
+  [
+    "prompts",
+    "prompt",
+    "reference_images",
+    "item_relations",
+    "prompt_records",
+    "reference_image",
+    "project_url",
+  ],
 );
 assert.deepEqual(
   cap.outputPorts.map((port) => port.key),
-  ["images", "project_url"],
+  ["images", "image", "project_url"],
 );
-assert.deepEqual(cap.outputPorts[0].producedTypes, ["image", "files"]);
-assert.deepEqual(cap.producedOutputTypes, ["image", "files", "text", "url"]);
+assert.deepEqual(cap.outputPorts[0].shape, {
+  kind: "content",
+  family: "image",
+  cardinality: "many",
+  representation: "artifact",
+  formats: { mimeTypes: ["image/*"] },
+});
+for (const capability of manifest.capabilities) {
+  for (const port of [...capability.inputPorts, ...capability.outputPorts].filter(
+    (port) => port.key === "project_url",
+  )) {
+    assert.deepEqual(port.shape, {
+      kind: "content",
+      family: "text",
+      cardinality: "one",
+      representation: "inline",
+    });
+  }
+}
 assert.equal(cap.blockConfigSchema.properties.accountProfile.default, "default");
 assert.equal(cap.blockConfigSchema.properties.imageModel.default, "flow_auto");
 assert.equal(cap.blockConfigSchema.properties.fallbackOnModelLimit.default, true);
@@ -45,26 +221,124 @@ assert.deepEqual(cap.execution.itemOrchestration, {
   mode: "sequential",
   inputPort: "prompts",
   outputPort: "images",
+  strategies: ["continuous_session", "per_item"],
+  preferredStrategy: "continuous_session",
+  profileParallelism: {
+    supported: true,
+    maxProfiles: 2,
+  },
+  collectionAssociations: [
+    {
+      key: "prompt-records-to-images",
+      inputPort: "prompt_records",
+      outputPort: "images",
+    },
+  ],
 });
-assert.equal(cap.blockConfigSchema.properties.maxConcurrentGenerations.default, 1);
-assert.equal(cap.blockConfigSchema.properties.delayBetweenPromptsMs.default, 6000);
+assert.deepEqual(
+  cap.itemActions.map((item) => item.action),
+  ["regenerate", "replace", "select", "download"],
+);
+assert.equal(__test.actionableOutputPort(cap.id), "images");
+assert.equal(cap.blockConfigSchema.properties.maxConcurrentGenerations.default, 3);
+assert.equal(cap.blockConfigSchema.properties.delayBetweenPromptsMs.default, 1500);
 assert.equal(cap.blockConfigSchema.properties.rateLimitRetryAttempts.default, 8);
 assert.equal(cap.blockConfigSchema.properties.maxReferenceImages.maximum, 10);
 assert.equal(cap.blockConfigSchema.properties.maxImagesPerPrompt.maximum, 4);
+{
+  const calls = [];
+  const claimed = await __test.claimFlowContinuousItems(
+    {
+      capabilityId: "generate-images-in-browser",
+      inputs: {
+        prompt_records: [
+          { visual_prompt: "primeiro" },
+          { visual_prompt: "segundo" },
+          { visual_prompt: "terceiro" },
+        ],
+      },
+    },
+    {
+      claimItems: async (limit) => {
+        calls.push(limit);
+        return [
+          { itemId: "one", order: 0, input: { visual_prompt: "primeiro" } },
+          { itemId: "two", order: 1, input: { visual_prompt: "segundo" } },
+          { itemId: "three", order: 2, input: { visual_prompt: "terceiro" } },
+        ];
+      },
+      publishItemUpdate: async () => ({ revision: 1 }),
+    },
+  );
+  assert.deepEqual(calls, [3]);
+  assert.equal(claimed.length, 3);
+}
+assert.doesNotMatch(
+  await readFile(new URL("./handler.mjs", import.meta.url), "utf8"),
+  /\(async \(\) => window\.FlowAuto\?\.adapter\?\.listModels/,
+);
+assert.match(
+  await readFile(new URL("./handler.mjs", import.meta.url), "utf8"),
+  /\(async \(\) => Boolean\(window\.FlowAuto\?\.adapter\?\.setModel/,
+);
+assert.deepEqual(
+  __test
+    .sortGeneratedOutputs([
+      { id: "google-flow-image-002-v01" },
+      { id: "google-flow-image-001-v02" },
+      { id: "google-flow-image-001-v01" },
+    ])
+    .map((item) => item.id),
+  ["google-flow-image-001-v01", "google-flow-image-001-v02", "google-flow-image-002-v01"],
+);
 
 const productionCap = manifest.capabilities.find(
   (item) => item.id === "produce-visual-assets-in-browser",
 );
 assert.ok(productionCap);
+assert.equal(productionCap.configurationOptions, undefined);
+assert.equal(productionCap.itemActions, undefined);
+assert.equal(__test.actionableOutputPort(productionCap.id), undefined);
 assert.deepEqual(
   productionCap.inputPorts.map((port) => port.key),
   ["prompts", "character_prompts", "animation_prompts", "reference_images", "project_url"],
 );
 assert.deepEqual(
   productionCap.outputPorts.map((port) => port.key),
-  ["images", "character_references", "videos", "project_url"],
+  ["assets", "images", "character_references", "videos", "project_url"],
 );
+assert.equal(productionCap.execution.itemOrchestration, undefined);
 assert.equal(productionCap.blockConfigSchema.properties.productionMode.default, "images_only");
+assert.deepEqual(Object.keys(productionCap.blockConfigSchema.properties), [
+  "accountProfile",
+  "fallbackAccountProfiles",
+  "projectMode",
+  "projectUrl",
+  "productionMode",
+  "imageModel",
+  "imageModelLabel",
+  "fallbackOnModelLimit",
+  "aspectRatio",
+  "maxImagesPerPrompt",
+  "maxConcurrentGenerations",
+  "enableCharacterConsistency",
+  "characterPrompts",
+  "maxReferenceImages",
+  "maxCharacterReferences",
+  "saveCharacterReferences",
+  "videoModel",
+  "videoModelLabel",
+  "videoReferenceMode",
+  "videoDurationSeconds",
+  "videoResolution",
+  "maxVideosToAnimate",
+  "animationSelection",
+  "animationIndexes",
+  "imageRetention",
+  "delayBetweenPromptsMs",
+  "retryAttempts",
+  "startMinimized",
+]);
 assert.deepEqual(
   productionCap.blockConfigSchema.properties.productionMode.oneOf.map((item) => item.const),
   ["images_only", "text_to_video", "images_then_selected_videos", "images_to_video_all"],
@@ -77,11 +351,129 @@ assert.deepEqual(productionCap.blockConfigSchema.properties.characterPrompts.vis
   property: "enableCharacterConsistency",
   values: [true],
 });
+assert.deepEqual(productionCap.blockConfigSchema.properties.projectUrl.visibleWhen, {
+  property: "projectMode",
+  values: ["existing"],
+});
+assert.deepEqual(productionCap.blockConfigSchema.properties.imageModel.visibleWhen, {
+  property: "productionMode",
+  values: ["images_only", "images_then_selected_videos", "images_to_video_all"],
+});
+assert.deepEqual(productionCap.blockConfigSchema.properties.videoModel.visibleWhen, {
+  property: "productionMode",
+  values: ["text_to_video", "images_then_selected_videos", "images_to_video_all"],
+});
+assert.deepEqual(productionCap.blockConfigSchema.properties.animationIndexes.visibleWhen, {
+  property: "animationSelection",
+  values: ["manual_indexes"],
+});
+for (const capability of manifest.capabilities) {
+  assert.deepEqual(capability.blockConfigSchema.properties.projectUrl.visibleWhen, {
+    property: "projectMode",
+    values: ["existing"],
+  });
+}
 assert.deepEqual(
   productionCap.blockConfigSchema.properties.animationSelection.oneOf.map((item) => item.const),
   ["first", "last", "evenly_spaced", "manual_indexes"],
 );
+for (const capabilityId of ["animate-image-in-browser", "generate-video-in-browser"]) {
+  const capability = manifest.capabilities.find((item) => item.id === capabilityId);
+  assert.equal(capability.configurationOptions, undefined);
+}
+const videoGenerationCap = manifest.capabilities.find(
+  (item) => item.id === "generate-video-in-browser",
+);
+assert.deepEqual(videoGenerationCap.execution.itemOrchestration, {
+  mode: "sequential",
+  inputPort: "prompts",
+  outputPort: "video",
+  strategies: ["continuous_session", "per_item"],
+  preferredStrategy: "continuous_session",
+});
+assert.deepEqual(
+  manifest.capabilities.find((item) => item.id === "animate-image-in-browser").execution
+    .itemOrchestration,
+  {
+    mode: "sequential",
+    inputPort: "images",
+    outputPort: "video",
+    strategies: ["per_item"],
+    preferredStrategy: "per_item",
+  },
+);
+for (const capability of manifest.capabilities) {
+  for (const property of ["imageModel", "videoModel"]) {
+    const schema = capability.blockConfigSchema.properties[property];
+    if (!schema) continue;
+    assert.deepEqual(schema.oneOf.at(-1), {
+      type: "string",
+      pattern: "^flow_label:[A-Za-z0-9_-]{2,180}$",
+    });
+  }
+}
+
+const rejectedOptions = await execute({ invocation: { mode: "configure", action: "options" } }, {});
+assert.equal(rejectedOptions.code, "INVALID_CONFIGURATION");
+const experimentalValue = "flow_label:" + Buffer.from("Imagen Experimental").toString("base64url");
+assert.equal(
+  __test.resolveGenerationPreferences({ imageModel: experimentalValue }).imageModelLabel,
+  "Imagen Experimental",
+);
+for (const capability of manifest.capabilities) {
+  assert.equal(capability.configurationOptions, undefined);
+  const props = capability.blockConfigSchema.properties;
+  if (props.maxConcurrentGenerations) {
+    assert.deepEqual(
+      props.maxConcurrentGenerations.oneOf.map((o) => o.const),
+      [1, 2, 3, 4, 5],
+    );
+    assert.equal(props.maxConcurrentGenerations.maximum, 5);
+  }
+  if (props.maxImagesPerPrompt)
+    assert.deepEqual(
+      props.maxImagesPerPrompt.oneOf.map((o) => o.const),
+      [1, 2, 3, 4],
+    );
+  for (const key of ["imageModelLabel", "videoModelLabel"]) {
+    if (props[key]) assert.equal(props[key].ui.section, "advanced");
+  }
+  if (props.videoModel) {
+    for (const option of props.videoModel.oneOf.filter((o) => o.const)) {
+      assert.equal(__test.VIDEO_MODELS[option.const], option.title);
+    }
+  }
+}
 assert.deepEqual(__test.selectAnimationIndexes(10, { maxVideosToAnimate: 3 }), [0, 1, 2]);
+assert.equal(
+  __test.generatedArtifactInputPath(
+    { id: "google-flow-image-002-v01" },
+    [
+      {
+        id: "google-flow-image-002-v01",
+        source: { kind: "path", path: "002_v01_kite.jpg" },
+      },
+    ],
+    { getOutputPath: (relativePath) => `C:\\output\\${relativePath}` },
+  ),
+  "C:\\output\\002_v01_kite.jpg",
+);
+assert.equal(
+  __test.generatedArtifactInputPath({ id: "external-image" }, [], {
+    getOutputPath: (relativePath) => relativePath,
+  }),
+  null,
+);
+assert.deepEqual(
+  __test.configurationForProjectContinuation(
+    { projectMode: "new", projectUrl: "https://flow.google.com/project/old" },
+    "https://flow.google.com/project/current",
+  ),
+  { projectMode: "auto", projectUrl: "" },
+);
+assert.deepEqual(__test.configurationForProjectContinuation({ projectMode: "new" }, null), {
+  projectMode: "new",
+});
 assert.deepEqual(
   __test.selectAnimationIndexes(10, {
     maxVideosToAnimate: 3,
@@ -89,6 +481,62 @@ assert.deepEqual(
     animationIndexes: "1, 5-6, 9",
   }),
   [0, 4, 5],
+);
+const firstBatchItem = {
+  batch: { itemId: "batch-item-1", index: 0, total: 3 },
+  settings: { keepBrowserOpen: false },
+};
+const lastBatchItem = {
+  batch: { itemId: "batch-item-3", index: 2, total: 3 },
+  settings: { keepBrowserOpen: false },
+};
+assert.equal(__test.isCoreItemInvocation(firstBatchItem), true);
+assert.equal(__test.keepBrowserForCurrentItem(firstBatchItem), true);
+assert.equal(__test.keepBrowserForCurrentItem(lastBatchItem), false);
+assert.equal(__test.keepBrowserForCurrentItem(lastBatchItem, true), true);
+assert.deepEqual(
+  __test.visualBatchItemSelection(firstBatchItem, {
+    productionMode: "images_then_selected_videos",
+    maxVideosToAnimate: 2,
+    animationSelection: "last",
+  }),
+  [1, 2],
+);
+assert.deepEqual(
+  __test.visualBatchItemSelection(firstBatchItem, {
+    productionMode: "images_to_video_all",
+  }),
+  [0, 1, 2],
+);
+assert.equal(
+  __test.resumeValueForPort(
+    {
+      outputContract: [{ key: "referencias", portKey: "character_references", type: "files" }],
+      resume: { values: { referencias: ["character-1"] } },
+    },
+    "character_references",
+  )[0],
+  "character-1",
+);
+assert.deepEqual(
+  __test.remapNestedFailure(
+    {
+      status: "error",
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "falhou",
+      retryable: true,
+      partialValues: {
+        video: [{ id: "video-1", mimeType: "video/mp4" }],
+        project_url: "https://flow.google.com/project/item-1",
+      },
+    },
+    "video",
+    "videos",
+  ).partialValues,
+  {
+    videos: [{ id: "video-1", mimeType: "video/mp4" }],
+    project_url: "https://flow.google.com/project/item-1",
+  },
 );
 
 const closeCalls = [];
@@ -104,7 +552,7 @@ await __test.maybeCloseBrowser(
   { startedByPlugin: false },
   false,
 );
-assert.deepEqual(closeCalls, ["Browser.close", "client.close"]);
+assert.deepEqual(closeCalls, ["client.close"]);
 const animCap = manifest.capabilities.find((item) => item.id === "animate-image-in-browser");
 assert.ok(animCap);
 assert.deepEqual(
@@ -117,6 +565,7 @@ assert.deepEqual(
 );
 assert.equal(animCap.blockConfigSchema.properties.videoReferenceMode.default, "frames");
 assert.equal(animCap.blockConfigSchema.properties.videoDurationSeconds.default, 8);
+assert.equal(__test.actionableOutputPort(animCap.id), "video");
 
 const videoCap = manifest.capabilities.find((item) => item.id === "generate-video-in-browser");
 assert.ok(videoCap);
@@ -128,6 +577,167 @@ assert.deepEqual(
   videoCap.outputPorts.map((port) => port.key),
   ["video", "project_url"],
 );
+assert.equal(__test.actionableOutputPort(videoCap.id), "video");
+
+const batchAction = __test.normalizeItemActionRequest({
+  capabilityId: "generate-images-in-browser",
+  invocation: {
+    mode: "item_action",
+    action: "regenerate",
+    itemId: "core-output-city-b",
+    outputPort: "images",
+  },
+  itemAction: {
+    key: "prompt:0",
+    variantKey: "image:1",
+    input: "cidade ao amanhecer",
+    attempt: 2,
+  },
+  batch: { itemId: "core-batch-city", index: 0, total: 2 },
+  inputs: { prompts: "entrada antiga" },
+  configuration: { maxImagesPerPrompt: 4 },
+});
+assert.equal(batchAction.invocation.mode, "start");
+assert.equal(batchAction.inputs.prompts, "cidade ao amanhecer");
+assert.equal(batchAction.configuration.maxImagesPerPrompt, 1);
+assert.equal(batchAction.batch.itemId, "core-batch-city");
+assert.deepEqual(batchAction.__flowItemAction, {
+  itemId: "core-output-city-b",
+  outputPort: "images",
+  key: "prompt:0",
+  variantKey: "image:1",
+  attempt: 2,
+});
+assert.equal(
+  __test.normalizeItemActionRequest({
+    capabilityId: "generate-images-in-browser",
+    invocation: { mode: "item_action", action: "regenerate", outputPort: "video" },
+    itemAction: { input: "cidade" },
+  }),
+  null,
+);
+
+assert.deepEqual(
+  __test.mediaItemUpdate({
+    key: "prompt:0",
+    variantKey: "image:1",
+    outputPort: "images",
+    input: "cidade ao amanhecer",
+    value: { id: "artifact-city-b" },
+  }),
+  {
+    key: "prompt:0",
+    variantKey: "image:1",
+    outputPort: "images",
+    state: "completed",
+    input: "cidade ao amanhecer",
+    value: { id: "artifact-city-b" },
+  },
+);
+
+assert.equal(__test.artifactNamespace("character-reference"), "character-reference");
+assert.equal(__test.artifactNamespace("../../video"), "media");
+assert.doesNotThrow(() =>
+  __test.validateImageArtifactBytes(new Uint8Array([0xff, 0xd8, 0xff, 0x00]), "image/jpeg", 4),
+);
+assert.throws(
+  () => __test.validateImageArtifactBytes(new Uint8Array([0xff, 0xd8, 0xff, 0x00]), "image/gif", 4),
+  (error) => error?.code === "OUTPUT_VALIDATION_FAILED",
+);
+assert.throws(
+  () =>
+    __test.validateImageArtifactBytes(
+      new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+      "image/gif",
+      4,
+      "en-US",
+    ),
+  (error) => error?.message === "Unexpected MIME type: image/gif",
+);
+assert.throws(
+  () =>
+    __test.validateImageArtifactBytes(new Uint8Array([0xff, 0xd8, 0xff, 0x00]), "image/jpeg", 5),
+  (error) => error?.code === "OUTPUT_VALIDATION_FAILED",
+);
+assert.doesNotThrow(() =>
+  __test.validateVideoArtifactBytes(
+    new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]),
+    "video/mp4",
+    12,
+  ),
+);
+assert.throws(
+  () => __test.validateVideoArtifactBytes(new Uint8Array([1, 2, 3, 4]), "video/mp4", 4),
+  (error) => error?.code === "OUTPUT_VALIDATION_FAILED",
+);
+assert.throws(
+  () =>
+    __test.validateVideoArtifactBytes(
+      new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+      "text/html",
+      8,
+    ),
+  (error) => error?.code === "OUTPUT_VALIDATION_FAILED",
+);
+assert.equal(
+  __test.flowMediaMessage("es-ES", "videoLengthMismatch"),
+  "El tamaño declarado del vídeo no coincide con los bytes recibidos.",
+);
+assert.equal(
+  __test.flowMediaMessage("en-US", "videoModeConfirmed", { mode: "elements", duration: 4 }),
+  "Video mode confirmed: Elements; duration 4s.",
+);
+assert.equal(
+  __test.flowMediaMessage("es-ES", "generationNotConfirmed"),
+  "Se hizo clic en el botón de generación, pero Flow mantuvo el prompt listo para enviar; no se confirmó ninguna generación.",
+);
+assert.equal(
+  __test.flowMediaMessage("pt-BR", "browserVisible"),
+  "Janela do Chrome confirmada em modo visível (headless desativado).",
+);
+
+const artifactTemp = await mkdtemp(join(tmpdir(), "contentflow-flow-p13-"));
+const artifactFetch = globalThis.fetch;
+const jpegBytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+globalThis.fetch = async () =>
+  new Response(jpegBytes, {
+    status: 200,
+    headers: { "content-type": "image/jpeg", "content-length": String(jpegBytes.byteLength) },
+  });
+try {
+  const generatedItem = {
+    image: {
+      generatedImage: {
+        fifeUrl: "https://flow-content.google/image/11111111-2222-3333-4444-555555555555",
+        mediaId: "11111111-2222-3333-4444-555555555555",
+      },
+    },
+  };
+  const imageArtifact = await __test.downloadGeneratedImage(
+    generatedItem,
+    "mesmo prompt",
+    1,
+    1,
+    { getOutputPath: (name) => join(artifactTemp, name) },
+    "image",
+  );
+  const characterArtifact = await __test.downloadGeneratedImage(
+    generatedItem,
+    "mesmo prompt",
+    1,
+    1,
+    { getOutputPath: (name) => join(artifactTemp, name) },
+    "character-reference",
+  );
+  assert.equal(imageArtifact.artifact.id, "google-flow-image-001-v01");
+  assert.equal(characterArtifact.artifact.id, "google-flow-character-reference-001-v01");
+  assert.notEqual(imageArtifact.artifact.source.path, characterArtifact.artifact.source.path);
+  assert.equal(imageArtifact.file.mimeType, "image/jpeg");
+  assert.equal(imageArtifact.file.size, jpegBytes.byteLength);
+} finally {
+  globalThis.fetch = artifactFetch;
+  await rm(artifactTemp, { recursive: true, force: true });
+}
 
 assert.deepEqual(__test.normalizePrompts(["primeiro", ["segundo"]]), ["primeiro", "segundo"]);
 assert.deepEqual(__test.normalizeReferenceImages([{ id: "a" }, [{ id: "b" }]]), [
@@ -156,6 +766,7 @@ const uploadClient = {
               dialogs: uploadReadyReads === 1 ? 1 : 0,
               pickerOpen: false,
               consent: false,
+              referenceMatches: uploadReadyReads >= 3,
             },
           },
         };
@@ -176,7 +787,7 @@ await __test.uploadReferenceImages(
 assert.equal(uploadCalls[0].method, "Page.setInterceptFileChooserDialog");
 assert.equal(uploadCalls[0].params.enabled, true);
 assert.ok(uploadCalls.some((call) => call.method === "DOM.setFileInputFiles"));
-assert.equal(uploadReadyReads, 2, "waits until the modal closes before writing the prompt");
+assert.equal(uploadReadyReads, 3, "waits for the uploaded reference after the modal closes");
 assert.deepEqual(uploadCalls.at(-1), {
   method: "Page.setInterceptFileChooserDialog",
   params: { enabled: false },
@@ -502,7 +1113,35 @@ assert.deepEqual(navigationHistory, ["https://flow.google.com/project/target-pro
 
 const retryDirectory = await mkdtemp(join(tmpdir(), "contentflow-flow-retry-"));
 const retryServices = { getWorkspacePath: (relativePath) => join(retryDirectory, relativePath) };
-const failedRequest = { executionId: "execution-1", blockId: "flow-1", attempt: 1 };
+const failedRequest = {
+  executionId: "execution-1",
+  blockId: "flow-1",
+  attempt: 1,
+  configuration: { accountProfile: "flow-e2e" },
+};
+await __test.saveVisualBatchProjectUrl(
+  failedRequest,
+  retryServices,
+  "https://flow.google.com/project/project-primary",
+);
+await __test.saveVisualBatchProjectUrl(
+  { ...failedRequest, configuration: { accountProfile: "contaflow2" } },
+  retryServices,
+  "https://flow.google.com/project/project-fallback",
+);
+assert.equal(
+  await __test.visualBatchProjectUrl(failedRequest, retryServices),
+  "https://flow.google.com/project/project-primary",
+);
+assert.equal(
+  await __test.visualBatchProjectUrl(
+    { ...failedRequest, configuration: { accountProfile: "contaflow2" } },
+    retryServices,
+  ),
+  "https://flow.google.com/project/project-fallback",
+);
+await __test.clearVisualBatchSession(failedRequest, retryServices);
+assert.equal(await __test.readVisualBatchSession(failedRequest, retryServices), undefined);
 await __test.saveCaptchaRetryNavigation(
   failedRequest,
   retryServices,
@@ -514,6 +1153,17 @@ const retryNavigation = await __test.readCaptchaRetryNavigation(
 );
 assert.equal(retryNavigation?.captchaRetry, true);
 assert.match(retryNavigation?.url ?? "", /\/tools\/flow\/project\/project-1/);
+assert.equal(
+  await __test.readCaptchaRetryNavigation(
+    {
+      ...failedRequest,
+      attempt: 2,
+      configuration: { accountProfile: "contaflow2" },
+    },
+    retryServices,
+  ),
+  undefined,
+);
 assert.equal(
   await __test.readCaptchaRetryNavigation({ ...failedRequest, attempt: 3 }, retryServices),
   undefined,
@@ -545,6 +1195,8 @@ const checkpointRequest = {
   blockId: "flow-images",
   capabilityId: "generate-images-in-browser",
 };
+assert.equal(__test.isFreshRetryRequest({ attempt: 1 }), false);
+assert.equal(__test.isFreshRetryRequest({ attempt: 2 }), true);
 const checkpointPrompts = ["primeiro", "segundo", "terceiro"];
 await __test.saveGenerationCheckpoint(checkpointRequest, retryServices, checkpointPrompts, {
   completedPromptIndexes: [1, 0, 1],
@@ -765,13 +1417,33 @@ const managedRuntime = __test.resolveProfileRuntime(
   { configuration: { accountProfile: "default" }, settings: {} },
   { getWorkspacePath: (relativePath) => `workspace/${relativePath}` },
 );
+const sharedProfileDirectory = await mkdtemp(join(tmpdir(), "contentflow-flow-shared-profile-"));
+const privateWorkspaceDirectory = await mkdtemp(
+  join(tmpdir(), "contentflow-flow-private-workspace-"),
+);
+const sharedRuntime = __test.resolveProfileRuntime(
+  { configuration: { accountProfile: "conta-a" }, settings: {} },
+  {
+    getProfilePath: (relativePath) => join(sharedProfileDirectory, relativePath),
+    getWorkspacePath: (relativePath) => join(privateWorkspaceDirectory, relativePath),
+  },
+);
 assert.equal(defaultRuntime.port, 9333);
 assert.equal(managedRuntime.profilePath, "workspace/.");
+assert.equal(sharedRuntime.profilePath, join(sharedProfileDirectory, "."));
+assert.ok(sharedRuntime.readinessPath.startsWith(privateWorkspaceDirectory));
+assert.ok(!sharedRuntime.readinessPath.startsWith(sharedProfileDirectory));
 assert.notEqual(channelRuntime.port, 9333);
 assert.match(
   channelRuntime.profilePath.replaceAll("\\", "/"),
   /google-flow-chrome-profiles\/canal_a$/,
 );
+assert.equal(await __test.profileIsPrepared(sharedRuntime, "conta-a"), false);
+await __test.markProfilePrepared(sharedRuntime, "conta-a", { extensionVersion: "2.0.0" });
+assert.equal(await __test.profileIsPrepared(sharedRuntime, "conta-a"), true);
+assert.equal(await __test.profileIsPrepared(sharedRuntime, "conta-b"), false);
+await rm(sharedProfileDirectory, { recursive: true, force: true });
+await rm(privateWorkspaceDirectory, { recursive: true, force: true });
 const profileDirectory = await mkdtemp(join(tmpdir(), "contentflow-flow-profile-"));
 assert.equal(await __test.profileIsPrepared(profileDirectory, "conta-a"), false);
 await __test.markProfilePrepared(profileDirectory, "conta-a", { extensionVersion: "2.0.0" });
@@ -905,6 +1577,107 @@ assert.equal(volumeSubmissions, 1000);
 assert.equal(volumePlan.results.length, 1000);
 assert.equal(volumePlan.failures.length, 0);
 
+// Characterization: concurrent completions may arrive in any order, but each
+// prompt and every variant must remain associated with its canonical slot.
+const generationSlots = canonicalFixture.slots.filter((slot) => slot.kind === "generation_prompt");
+const completionOrder = [];
+const associatedPlan = await __test.runGenerationPlan({
+  prompts: generationSlots,
+  maxInFlight: 2,
+  retryAttempts: 0,
+  minDelayMs: 0,
+  submit(task) {
+    const slot = task.prompt;
+    const delayMs = task.index === 0 ? 15 : 1;
+    return {
+      completion: new Promise((resolve) =>
+        setTimeout(() => {
+          completionOrder.push(slot.expectedItemId);
+          resolve(
+            [0, 1].map((variantIndex) => ({
+              itemId: slot.expectedItemId,
+              variantKey: `${slot.expectedItemId}:variant:${variantIndex}`,
+              prompt: slot.prompt,
+            })),
+          );
+        }, delayMs),
+      ),
+    };
+  },
+});
+assert.deepEqual(completionOrder, ["asset-slot-image-forest-rain", "asset-slot-image-city-dawn"]);
+assert.deepEqual(
+  associatedPlan.results.map((variants) => variants.map((variant) => variant.itemId)),
+  generationSlots.map((slot) => [slot.expectedItemId, slot.expectedItemId]),
+);
+assert.deepEqual(
+  associatedPlan.results.flat().map((variant) => variant.variantKey),
+  generationSlots.flatMap((slot) => [
+    `${slot.expectedItemId}:variant:0`,
+    `${slot.expectedItemId}:variant:1`,
+  ]),
+);
+
+// Characterization: cancellation between sequential items stops before the
+// neighboring scene is submitted and therefore cannot exchange its media.
+// Five submissions must be in flight before any generation finishes, and
+// reversed completion must preserve both the prompt and every variant.
+for (const limit of [1, 2, 3, 4, 5]) {
+  const inFlight = new Map();
+  let peak = 0;
+  const finished = [];
+  const plan = await __test.runGenerationPlan({
+    prompts: Array.from({ length: limit * 2 }, (_, index) => `scene-${index}`),
+    maxInFlight: limit,
+    retryAttempts: 0,
+    minDelayMs: 0,
+    submit(task) {
+      const completion = new Promise((resolve) =>
+        inFlight.set(task.index, () => resolve([{ prompt: task.prompt, index: task.index }])),
+      );
+      peak = Math.max(peak, inFlight.size);
+      if (inFlight.size === limit) {
+        for (const index of [...inFlight.keys()].reverse()) {
+          finished.push(index);
+          inFlight.get(index)();
+          inFlight.delete(index);
+        }
+      }
+      return { completion };
+    },
+  });
+  assert.equal(peak, limit);
+  assert.equal(plan.failures.length, 0);
+  assert.deepEqual(
+    plan.results.flat().map((item) => item.prompt),
+    Array.from({ length: limit * 2 }, (_, index) => `scene-${index}`),
+  );
+  assert.deepEqual(
+    finished.slice(0, limit),
+    Array.from({ length: limit }, (_, index) => limit - 1 - index),
+  );
+}
+const cancellation = new AbortController();
+let cancelledPlanSubmissions = 0;
+await assert.rejects(
+  __test.runGenerationPlan({
+    prompts: generationSlots,
+    maxInFlight: 1,
+    retryAttempts: 0,
+    minDelayMs: 0,
+    signal: cancellation.signal,
+    submit(task) {
+      cancelledPlanSubmissions += 1;
+      return { completion: Promise.resolve([{ itemId: task.prompt.expectedItemId }]) };
+    },
+    onItemCompleted() {
+      cancellation.abort();
+    },
+  }),
+  (error) => error?.code === "CANCELLED",
+);
+assert.equal(cancelledPlanSubmissions, 1);
+
 const completedBeforeFailure = [];
 await assert.rejects(
   __test.runGenerationPlan({
@@ -957,6 +1730,60 @@ const rateLimitedPlan = await __test.runGenerationPlan({
 assert.equal(rateLimitedSubmissions, 3);
 assert.deepEqual(retryWaits, [60_000, 60_000]);
 assert.equal(rateLimitedPlan.failures.length, 0);
+
+let reconciledSubmissions = 0;
+const reconciliationCalls = [];
+const reconciledPlan = await __test.runGenerationPlan({
+  prompts: ["cidade ao amanhecer"],
+  maxInFlight: 1,
+  retryAttempts: 1,
+  submit() {
+    reconciledSubmissions += 1;
+    return {
+      completion: Promise.reject(
+        Object.assign(new Error("timeout depois do envio"), {
+          code: "TIMEOUT",
+          retryable: true,
+          externalEffectUncertain: true,
+        }),
+      ),
+    };
+  },
+  async reconcile({ task, error }) {
+    reconciliationCalls.push({ index: task.index, code: error.code });
+    return {
+      status: "recovered",
+      value: [{ file: "cidade-recuperada", artifact: "artifact-cidade" }],
+    };
+  },
+});
+assert.equal(reconciledSubmissions, 1, "reconciliação recuperada não pode reenviar o prompt");
+assert.deepEqual(reconciliationCalls, [{ index: 0, code: "TIMEOUT" }]);
+assert.equal(reconciledPlan.results[0][0].file, "cidade-recuperada");
+
+let uncertainSubmissions = 0;
+const uncertainPlan = await __test.runGenerationPlan({
+  prompts: ["floresta sob chuva"],
+  maxInFlight: 1,
+  retryAttempts: 2,
+  submit() {
+    uncertainSubmissions += 1;
+    return {
+      completion: Promise.reject(
+        Object.assign(new Error("efeito externo incerto"), {
+          code: "TIMEOUT",
+          retryable: true,
+          externalEffectUncertain: true,
+        }),
+      ),
+    };
+  },
+  async reconcile() {
+    return { status: "uncertain" };
+  },
+});
+assert.equal(uncertainSubmissions, 1, "estado incerto não pode ser reenviado automaticamente");
+assert.equal(uncertainPlan.failures.length, 1);
 
 // --- Testes de Remoção de CSP ---
 const cdpCalls = [];
@@ -1064,9 +1891,9 @@ const unusualErr = __test.classifyGenerationHttpError(
   403,
   JSON.stringify({ error: { message: "Unusual activity detected from your network" } }),
 );
-assert.equal(unusualErr.code, "RATE_LIMIT");
+assert.equal(unusualErr.code, "PROVIDER_SECURITY_CHALLENGE");
 assert.equal(unusualErr.isUnusualActivity, true);
-assert.equal(unusualErr.retryable, true);
+assert.equal(unusualErr.retryable, false);
 assert.equal(unusualErr.retryAfterMs, 45_000);
 
 const policyErr = __test.classifyGenerationHttpError(
@@ -1160,6 +1987,43 @@ const submitRes = await __test.clickSubmit(fakeSubmitClient, "session-test", {})
 assert.equal(submitRes.ok, true);
 assert.equal(submitEvaluated, true);
 
+let attachmentProbeExpression = "";
+const attachmentCount = await __test.attachedReferenceCount(
+  {
+    async send(_method, params) {
+      attachmentProbeExpression = params?.expression || "";
+      return { result: { value: 4 } };
+    },
+  },
+  "session-test",
+);
+assert.equal(attachmentCount, 4);
+assert.match(attachmentProbeExpression, /flow-base-prompt-box flow-ingredient-chip/);
+assert.match(attachmentProbeExpression, /flow-ingredient-bar flow-image-ingredient-chip/);
+assert.match(attachmentProbeExpression, /frame-trigger img/);
+
+const generationDispatches = [];
+const exactGenerateClick = await __test.clickGenerateWithExtension(
+  {
+    async dispatch(action, payload, operationKey) {
+      generationDispatches.push({ action, payload, operationKey });
+      return { ok: true, mechanism: "cdp-input" };
+    },
+  },
+  {},
+  "image:1:submit",
+);
+assert.equal(exactGenerateClick.ok, true);
+assert.deepEqual(generationDispatches, [
+  {
+    action: "click",
+    payload: {
+      selectors: ["flow-generate-icon-button button"],
+    },
+    operationKey: "image:1:submit",
+  },
+]);
+
 const origFetch = globalThis.fetch;
 let patchUrl = null;
 let patchHeaders = null;
@@ -1191,6 +2055,154 @@ try {
 }
 
 const source = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+const flowEngineSource = await readFile(new URL("./flow-engine.js", import.meta.url), "utf8");
+
+// P14: the current Flow UI ignores synthetic DOM submit events. Submission
+// must go through the Browser Bridge's isolated CDP click while the protected
+// media ticket keeps the prompt-to-result association unchanged.
+assert.doesNotMatch(source, /window\.FlowAuto\.adapter\.prepareAndSubmit/);
+assert.match(source, /window\.FlowAuto\.media2\.novoBilhete/);
+assert.match(source, /clickGenerateAndConfirm\([\s\S]*?engine-submit/);
+assert.match(source, /button\[aria-label\*="iniciar geração" i\]/);
+assert.match(source, /flow-generate-icon-button button/);
+assert.match(source, /flow-base-prompt-box flow-ingredient-chip/);
+assert.match(source, /flow-ingredient-bar flow-image-ingredient-chip/);
+assert.match(source, /flow-pending-tile/);
+assert.match(source, /async function attachReferenceImagesOneByOne/);
+assert.match(source, /for \(const \[index, filePath\] of filePaths\.entries\(\)\)/);
+assert.match(source, /attachedCount < baselineCount \+ 1/);
+assert.match(
+  source,
+  /attachedReferenceCount\(client, sessionId\)\) !== taskReferencePaths\.length/,
+);
+assert.match(source, /open-reference-menu:[\s\S]*?preferDomActivation: true/);
+assert.match(source, /selectors: \["flow-add-menu button"\]/);
+assert.match(source, /const launchMinimized = startMinimized && referencePaths\.length === 0/);
+assert.match(source, /keepBrowserOpen: productionMode !== "images_only"/);
+assert.match(source, /position < selectedIndexes\.length - 1/);
+assert.match(source, /function requireCoreBrowserSession\(coreSession\)/);
+assert.match(source, /startedByCore: true/);
+assert.doesNotMatch(source, /existing\.webSocketDebuggerUrl/);
+assert.match(source, /async function clickGenerateAndConfirm/);
+assert.match(source, /"pressEnter"/);
+assert.match(source, /adapter\?\.configureGeneration/);
+assert.match(source, /Modo de vídeo confirmado/);
+assert.match(source, /Flow manteve o prompt pronto para envio/);
+assert.match(source, /window\.FlowAuto\?\.media2\?\._bilhetes\?\.delete/);
+assert.match(flowEngineSource, /function novoBilhete\(prompt, expected, kind\)/);
+
+// Characterization: concurrent network responses are reserved FIFO at submit
+// time and later settled by requestId, even when the responses finish reversed.
+const trackerFunctionMatch = source.match(
+  /function createBatchResponseTracker\(client, sessionId, signal\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction createAdaptiveConcurrencyController/,
+);
+assert.ok(
+  trackerFunctionMatch,
+  "createBatchResponseTracker remains available for characterization",
+);
+const trackerFactorySource = trackerFunctionMatch[0].replace(
+  /\r?\n\r?\nfunction createAdaptiveConcurrencyController[\s\S]*$/,
+  "",
+);
+const makeTracker = new Function(
+  "codedError",
+  "GENERATION_SUFFIX",
+  `return (${trackerFactorySource.replace(/^function createBatchResponseTracker/, "function")});`,
+)(
+  (code, message, retryable = false) => Object.assign(new Error(message), { code, retryable }),
+  "/image:generate",
+);
+const trackerListeners = new Map();
+const trackerBodies = new Map([
+  ["request-a", "response-for-city"],
+  ["request-b", "response-for-forest"],
+]);
+const trackerClient = {
+  on(event, listener) {
+    trackerListeners.set(event, listener);
+    return () => trackerListeners.delete(event);
+  },
+  async send(method, params) {
+    assert.equal(method, "Network.getResponseBody");
+    return { body: trackerBodies.get(params.requestId), base64Encoded: false };
+  },
+};
+const trackerAbort = new AbortController();
+const responseTracker = makeTracker(trackerClient, "flow-session", trackerAbort.signal);
+const cityReservation = responseTracker.reserve(1_000);
+const forestReservation = responseTracker.reserve(1_000);
+for (const [requestId, prompt] of [
+  ["request-a", "city"],
+  ["request-b", "forest"],
+]) {
+  trackerListeners.get("Network.requestWillBeSent")(
+    {
+      requestId,
+      request: {
+        method: "POST",
+        url: "https://aisandbox-pa.googleapis.com/v1/projects/project/image:generate",
+        postData: prompt,
+      },
+    },
+    "flow-session",
+  );
+  trackerListeners.get("Network.responseReceived")(
+    { requestId, response: { status: 200 } },
+    "flow-session",
+  );
+}
+assert.equal(await cityReservation.submitted, "request-a");
+assert.equal(await forestReservation.submitted, "request-b");
+trackerListeners.get("Network.loadingFinished")({ requestId: "request-b" }, "flow-session");
+trackerListeners.get("Network.loadingFinished")({ requestId: "request-a" }, "flow-session");
+assert.deepEqual(await cityReservation.promise, {
+  status: 200,
+  bodyText: "response-for-city",
+});
+assert.deepEqual(await forestReservation.promise, {
+  status: 200,
+  bodyText: "response-for-forest",
+});
+responseTracker.close();
+
+const cancellationTrackerAbort = new AbortController();
+const cancellationTracker = makeTracker(
+  {
+    on() {
+      return () => undefined;
+    },
+  },
+  "flow-session",
+  cancellationTrackerAbort.signal,
+);
+const abortedReservation = cancellationTracker.reserve(1_000);
+cancellationTrackerAbort.abort();
+await assert.rejects(abortedReservation.promise, (error) => error?.code === "CANCELLED");
+await assert.rejects(abortedReservation.submitted, (error) => error?.code === "CANCELLED");
+cancellationTracker.close();
+
+// Characterization: expired direct URLs remain recoverable through the public
+// UI download operation. The service delegates to the adapter, and the Flow
+// adapter delegates to the tile menu instead of retrying a stale signed URL.
+assert.match(
+  flowEngineSource,
+  /downloadSized:\s*\(ids, size\)\s*=>\s*R2\.uiDownloadTile\(ids, size\)/,
+);
+assert.match(
+  flowEngineSource,
+  /async function downloadSized\(ref, size\)\s*\{\s*try\s*\{\s*return await A\(\)\.downloadSized\(ref, size\)/,
+);
+assert.match(flowEngineSource, /async function uiDownloadTile\(ref, sizeKey = "1K"\)/);
+assert.match(flowEngineSource, /const dl = itens\.find\(\(e\) => S2\.menuLabels\.download\.test/);
+assert.match(flowEngineSource, /const sub = await D2\.esperar/);
+
+// Characterization: reload keeps only queued generation jobs, restores them
+// paused, and cancellation is exposed for both the whole queue and one job.
+assert.match(flowEngineSource, /function pendingSnapshot\(\)/);
+assert.match(flowEngineSource, /function restorePending\(arr\)/);
+assert.match(flowEngineSource, /fila: \$\{n\} pendente\(s\) restaurada\(s\) — PAUSADA/);
+assert.match(flowEngineSource, /function stop\(\)/);
+assert.match(flowEngineSource, /function cancelJob\(id\)/);
 const extensionManifest = JSON.parse(
   await readFile(new URL("../../../browser-bridge/manifest.json", import.meta.url), "utf8"),
 );
@@ -1203,7 +2215,7 @@ const extensionContent = await readFile(
   "utf8",
 );
 assert.equal(extensionManifest.manifest_version, 3);
-assert.equal(extensionManifest.version, "0.3.6");
+assert.equal(extensionManifest.version, "0.5.0");
 assert.deepEqual(extensionManifest.host_permissions, [
   "https://chatgpt.com/*",
   "https://claude.ai/*",
@@ -1214,8 +2226,9 @@ assert.deepEqual(extensionManifest.host_permissions, [
   "https://meta.ai/*",
   "https://www.meta.ai/*",
   "https://playground.microsoft.ai/*",
+  "https://vibes.ai/*",
 ]);
-assert.deepEqual(extensionManifest.permissions, ["tabs", "storage", "debugger"]);
+assert.deepEqual(extensionManifest.permissions, ["tabs", "storage", "debugger", "alarms", "power"]);
 assert.ok(extensionWorker.includes("globalThis.contentFlowBridge"));
 assert.ok(extensionWorker.includes('BRIDGE_ID = "com.contentflow.browser-bridge"'));
 assert.ok(extensionWorker.includes("command.executionKey"));
@@ -1230,7 +2243,7 @@ assert.ok(
 );
 assert.ok(!extensionContent.includes("dispatchAction"));
 assert.ok(!source.includes("--load-extension="));
-assert.ok(source.includes("Carregar sem compactação"));
+assert.ok(source.includes("requireCoreBrowserSession"));
 assert.ok(source.includes("ContentFlow Browser Bridge conectada"));
 assert.ok(!/client\.send\(\s*["']Input\./.test(source));
 assert.equal((source.match(/Page\.bringToFront/g) || []).length, 2);
@@ -1252,11 +2265,173 @@ assert.ok(source.includes("Nano Banana 2 Lite"));
 assert.ok(source.includes("Quantidade por prompt confirmada"));
 assert.ok(source.includes("produce-visual-assets-in-browser"));
 assert.ok(source.includes("Produção visual:"));
+assert.match(source, /const maxConcurrentGenerations = requestedConcurrentGenerations/);
+assert.match(source, /const submissionPublished = reservation.submitted.then/);
+assert.match(
+  source,
+  /hasEngine && taskReferencePaths.length === 0 && maxConcurrentGenerations === 1/,
+);
+assert.match(source, /preparando interface na sessão compartilhada/);
+assert.match(source, /const releaseSubmission = await acquireSubmissionLock\(\)/);
+assert.deepEqual(
+  __test
+    .referenceImagesForCurrentItem({
+      batch: { itemId: "work-scene-1", sourceItemId: "scene-1", index: 0, total: 2 },
+      inputs: { reference_images: [{ id: "fallback" }] },
+      inputDeliveries: [
+        {
+          inputId: "relations",
+          portKey: "item_relations",
+          itemIds: ["character-a", "character-b"],
+          items: [
+            {
+              id: "character-a",
+              value: { name: "Ana" },
+              references: [{ itemId: "scene-1", role: "scene_ids" }],
+            },
+            {
+              id: "character-b",
+              value: { name: "Beto" },
+              references: [{ itemId: "scene-2", role: "scene_ids" }],
+            },
+          ],
+        },
+        {
+          inputId: "references",
+          portKey: "reference_images",
+          itemIds: ["image-a", "image-b"],
+          items: [
+            {
+              id: "image-a",
+              value: { id: "ana" },
+              references: [{ itemId: "character-a", role: "derived_from" }],
+            },
+            {
+              id: "image-b",
+              value: { id: "beto" },
+              references: [{ itemId: "character-b", role: "derived_from" }],
+            },
+          ],
+        },
+      ],
+    })
+    .map((item) => item.id),
+  ["ana"],
+);
+assert.deepEqual(
+  __test
+    .referenceImagesForSourceItem(
+      {
+        inputs: { reference_images: [{ id: "fallback" }] },
+        inputDeliveries: [
+          {
+            portKey: "item_relations",
+            items: [
+              {
+                id: "character-a",
+                value: { name: "Ana" },
+                references: [{ itemId: "scene-1", role: "scene_ids" }],
+              },
+              {
+                id: "character-b",
+                value: { name: "Beto" },
+                references: [{ itemId: "scene-2", role: "scene_ids" }],
+              },
+            ],
+          },
+          {
+            portKey: "reference_images",
+            items: [
+              {
+                id: "image-a",
+                value: { id: "ana" },
+                references: [{ itemId: "character-a", role: "derived_from" }],
+              },
+              {
+                id: "image-b",
+                value: { id: "beto" },
+                references: [{ itemId: "character-b", role: "derived_from" }],
+              },
+            ],
+          },
+        ],
+      },
+      "scene-2",
+    )
+    .map((item) => item.id),
+  ["beto"],
+);
+assert.deepEqual(
+  __test
+    .referenceImagesForSourceItem(
+      {
+        inputDeliveries: [
+          {
+            portKey: "item_relations",
+            items: [
+              {
+                id: "character-a",
+                references: [{ itemId: "scene-multi", role: "scene_ids" }],
+              },
+              {
+                id: "character-b",
+                references: [{ itemId: "scene-multi", role: "scene_ids" }],
+              },
+            ],
+          },
+          {
+            portKey: "reference_images",
+            items: [
+              {
+                value: { id: "ana" },
+                references: [{ itemId: "character-a", role: "derived_from" }],
+              },
+              {
+                value: { id: "beto" },
+                references: [{ itemId: "character-b", role: "derived_from" }],
+              },
+            ],
+          },
+        ],
+      },
+      "scene-multi",
+    )
+    .map((item) => item.id),
+  ["ana", "beto"],
+);
+assert.throws(
+  () =>
+    __test.referenceImagesForSourceItem(
+      {
+        inputDeliveries: [
+          {
+            portKey: "item_relations",
+            items: [
+              { id: "character-a", references: [{ itemId: "scene-multi" }] },
+              { id: "character-b", references: [{ itemId: "scene-multi" }] },
+            ],
+          },
+          {
+            portKey: "reference_images",
+            items: [
+              {
+                value: { id: "ana" },
+                references: [{ itemId: "character-a", role: "derived_from" }],
+              },
+              { value: { id: "beto" } },
+            ],
+          },
+        ],
+      },
+      "scene-multi",
+    ),
+  /2 personagem\(ns\).*somente 1/,
+);
 assert.ok(!source.includes("createFallbackArtifact"));
 assert.ok(!source.includes("FALLBACK_IMAGE_BASE64"));
 await assert.rejects(readFile(new URL("./fallback-data.mjs", import.meta.url)), /ENOENT/);
 await testExtensionBridge(extensionWorker);
 
 console.log(
-  "OK: v1.3.7 validado (modos de produção visual, fila interna sem teto local, retomada sem duplicar concluídos, entrega image/video e ponte testada com estresse de 300 comandos).",
+  "OK: v2.0.1 validado (lote interno concorrente, animação item a item, retomada sem duplicar concluídos, entrega image/video e ponte testada com estresse de 300 comandos).",
 );

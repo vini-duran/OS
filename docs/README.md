@@ -1,24 +1,31 @@
-# Documentação do núcleo
+# Documentação do ContentFlow
 
-Esta pasta descreve o produto ContentFlow. A documentação de plugins, do Browser Bridge, do Plugin Kit e das skills vive separadamente em [`../ecosystem`](../ecosystem/README.md).
+Comece pelo produto disponível e escolha o guia do seu objetivo. O ContentFlow organiza a estratégia em Métodos e executa Blocos humanos ou capabilities de plugins independentes.
 
-## Leitura recomendada
+| Objetivo                                        | Referência                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Instalar, atualizar e usar no Windows           | [DESKTOP.md](DESKTOP.md) e [primeiros passos](../README.md#quero-apenas-usar-o-contentflow-no-windows)                                                                                                                                                                                  |
+| Entender o que existe e os limites de validação | [CURRENT_STATE.md](CURRENT_STATE.md)                                                                                                                                                                                                                                                    |
+| Entender conceitos, componentes e execução      | [ARCHITECTURE.md](ARCHITECTURE.md)                                                                                                                                                                                                                                                      |
+| Criar, validar, importar e executar um Método   | [Formato v3](../ecosystem/skills/contentflow-method-development/references/method-format.md), [validação](../ecosystem/skills/contentflow-method-development/references/validation.md) e [execução](../ecosystem/skills/contentflow-method-development/references/runtime-execution.md) |
+| Criar e testar um plugin                        | [Quickstart](ecosystem/quickstart.md), [tutorial](ecosystem/tutorial.md) e [desenvolvimento](ecosystem/development.md)                                                                                                                                                                  |
+| Configurar a capability de um Bloco             | [PLUGIN_INTERFACE.md](PLUGIN_INTERFACE.md)                                                                                                                                                                                                                                              |
+| Entender Bridge, perfis, vínculos e instâncias  | [Arquitetura §6 e §12](ARCHITECTURE.md#6-arquitetura-de-parâmetros-e-plugins), [automação](ecosystem/browser-automation.md) e [instalação da extensão](../ecosystem/browser-bridge/INSTALAR.md)                                                                                         |
+| Desenvolver e validar cenários reais            | [DEVELOPMENT.md](DEVELOPMENT.md), [CONTRIBUTING.md](../CONTRIBUTING.md) e [Dev Monitor interno](DEV_MONITOR.md)                                                                                                                                                                         |
+| Consultar decisões e fases anteriores           | [Índice histórico](history/README.md) e [ADRs](reliability-program/decisions/README.md)                                                                                                                                                                                                 |
 
-Para nosso fork no macOS: [atualização e instalação](DESKTOP_MACOS.md),
-[históricos de integração](historico/README.md) e
-[sincronização preservativa](UPSTREAM_SYNC.md). O guia Windows abaixo é herdado;
-não representa homologação do nosso ecossistema nessa plataforma.
+## Autoridade atual
 
-1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — visão normativa, domínio e fronteiras do produto.
-2. [`DESKTOP.md`](DESKTOP.md) — referência técnica Windows herdada.
-3. [`LEGAL_AND_LICENSING.md`](LEGAL_AND_LICENSING.md) — mapa jurídico e licenciamento.
+A [arquitetura](ARCHITECTURE.md) define produto, domínio e responsabilidades. O [contrato de conteúdo](CONTENT_CONTRACT.md) é a fonte exclusiva de entradas, saídas, portas, valores e deliveries. A [interface do plugin](PLUGIN_INTERFACE.md) define a segunda superfície de configuração do Bloco.
 
-## Regra de leitura
+O [protocolo da Plugin API v2](ecosystem/protocol.md), seu [schema](ecosystem/schemas/contentflow-plugin-v2.schema.json), [segurança](ecosystem/security.md), [automação de navegador](ecosystem/browser-automation.md), [convenções de mídia/automação](ecosystem/automation-media-conventions.md) e [distribuição](ecosystem/distribution.md) regem integrações. Guias desktop, tutoriais e referências de Métodos orientam o uso dessas fontes; não criam contratos paralelos.
 
-`ARCHITECTURE.md` é a fonte normativa do produto. Roadmaps antigos, validações pontuais e documentos de transição não devem competir com ela: decisões já incorporadas à arquitetura são removidas dos documentos de planejamento. Notas históricas de versões permanecem em [`releases`](releases/).
+[LICENSE](../LICENSE) é a autoridade jurídica. [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md) e [AGENTS.md](../AGENTS.md) governam o uso de IA e alterações no repositório. Decisões explícitas mais recentes do criador prevalecem sobre documentação anterior; divergências com o código exigem investigação e correção da fonte apropriada.
 
-## Desenvolvimento de Métodos e plugins
+## Atual versus histórico
 
-- Métodos: [`../ecosystem/skills/contentflow-method-development`](../ecosystem/skills/contentflow-method-development/).
-- Plugins: [`../ecosystem/skills/contentflow-plugin-development`](../ecosystem/skills/contentflow-plugin-development/).
-- Protocolo público: [`../ecosystem/docs/protocol.md`](../ecosystem/docs/protocol.md).
+O [programa separado de confiabilidade foi encerrado](reliability-program/README.md). Seu roadmap, arquitetura-alvo, protocolos e tasks são históricos. A evolução atual é guiada por Métodos/plugins e cenários verticais; não depende da conclusão de uma sequência antiga.
+
+O [índice histórico](history/README.md) distingue registros arquivados, ADRs consultáveis, inventários, propostas, baselines, evidências e releases. Arquivos históricos podem conter planos ou gaps daquele momento: consulte [CURRENT_STATE.md](CURRENT_STATE.md) antes de tratá-los como limitações presentes. Propostas não são integrações disponíveis.
+
+O [ecossistema](ecosystem/README.md) contém guias atuais; os [manifestos dos plugins](../ecosystem/plugins/reference/README.md) identificam suas capabilities reais. Skills são ferramentas de desenvolvimento assistido, sem requisito operacional para usar o aplicativo.

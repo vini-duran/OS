@@ -21,16 +21,15 @@ import {
   closeBrowserSession,
 } from "./handler.mjs";
 
-test("manifesto possui estrutura e capabilities válidas conforme API v1", async () => {
+test("manifesto possui estrutura e capabilities válidas conforme API v2", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
   );
-  assert.equal(manifest.apiVersion, "1");
+  assert.equal(manifest.apiVersion, "2");
   assert.equal(manifest.id, "local.contentflow.mai-playground-browser");
   assert.equal(manifest.entrypoint, "handler.mjs");
   assert.equal(manifest.runtime.kind, "node");
   assert.equal(manifest.runtime.module, "esm");
-  assert.deepEqual(manifest.deliveryTypes, ["audio", "text", "processing"]);
   assert.deepEqual(manifest.permissions, [
     "network",
     "filesystem:read",
@@ -49,7 +48,9 @@ test("manifesto possui estrutura e capabilities válidas conforme API v1", async
   assert.deepEqual(voiceCap.processTypes, ["narration"]);
   assert.ok(voiceCap.inputPorts.some((p) => p.key === "text"));
   assert.ok(voiceCap.outputPorts.some((p) => p.key === "audio"));
-  assert.equal(manifest.version, "1.0.4");
+  assert.equal(voiceCap.inputPorts.find((p) => p.key === "text").shape.family, "text");
+  assert.equal(voiceCap.outputPorts.find((p) => p.key === "audio").shape.family, "audio");
+  assert.equal(manifest.version, "2.0.1");
   assert.equal(manifest.settingsSchema.properties.keepBrowserOpen.default, false);
   assert.equal(voiceCap.blockConfigSchema.properties.voice.default, "Caio");
   assert.ok(voiceCap.blockConfigSchema.properties.voice.enum.includes("Luana"));
@@ -220,7 +221,7 @@ test("aguarda cinco segundos entre os prompts de áudio", () => {
   assert.equal(AUDIO_PROMPT_INTERVAL_MS, 5000);
 });
 
-test("fecha a sessão do navegador depois da execução", async () => {
+test("fecha apenas o cliente CDP; o núcleo encerra a sessão física", async () => {
   const calls = [];
   const client = {
     async send(method) {
@@ -230,11 +231,9 @@ test("fecha a sessão do navegador depois da execução", async () => {
       calls.push("client.close");
     },
   };
-  const child = { kill: () => calls.push("child.kill") };
+  await closeBrowserSession(client);
 
-  await closeBrowserSession(client, child);
-
-  assert.deepEqual(calls, ["Browser.close", "client.close", "child.kill"]);
+  assert.deepEqual(calls, ["client.close"]);
 });
 
 test("mock de TTS gera arquivo de áudio e artifact válido sem abrir navegador", async () => {

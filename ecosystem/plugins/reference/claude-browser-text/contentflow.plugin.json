@@ -1,12 +1,12 @@
 {
-  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow/main/ecosystem/docs/schemas/contentflow-plugin-v1.schema.json",
-  "apiVersion": "1",
+  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow/main/docs/ecosystem/schemas/contentflow-plugin-v2.schema.json",
+  "apiVersion": "2",
   "id": "local.contentflow.claude-browser-text",
   "name": "Claude Browser Studio",
-  "version": "1.1.5",
+  "version": "2.0.1",
   "description": "Super plugin do Claude web para criar em uma ou várias etapas, pesquisar, escolher, validar e analisar imagens ou documentos em conversas persistentes.",
   "author": "André Marinho Jr.",
-  "license": "Proprietary",
+  "license": "MIT",
   "branding": {
     "iconPath": "assets/icon.png"
   },
@@ -15,12 +15,20 @@
     "version": ">=26 <27",
     "module": "esm"
   },
-  "minCoreVersion": "0.4.17",
+  "minCoreVersion": "1.3.3",
   "entrypoint": "handler.mjs",
-  "permissions": ["network", "filesystem:read", "filesystem:write", "process"],
-  "networkHosts": ["claude.ai"],
-  "deliveryTypes": ["text", "processing"],
-  "supportsConversationContinuation": true,
+  "browserRuntime": {
+    "lifecycle": "core"
+  },
+  "permissions": [
+    "network",
+    "filesystem:read",
+    "filesystem:write",
+    "process"
+  ],
+  "networkHosts": [
+    "claude.ai"
+  ],
   "profileSetup": {
     "configurationKey": "accountProfile",
     "fallbackConfigurationKey": "fallbackAccountProfiles",
@@ -110,7 +118,9 @@
       "promptPreview": {
         "template": "INSTRUÇÕES DO BLOCO:\n{{BLOCK_INSTRUCTIONS}}\n\nCONTEXTO DAS ENTRADAS:\n{{CONTEXT_INPUTS}}"
       },
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -126,125 +136,221 @@
           "key": "content",
           "label": "Contexto para geração",
           "description": "Informações de apoio que acompanham a instrução principal; não cria uma etapa separada.",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "history",
+          "label": "Histórico do canal",
+          "description": "Registros históricos explicitamente vinculados pelo núcleo para orientar a geração.",
+          "required": false,
+          "shape": {
+            "kind": "record",
+            "cardinality": "many",
+            "fields": []
+          }
+        },
+        {
+          "key": "context_1",
+          "label": "Contexto adicional 1",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_2",
+          "label": "Contexto adicional 2",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_3",
+          "label": "Contexto adicional 3",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_4",
+          "label": "Contexto adicional 4",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_5",
+          "label": "Contexto adicional 5",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_6",
+          "label": "Contexto adicional 6",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "outline",
           "label": "Outline / estrutura",
           "description": "Cada item gera uma mensagem e uma resposta na mesma conversa.",
-          "acceptedTypes": ["records", "list"],
           "required": false,
-          "multiple": false
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         },
         {
           "key": "sections",
           "label": "Quantidade de blocos",
           "description": "Quando não há outline, cria esta quantidade de etapas consecutivas.",
-          "acceptedTypes": ["number"],
           "required": false,
-          "multiple": false
+          "shape": {
+            "kind": "control",
+            "control": "number",
+            "cardinality": "one"
+          }
         },
         {
           "key": "target",
           "label": "Meta de caracteres",
           "description": "Meta total validada depois da concatenação de todas as respostas.",
-          "acceptedTypes": ["number"],
           "required": false,
-          "multiple": false
+          "shape": {
+            "kind": "control",
+            "control": "number",
+            "cardinality": "one"
+          }
         },
         {
           "key": "attachments",
           "label": "Referências anexas",
           "description": "Imagens ou documentos enviados somente na primeira mensagem da conversa.",
-          "acceptedTypes": ["image", "file", "files"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Texto gerado",
-          "producedTypes": ["text", "textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "parts",
           "label": "Respostas por etapa",
           "description": "Lista opcional que preserva cada resposta capturada na conversa.",
-          "producedTypes": ["list"],
           "required": false,
           "presentation": {
             "renderer": "list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
           }
         },
         {
           "key": "document",
           "label": "Documento Markdown",
           "description": "Arquivo .md opcional criado a partir do texto final validado.",
-          "producedTypes": ["file"],
           "required": false,
           "presentation": {
-            "renderer": "file-list",
-            "itemType": "file",
-            "acceptedMimeTypes": ["text/markdown"]
+            "renderer": "file-list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "artifact",
+            "formats": {
+              "mimeTypes": [
+                "text/markdown"
+              ]
+            }
           }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "thumbnail_layout",
-        "image",
-        "file",
-        "files"
-      ],
-      "producedOutputTypes": ["text", "textarea", "list", "file"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": true,
         "maxConcurrency": 1,
         "itemOrchestration": {
-          "inputPort": "outline",
+          "inputPort": "content",
           "outputPort": "parts",
           "combinedOutputPort": "result",
+          "separator": "\n\n",
           "mode": "sequential"
         }
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web"]
+        "providers": [
+          "Anthropic / Claude web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -256,7 +362,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -268,7 +374,11 @@
           "generationMode": {
             "type": "string",
             "title": "Modo de geração",
-            "enum": ["auto", "single", "sequence"],
+            "enum": [
+              "auto",
+              "single",
+              "sequence"
+            ],
             "default": "auto",
             "description": "Auto usa sequência quando recebe outline ou quantidade maior que 1; single força um envio; sequence força várias etapas."
           },
@@ -332,16 +442,26 @@
                 "pattern": "^artifact://"
               }
             },
-            "required": ["id", "name", "mimeType", "size", "url"]
+            "required": [
+              "id",
+              "name",
+              "mimeType",
+              "size",
+              "url"
+            ]
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       }
     },
     {
       "id": "search-web-in-browser",
       "operator": "IA",
-      "blockTypes": ["BUSCAR"],
+      "blockTypes": [
+        "BUSCAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -356,54 +476,77 @@
         {
           "key": "query",
           "label": "Consulta",
-          "acceptedTypes": ["text", "textarea", "list"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "context",
           "label": "Contexto adicional",
-          "acceptedTypes": ["text", "textarea", "list", "records", "url"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Resultado da pesquisa",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "sources",
           "label": "Fontes consultadas",
-          "producedTypes": ["list"],
           "required": false,
           "presentation": {
             "renderer": "list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["text", "textarea", "list", "records", "url"],
-      "producedOutputTypes": ["textarea", "list"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_read", "external_write", "subprocess"],
+      "sideEffects": [
+        "external_read",
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web", "Fontes públicas acessadas pela pesquisa do Claude"]
+        "providers": [
+          "Anthropic / Claude web",
+          "Fontes públicas acessadas pela pesquisa do Claude"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -415,7 +558,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -437,7 +580,9 @@
     {
       "id": "choose-library-item-in-browser",
       "operator": "IA",
-      "blockTypes": ["ESCOLHER"],
+      "blockTypes": [
+        "ESCOLHER"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -452,53 +597,46 @@
         {
           "key": "context",
           "label": "Contexto da escolha",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "list",
-            "records",
-            "number",
-            "boolean",
-            "url",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "ID do item escolhido",
-          "producedTypes": ["text"],
-          "required": true
+          "required": true,
+          "shape": {
+            "kind": "control",
+            "control": "identifier",
+            "cardinality": "one"
+          }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "list",
-        "records",
-        "number",
-        "boolean",
-        "url",
-        "thumbnail_layout"
-      ],
-      "producedOutputTypes": ["text"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web"]
+        "providers": [
+          "Anthropic / Claude web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -510,7 +648,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -533,14 +671,18 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     },
     {
       "id": "validate-content-in-browser",
       "operator": "IA",
-      "blockTypes": ["VALIDAR"],
+      "blockTypes": [
+        "VALIDAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -555,103 +697,74 @@
         {
           "key": "content",
           "label": "Conteúdo a validar",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "url",
-            "thumbnail_layout",
-            "image",
-            "file",
-            "files"
-          ],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "criteria",
           "label": "Critérios adicionais",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "decision",
           "label": "Decisão",
-          "producedTypes": ["approval"],
           "required": false,
           "presentation": {
             "renderer": "decision"
+          },
+          "shape": {
+            "kind": "control",
+            "control": "approval",
+            "cardinality": "one"
           }
         },
         {
           "key": "feedback",
           "label": "Observações",
-          "producedTypes": ["textarea"],
           "required": false,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "selected_value",
           "label": "Opção escolhida",
-          "producedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "select",
-            "url",
-            "thumbnail_layout",
-            "image",
-            "file"
-          ],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "control",
+            "control": "selection",
+            "cardinality": "one"
+          }
         },
         {
           "key": "selected_values",
           "label": "Opções escolhidas",
-          "producedTypes": ["list", "multiselect", "files"],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "control",
+            "control": "selection",
+            "cardinality": "many"
+          }
         }
-      ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "url",
-        "thumbnail_layout",
-        "image",
-        "file",
-        "files"
-      ],
-      "producedOutputTypes": [
-        "approval",
-        "textarea",
-        "text",
-        "number",
-        "boolean",
-        "select",
-        "url",
-        "thumbnail_layout",
-        "list",
-        "multiselect",
-        "image",
-        "file",
-        "files"
       ],
       "execution": {
         "mode": "immediate",
@@ -659,14 +772,19 @@
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web"]
+        "providers": [
+          "Anthropic / Claude web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -678,7 +796,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -700,7 +818,9 @@
     {
       "id": "analyze-images-in-browser",
       "operator": "IA",
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -715,45 +835,61 @@
         {
           "key": "images",
           "label": "Imagens para visão",
-          "acceptedTypes": ["image", "file", "files"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         },
         {
           "key": "context",
           "label": "Contexto da análise",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Análise visual",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["image", "file", "files", "text", "textarea", "list", "records"],
-      "producedOutputTypes": ["textarea"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web (imagens e prompt)"]
+        "providers": [
+          "Anthropic / Claude web (imagens e prompt)"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -765,7 +901,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -788,14 +924,18 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     },
     {
       "id": "analyze-documents-in-browser",
       "operator": "IA",
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -810,45 +950,61 @@
         {
           "key": "documents",
           "label": "Documentos para análise",
-          "acceptedTypes": ["file", "files"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         },
         {
           "key": "context",
           "label": "Contexto da análise",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Análise dos documentos",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["file", "files", "text", "textarea", "list", "records"],
-      "producedOutputTypes": ["textarea"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["Anthropic / Claude web (documentos e prompt)"]
+        "providers": [
+          "Anthropic / Claude web (documentos e prompt)"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -860,7 +1016,7 @@
             "format": "textarea",
             "default": "",
             "maxLength": 512,
-            "description": "Aliases preparados, um por linha. No Core com proteção de repetição, somente falhas técnicas explicitamente repetíveis permitem troca; limite, autenticação ou envio incerto pausam."
+            "description": "Aliases adicionais, um por linha, em ordem. O sistema avança automaticamente para o próximo perfil cadastrado sempre que houver qualquer erro na execução."
           },
           "accountProfile": {
             "type": "string",
@@ -883,9 +1039,12 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     }
-  ]
+  ],
+  "repository": "https://github.com/andremjr/plugins-contentflow"
 }

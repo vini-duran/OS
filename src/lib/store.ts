@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 import {
-  createEmptyMethods,
   PROCESS_META,
   PROCESS_ORDER,
   type ActionBlock,
@@ -18,14 +17,9 @@ import {
   type StoredFile,
   type UniversalProcess,
 } from "@/lib/domain";
-import {
-  createProcessOutputFields,
-  normalizeActionBlock,
-  normalizeMethodBlocks,
-} from "@/lib/human-workflow";
-import { normalizeExecutionDeliveries } from "@/lib/deliveries";
+import { createProcessOutputFields, normalizeMethodBlocks } from "@/lib/human-workflow";
 import { effectiveProcessOrder } from "@/lib/process-order";
-import type { PortableCollectionV2, PortableLibraryItemV2 } from "@/lib/method-file";
+import type { PortableCollection, PortableLibraryItem } from "@/lib/method-file";
 import {
   executionOrchestratorIsActive,
   type ExecutionOrchestrator,
@@ -43,6 +37,15 @@ export type YouTubeChannelProfile = Pick<
   | "lastSyncedAt"
 >;
 
+import {
+  channelNeedsUpgrade,
+  methodNeedsUpgrade,
+  methodsNeedUpgrade,
+  preserveChannelForPresentation,
+  type UpgradeState,
+} from "@/lib/user-data-upgrade";
+import { upgradeText } from "@/lib/upgrade-translations";
+
 const db = {
   channels: [] as Channel[],
   projects: [] as Project[],
@@ -51,6 +54,7 @@ const db = {
   libraryItems: [] as ChannelLibraryItem[],
   libraryCollections: [] as StrategicCollection[],
   ready: false,
+  upgrade: { required: false, applying: false } as UpgradeState,
 };
 const listeners = new Set<() => void>();
 const orchestratorStateRequests = new Map<string, Promise<boolean>>();
@@ -79,38 +83,34 @@ function useClientStoreVersion() {
   return useSyncExternalStore(subscribe, getVersion, getServerVersion);
 }
 
-function normalizeChannel(channel: Channel): Channel {
-  const emptyMethods = createEmptyMethods();
-  const methods = Object.fromEntries(
-    PROCESS_ORDER.map((processType) => {
-      const saved = channel.methods?.[processType] ?? emptyMethods[processType];
-      return [
-        processType,
-        {
-          name: saved.name?.trim() || `Método de ${PROCESS_META[processType].label}`,
-          imageUrl: saved.imageUrl,
-          processType,
-          blocks: (saved.blocks ?? []).map((block, order) => ({
-            ...normalizeActionBlock(block, processType),
-            order,
-          })),
-        },
-      ];
-    }),
-  ) as Record<UniversalProcess, ProcessMethod>;
-  return { ...channel, methods };
+const normalizeChannel = preserveChannelForPresentation;
+
+function upgradeError() {
+  const lang = typeof document === "undefined" ? "pt-BR" : document.documentElement.lang;
+  return new Error(upgradeText(lang === "en" || lang === "es" ? lang : "pt-BR").incompatible);
+}
+function assertChannelStrategy(channelId: string) {
+  const channel = db.channels.find((item) => item.id === channelId);
+  if (db.upgrade.applying || (channel && channelNeedsUpgrade(channel))) throw upgradeError();
+}
+function assertExecutionCompatible(executionId?: string, projectId?: string) {
+  if (db.upgrade.required || db.upgrade.applying) throw upgradeError();
+  const execution = db.executions.find((item) => item.id === executionId);
+  if (execution && methodNeedsUpgrade(execution.methodSnapshot)) throw upgradeError();
+  const project = db.projects.find((item) => item.id === (projectId ?? execution?.projectId));
+  if (project?.strategySnapshot && methodsNeedUpgrade(project.strategySnapshot.methods))
+    throw upgradeError();
+  if (project) assertChannelStrategy(project.channelId);
+}
+export function useUpgradeState(): UpgradeState {
+  const storeVersion = useClientStoreVersion();
+  return storeVersion >= 0 ? db.upgrade : { required: false, applying: false };
 }
 
-function normalizeExecution(execution: ProcessExecution): ProcessExecution {
-  return normalizeExecutionDeliveries({
-    ...execution,
-    blocks: execution.blocks.map((block) => ({ attempt: 1, ...block })),
-    outputStatus:
-      execution.outputStatus ?? (execution.status === "completed" ? "completed" : "pending"),
-  });
-}
-
-type ServerState = Omit<typeof db, "ready"> & { revision: number };
+type ServerState = Omit<typeof db, "ready" | "upgrade"> & {
+  revision: number;
+  upgrade?: UpgradeState;
+};
 let serverRevision = -1;
 let stateRequest: Promise<boolean> | undefined;
 function reconcileEntities<T extends { id: string }>(current: T[], incoming: T[]): T[] {
@@ -120,15 +120,45 @@ function reconcileEntities<T extends { id: string }>(current: T[], incoming: T[]
     return previous && JSON.stringify(previous) === JSON.stringify(item) ? previous : item;
   });
 }
+
+function normalizeProject(project: Project): Project {
+  const candidate = project as Project & {
+    assignee?: { name?: unknown; initials?: unknown } | null;
+  };
+  if (
+    typeof candidate.assignee?.name === "string" &&
+    typeof candidate.assignee?.initials === "string"
+  )
+    return project;
+  const name = typeof candidate.assignee?.name === "string" ? candidate.assignee.name : "—";
+  const initials =
+    typeof candidate.assignee?.initials === "string" ? candidate.assignee.initials : "—";
+  return {
+    ...project,
+    assignee: { name, initials },
+  };
+}
+
 function applyState(state: ServerState) {
   if (state.revision < serverRevision) return;
+  const channels = state.channels.map(normalizeChannel);
+  const projects = state.projects.map(normalizeProject);
+  const executions = state.executions;
+  const orchestrators = state.orchestrators;
+  const libraryItems = state.libraryItems;
+  const libraryCollections = state.libraryCollections;
+
   serverRevision = state.revision;
-  db.channels = reconcileEntities(db.channels, state.channels.map(normalizeChannel));
-  db.projects = reconcileEntities(db.projects, state.projects);
-  db.executions = reconcileEntities(db.executions, state.executions.map(normalizeExecution));
-  db.orchestrators = reconcileEntities(db.orchestrators, state.orchestrators);
-  db.libraryItems = reconcileEntities(db.libraryItems, state.libraryItems);
-  db.libraryCollections = reconcileEntities(db.libraryCollections, state.libraryCollections);
+  db.channels = reconcileEntities(db.channels, channels);
+  db.projects = reconcileEntities(db.projects, projects);
+  db.executions = reconcileEntities(db.executions, executions);
+  db.orchestrators = reconcileEntities(db.orchestrators, orchestrators);
+  db.libraryItems = reconcileEntities(db.libraryItems, libraryItems);
+  db.libraryCollections = reconcileEntities(db.libraryCollections, libraryCollections);
+  db.upgrade = state.upgrade ?? {
+    required: channels.some(channelNeedsUpgrade),
+    applying: false,
+  };
   db.ready = true;
   emit();
 }
@@ -169,13 +199,66 @@ if (typeof window !== "undefined") {
   const refresh = () =>
     void refreshState().catch((error) => console.error("Conexão com a API local:", error));
   refresh();
-  const interval = window.setInterval(refresh, 1_000);
-  if (import.meta.hot) import.meta.hot.dispose(() => window.clearInterval(interval));
+  let eventsConnected = false;
+  const events =
+    typeof EventSource === "function" ? new EventSource("/api/state/events") : undefined;
+  let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+  let notificationRunning = false;
+  let notificationRevision = serverRevision;
+  let disposed = false;
+  const refreshNotification = async () => {
+    if (notificationRunning || disposed) return;
+    notificationRunning = true;
+    try {
+      do {
+        const requestedRevision = notificationRevision;
+        await refreshState(true);
+        if (notificationRevision === requestedRevision) break;
+      } while (!disposed);
+    } catch (error) {
+      console.error("Conexão com a API local:", error);
+    } finally {
+      notificationRunning = false;
+    }
+  };
+  if (events) {
+    events.onopen = () => {
+      eventsConnected = true;
+      refresh();
+    };
+    events.onerror = () => {
+      eventsConnected = false;
+    };
+    events.onmessage = (event) => {
+      if (Number(event.data) === serverRevision) return;
+      notificationRevision = Number(event.data);
+      clearTimeout(notificationTimer);
+      notificationTimer = setTimeout(() => {
+        void refreshNotification();
+      }, 25);
+    };
+  }
+  const refreshWhenVisible = () => {
+    if (!document.hidden) refresh();
+  };
+  const interval = window.setInterval(() => {
+    if (!eventsConnected) refreshWhenVisible();
+  }, 1_000);
+  document.addEventListener("visibilitychange", refreshWhenVisible);
+  if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+      window.clearInterval(interval);
+      disposed = true;
+      clearTimeout(notificationTimer);
+      events?.close();
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    });
+  }
 }
 
 export function useDatabaseConnectionError() {
-  useClientStoreVersion();
-  return connectionError;
+  const storeVersion = useClientStoreVersion();
+  return storeVersion >= 0 ? connectionError : undefined;
 }
 
 export function useDatabaseReady() {
@@ -254,6 +337,8 @@ export async function startExecutionOrchestrator(input: {
   quantity: number;
   projectPrefix?: string;
 }) {
+  assertExecutionCompatible();
+  assertChannelStrategy(input.channelId);
   const response = await fetch("/api/orchestrators", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -273,6 +358,8 @@ export async function startGlobalExecutionOrchestration(input: {
   quantity: number;
   projectPrefix?: string;
 }) {
+  assertExecutionCompatible();
+  input.channelIds.forEach(assertChannelStrategy);
   const response = await fetch("/api/orchestrators/global", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -320,6 +407,7 @@ export async function stopExecutionOrchestrator(orchestratorId: string) {
 }
 
 export async function resumeExecutionOrchestrator(orchestratorId: string) {
+  assertExecutionCompatible();
   const response = await fetch(`/api/orchestrators/${orchestratorId}/resume`, { method: "POST" });
   const body = (await response.json()) as ExecutionOrchestratorState & { error?: string };
   if (!response.ok || !body.orchestrator) {
@@ -368,7 +456,7 @@ export function useHumanTasks(): HumanTask[] {
     .flatMap<HumanTask>((execution) => {
       const project = db.projects.find((item) => item.id === execution.projectId);
       const channel = db.channels.find((item) => item.id === execution.channelId);
-      if (!project || !channel) return [];
+      if (!project || !channel || methodNeedsUpgrade(execution.methodSnapshot)) return [];
       const tasks = execution.blocks.flatMap<HumanTask>((blockExecution) => {
         if (blockExecution.status !== "awaiting_human") return [];
         const block = execution.methodSnapshot.blocks.find(
@@ -419,7 +507,7 @@ export function useExecutionErrors(): ExecutionErrorTask[] {
     .flatMap<ExecutionErrorTask>((execution) => {
       const project = db.projects.find((item) => item.id === execution.projectId);
       const channel = db.channels.find((item) => item.id === execution.channelId);
-      if (!project || !channel) return [];
+      if (!project || !channel || methodNeedsUpgrade(execution.methodSnapshot)) return [];
       return execution.blocks.flatMap<ExecutionErrorTask>((blockExecution) => {
         if (blockExecution.status !== "failed") return [];
         const block = execution.methodSnapshot.blocks.find(
@@ -442,12 +530,20 @@ export async function createChannel(channel: Omit<Channel, "createdAt">) {
   return next;
 }
 export async function updateChannel(channel: Channel) {
+  const prior = db.channels.find((item) => item.id === channel.id);
+  if (
+    prior &&
+    channelNeedsUpgrade(prior) &&
+    JSON.stringify(prior.methods) !== JSON.stringify(channel.methods)
+  )
+    throw upgradeError();
   await request(`/api/channels/${channel.id}`, "PUT", normalizeChannel(channel));
   await refreshState(true);
   return db.channels.find((item) => item.id === channel.id);
 }
 
 export async function updateProcessOrder(channel: Channel, processOrder: UniversalProcess[]) {
+  assertChannelStrategy(channel.id);
   await request(`/api/channels/${encodeURIComponent(channel.id)}/process-order`, "PUT", {
     processOrder,
     definitionRevision: channel.definitionRevision ?? 0,
@@ -496,6 +592,8 @@ export function rememberMethodDraft(
   processType: UniversalProcess,
   method: ProcessMethod,
 ) {
+  assertChannelStrategy(channelId);
+  if (methodNeedsUpgrade(method)) throw upgradeError();
   const key = methodDraftKey(channelId, processType);
   localStorage.setItem(key, JSON.stringify(method));
 }
@@ -508,11 +606,14 @@ export async function setChannelMethod(
   method: ProcessMethod,
   definitionRevision?: number,
 ) {
+  assertChannelStrategy(channelId);
+  if (methodNeedsUpgrade(method)) throw upgradeError();
   const key = methodDraftKey(channelId, processType);
   const snapshot = JSON.stringify(method);
   const pending = (methodQueues.get(key) ?? Promise.resolve())
     .catch(() => undefined)
     .then(async () => {
+      assertChannelStrategy(channelId);
       await request(`/api/channels/${channelId}/methods/${processType}`, "PUT", {
         name: method.name,
         processType,
@@ -533,10 +634,38 @@ export async function setChannelMethod(
   }
 }
 
+export async function removeChannelMethod(
+  channelId: string,
+  processType: UniversalProcess,
+  definitionRevision: number,
+) {
+  assertChannelStrategy(channelId);
+  const key = methodDraftKey(channelId, processType);
+  const pending = (methodQueues.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(async () => {
+      assertChannelStrategy(channelId);
+      await request(`/api/channels/${channelId}/methods/${processType}`, "DELETE", {
+        definitionRevision,
+      });
+      clearMethodDraft(channelId, processType);
+      await refreshState(true);
+      return db.channels.find((item) => item.id === channelId)?.definitionRevision;
+    });
+  methodQueues.set(key, pending);
+  try {
+    await pending;
+  } finally {
+    if (methodQueues.get(key) === pending) methodQueues.delete(key);
+  }
+}
+
 export async function setChannelMethods(
   channelId: string,
   methods: Partial<Record<UniversalProcess, ProcessMethod>>,
 ) {
+  assertChannelStrategy(channelId);
+  if (methodsNeedUpgrade(methods)) throw upgradeError();
   await request(`/api/channels/${channelId}/methods`, "PUT", { methods });
   await refreshState(true);
 }
@@ -547,13 +676,16 @@ export async function applyMethodTransfer(input: {
   newChannel?: { id: string; name: string; methodsImageUrl?: string };
   expectedDefinitionRevision?: number;
   methods: ProcessMethod[];
-  collections: PortableCollectionV2[];
+  collections: PortableCollection[];
   itemsIncluded?: boolean;
-  items?: PortableLibraryItemV2[];
+  items?: PortableLibraryItem[];
   preferredOrder: UniversalProcess[];
   selectedProcesses: UniversalProcess[];
   preserveLocalConnections?: boolean;
 }) {
+  if (input.targetChannelId) assertChannelStrategy(input.targetChannelId);
+  if (input.sourceChannelId) assertChannelStrategy(input.sourceChannelId);
+  if (input.methods.some(methodNeedsUpgrade)) throw upgradeError();
   const response = await fetch("/api/method-transfers/apply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -610,6 +742,10 @@ export async function createProject(input: NewProjectInput): Promise<Project> {
 
 const commandQueues = new Map<string, Promise<unknown>>();
 async function command<T>(action: string, input: Record<string, unknown>): Promise<T> {
+  assertExecutionCompatible(
+    input.executionId as string | undefined,
+    input.projectId as string | undefined,
+  );
   const id = crypto.randomUUID();
   const key = String(input.executionId ?? input.projectId);
   const execution = db.executions.find((item) => item.id === input.executionId);
@@ -618,6 +754,10 @@ async function command<T>(action: string, input: Record<string, unknown>): Promi
   const pending = previous
     .catch(() => undefined)
     .then(async () => {
+      assertExecutionCompatible(
+        input.executionId as string | undefined,
+        input.projectId as string | undefined,
+      );
       const response = await fetch("/api/commands", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -742,21 +882,10 @@ export function acceptBlockDelivery(executionId: string, blockId: string) {
 export function retryBlockExecution(
   executionId: string,
   blockId: string,
-  retryScopeOrOptions:
-    | BlockItemRetryScope
-    | { confirmSnapshotRevision?: string; retryScope?: BlockItemRetryScope; itemId?: string }
-    | string = "all",
+  retryScope: BlockItemRetryScope = "all",
   itemId?: string,
 ) {
-  const options =
-    typeof retryScopeOrOptions === "object"
-      ? retryScopeOrOptions
-      : retryScopeOrOptions === "all" ||
-          retryScopeOrOptions === "remaining" ||
-          retryScopeOrOptions === "selected"
-        ? { retryScope: retryScopeOrOptions, itemId }
-        : { confirmSnapshotRevision: retryScopeOrOptions };
-  return command<boolean>("retry", { executionId, blockId, ...options });
+  return command<boolean>("retry", { executionId, blockId, retryScope, itemId });
 }
 export function resetStage(projectId: string, stage: ProcessId) {
   return command<boolean>("reset", { projectId, processType: stage });
@@ -767,11 +896,37 @@ export async function cancelProcessExecution(executionId: string) {
   return true;
 }
 export async function refreshProcessExecution(
-  _executionId: string,
-  _projectId?: string,
-  _processType?: ProcessId,
+  executionId: string,
+  projectId?: string,
+  processType?: ProcessId,
 ) {
-  return refreshState();
+  const query = new URLSearchParams();
+  if (projectId) query.set("projectId", projectId);
+  if (processType) query.set("processType", processType);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const response = await fetch(
+    `/api/executions/${encodeURIComponent(executionId)}/state${suffix}`,
+    {
+      signal: AbortSignal.timeout(10_000),
+    },
+  );
+  if (!response.ok) throw new Error(await readApiError(response));
+  const payload = (await response.json()) as {
+    execution: ProcessExecution;
+    project?: Project;
+  };
+  const executionIndex = db.executions.findIndex((item) => item.id === payload.execution.id);
+  if (executionIndex >= 0) db.executions[executionIndex] = payload.execution;
+  else db.executions = [payload.execution, ...db.executions];
+  if (payload.project) {
+    const projectIndex = db.projects.findIndex((item) => item.id === payload.project?.id);
+    const project = normalizeProject(payload.project);
+    if (projectIndex >= 0) db.projects[projectIndex] = project;
+    else db.projects = [project, ...db.projects];
+  }
+  connectionError = undefined;
+  emit();
+  return true;
 }
 
 export async function updateBlockExecutionValues(
@@ -780,7 +935,22 @@ export async function updateBlockExecutionValues(
   revision: number,
   values: Record<string, RuntimeValue>,
 ) {
+  assertExecutionCompatible(executionId);
   await request(`/api/executions/${executionId}/blocks/${blockId}/values`, "PATCH", {
+    revision,
+    values,
+  });
+  await refreshState(true);
+}
+
+export async function submitBlockRuntimeInputs(
+  executionId: string,
+  blockId: string,
+  revision: number,
+  values: Record<string, RuntimeValue>,
+) {
+  assertExecutionCompatible(executionId);
+  await request(`/api/executions/${executionId}/blocks/${blockId}/runtime-inputs`, "PATCH", {
     revision,
     values,
   });
@@ -794,6 +964,7 @@ export async function updateBlockExecutionItemOutput(
   revision: number,
   output: unknown,
 ) {
+  assertExecutionCompatible(executionId);
   await request(
     `/api/executions/${executionId}/blocks/${blockId}/items/${encodeURIComponent(itemId)}`,
     "PATCH",
@@ -808,10 +979,27 @@ export async function reorderBlockExecutionItems(
   revision: number,
   itemIds: string[],
 ) {
+  assertExecutionCompatible(executionId);
   await request(`/api/executions/${executionId}/blocks/${blockId}/items-order`, "PATCH", {
     revision,
     itemIds,
   });
+  await refreshState(true);
+}
+
+export async function runBlockExecutionItemAction(
+  executionId: string,
+  blockId: string,
+  itemId: string,
+  action: "regenerate" | "select",
+  revision: number,
+) {
+  assertExecutionCompatible(executionId);
+  await request(
+    `/api/executions/${executionId}/blocks/${blockId}/items/${encodeURIComponent(itemId)}/actions/${action}`,
+    "POST",
+    { revision },
+  );
   await refreshState(true);
 }
 
@@ -843,6 +1031,15 @@ export async function createLibraryCollection(
 
 export async function updateLibraryCollection(collection: StrategicCollection) {
   await request(`/api/library/collections/${collection.id}`, "PUT", collection);
+  await refreshState(true);
+}
+
+export async function importLibraryItems(
+  collectionId: string,
+  rows: ChannelLibraryItem["values"][],
+  importId: string,
+) {
+  await request("/api/library/batch", "POST", { collectionId, rows, importId });
   await refreshState(true);
 }
 

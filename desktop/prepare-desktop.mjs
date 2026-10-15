@@ -1,55 +1,31 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
+import macosPlatform from "./macos-platform.cjs";
+
+const { getNodeBinaryName, ensureExecutableBit } = macosPlatform;
 
 const projectRoot = process.cwd();
 const runtimeDirectory = path.join(projectRoot, "desktop-runtime");
 const desktopBuildDirectory = path.join(projectRoot, "desktop-dist");
 const nodeMajor = Number(process.versions.node.split(".")[0]);
-const runtimeNodeName = process.platform === "win32" ? "node.exe" : "node";
-const targetArchitecture = process.env.CONTENTFLOW_DESKTOP_TARGET_ARCH;
 
 if (nodeMajor !== 26) {
   throw new Error(`A V0 precisa ser montada com Node 26; versão atual: ${process.versions.node}.`);
 }
-if (targetArchitecture && targetArchitecture !== process.arch) {
-  throw new Error(
-    `O runtime Node privado precisa usar a arquitetura nativa. Solicitada: ${targetArchitecture}; atual: ${process.arch}.`,
-  );
-}
 
 mkdirSync(runtimeDirectory, { recursive: true });
 mkdirSync(desktopBuildDirectory, { recursive: true });
-if (process.platform === "darwin") {
-  const nodeLibraryDirectory = path.resolve(path.dirname(process.execPath), "..", "lib");
-  if (existsSync(nodeLibraryDirectory)) {
-    for (const libraryName of readdirSync(nodeLibraryDirectory)) {
-      if (/^libnode\..+\.dylib$/.test(libraryName)) {
-        const bundledLibraryPath = path.join(runtimeDirectory, libraryName);
-        if (existsSync(bundledLibraryPath)) chmodSync(bundledLibraryPath, 0o644);
-        copyFileSync(path.join(nodeLibraryDirectory, libraryName), bundledLibraryPath);
-      }
-    }
-  }
-}
-const bundledNodePath = path.join(runtimeDirectory, runtimeNodeName);
-if (process.platform !== "win32" && existsSync(bundledNodePath)) chmodSync(bundledNodePath, 0o755);
+const nodeBinaryName = getNodeBinaryName();
+const bundledNodePath = path.join(runtimeDirectory, nodeBinaryName);
 const bundledNodeVersion = existsSync(bundledNodePath)
   ? execFileSync(bundledNodePath, ["--version"], { encoding: "utf8" }).trim()
   : undefined;
 if (bundledNodeVersion !== `v${process.versions.node}`) {
   copyFileSync(process.execPath, bundledNodePath);
-  if (process.platform !== "win32") chmodSync(bundledNodePath, 0o755);
 }
+ensureExecutableBit(bundledNodePath);
 
 const nodeLicenseCandidates = [
   path.join(path.dirname(process.execPath), "LICENSE"),
@@ -91,35 +67,12 @@ await build({
 
 const packageJsonPath = path.join(projectRoot, "package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-let sourceCommit = "unknown";
-let sourceBranch = "unknown";
-try {
-  sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-  }).trim();
-  sourceBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-  }).trim();
-} catch {
-  // fallback if git command fails
-}
-
 writeFileSync(
   path.join(desktopBuildDirectory, "build-info.json"),
   JSON.stringify(
     {
       version: packageJson.version,
       node: process.versions.node,
-      platform: process.platform,
-      architecture: process.arch,
-      sourceCommit,
-      sourceBranch,
-      canonical_repository: "https://github.com/vini-duran/OS",
-      canonical_branch: "main",
-      origin_reference: "origin/main",
-      approval_status: "pending_independent_review",
       builtAt: new Date().toISOString(),
     },
     null,

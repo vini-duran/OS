@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
+import { LibraryBatchImport } from "@/components/library-batch-import";
+import { useAppPreferences } from "@/lib/app-preferences";
 import { CompositionCanvas, CompositionPreview } from "@/components/composition-canvas";
 import { TopBar } from "@/components/top-bar";
 import { Badge } from "@/components/ui/badge";
@@ -36,10 +38,13 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type {
+  RuntimeValue,
+  ChannelLibraryItem,
   StoredFile,
   StrategicCollection,
   StrategicCollectionField,
   ThumbnailLayout,
+  ValueShape,
 } from "@/lib/domain";
 import {
   createLibraryCollection,
@@ -51,9 +56,10 @@ import {
   useLibraryCollections,
   useLibraryItems,
   updateLibraryCollection,
+  updateLibraryItem,
 } from "@/lib/store";
 
-type CollectionItemValue = string | number | StoredFile | ThumbnailLayout;
+type CollectionItemValue = RuntimeValue;
 
 function isStoredFile(value: CollectionItemValue | undefined): value is StoredFile {
   return typeof value === "object" && value !== null && "url" in value;
@@ -87,9 +93,40 @@ function newField(index: number): StrategicCollectionField {
   return {
     id: crypto.randomUUID(),
     label: index === 0 ? "Nome" : "",
-    type: index === 0 ? "text" : "textarea",
+    shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
     required: index === 0,
   };
+}
+
+function shapeOption(shape: ValueShape) {
+  if (shape.kind === "content" && shape.cardinality === "one") return `content:${shape.family}`;
+  if (shape.kind === "control" && shape.cardinality === "one") return `control:${shape.control}`;
+  return "content:text";
+}
+
+function shapeFromOption(option: string): ValueShape {
+  if (option.startsWith("content:")) {
+    const family = option.slice("content:".length) as "text" | "image" | "audio" | "video";
+    return {
+      kind: "content",
+      family,
+      cardinality: "one",
+      representation: family === "text" ? "inline" : "artifact",
+    };
+  }
+  return {
+    kind: "control",
+    control: option.slice("control:".length) as "number" | "url" | "thumbnail_layout",
+    cardinality: "one",
+  };
+}
+
+function isControl(field: StrategicCollectionField, control: string) {
+  return field.shape.kind === "control" && field.shape.control === control;
+}
+
+function isContent(field: StrategicCollectionField, family: string) {
+  return field.shape.kind === "content" && field.shape.family === family;
 }
 
 function ChannelLibraryPage() {
@@ -154,6 +191,7 @@ function CollectionSection({
   items: ReturnType<typeof useLibraryItems>;
 }) {
   const [open, setOpen] = useState(false);
+  const { t } = useAppPreferences();
 
   const removeCollectionLock = useRef(false);
   async function removeCollection() {
@@ -193,7 +231,12 @@ function CollectionSection({
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-center gap-2">
-              <span className="truncate text-sm font-semibold">{collection.name}</span>
+              <span data-i18n-ignore className="truncate text-sm font-semibold">
+                {collection.name}
+              </span>
+              <Badge variant="outline">
+                {t(collection.usage === "consumable" ? "Consumível" : "Fixa")}
+              </Badge>
               <Badge variant="secondary">
                 {items.length} {items.length === 1 ? "item" : "itens"}
               </Badge>
@@ -201,7 +244,7 @@ function CollectionSection({
             <span className="mt-1.5 flex flex-wrap gap-x-1.5 gap-y-1">
               {collection.fields.map((field) => (
                 <Badge key={field.id} variant="outline" className="text-[10px] font-normal">
-                  {field.label}
+                  <span data-i18n-ignore>{field.label}</span>
                   {!field.required && " · opcional"}
                 </Badge>
               ))}
@@ -212,6 +255,7 @@ function CollectionSection({
           />
         </button>
         <div className="flex shrink-0 gap-1">
+          <LibraryBatchImport collection={collection} />
           <NewCollectionItem collection={collection} />
           <EditCollection collection={collection} />
           <Button
@@ -235,10 +279,10 @@ function CollectionSection({
                   <tr>
                     {collection.fields.map((field) => (
                       <th key={field.id} className="px-4 py-3 font-semibold sm:px-5">
-                        {field.label}
+                        <span data-i18n-ignore>{field.label}</span>
                       </th>
                     ))}
-                    <th className="w-12 px-3 py-3" aria-label="Ações" />
+                    <th className="w-32 px-3 py-3" aria-label="Ações" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -249,14 +293,21 @@ function CollectionSection({
                     >
                       {collection.fields.map((field) => (
                         <td key={field.id} className="max-w-sm px-4 py-3 sm:px-5">
-                          <CollectionValueCell field={field} value={item.values[field.id]} />
+                          <span data-i18n-ignore>
+                            <CollectionValueCell field={field} value={item.values[field.id]} />
+                          </span>
                         </td>
                       ))}
                       <td className="px-2 py-3 text-right">
+                        <Badge variant="outline">
+                          {t(item.reservation ? "Reservado" : "Salvo")}
+                        </Badge>
+                        <NewCollectionItem collection={collection} item={item} />
                         <Button
                           size="icon"
                           variant="ghost"
                           className="size-8 text-muted-foreground hover:text-destructive"
+                          disabled={Boolean(item.reservation)}
                           onClick={() =>
                             void removeLibraryItem(item.id).catch((error) =>
                               toast.error(error.message),
@@ -297,11 +348,11 @@ function CollectionValueCell({
     return <span className="text-muted-foreground">—</span>;
   }
 
-  if (field.type === "thumbnail_layout" && isThumbnailLayout(value)) {
+  if (isControl(field, "thumbnail_layout") && isThumbnailLayout(value)) {
     return <CompositionPreview boxes={value.boxes} className="w-44 min-w-44" />;
   }
 
-  if (field.type === "image" && isStoredFile(value)) {
+  if (isContent(field, "image") && isStoredFile(value)) {
     return (
       <img
         src={value.url}
@@ -311,7 +362,7 @@ function CollectionValueCell({
     );
   }
 
-  if (field.type === "url") {
+  if (isControl(field, "url")) {
     return (
       <a
         href={String(value)}
@@ -419,6 +470,8 @@ function EditCollection({ collection }: { collection: StrategicCollection }) {
 function NewCollection({ channelId }: { channelId: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [usage, setUsage] = useState<"fixed" | "consumable">("fixed");
+  const { t } = useAppPreferences();
   const [fields, setFields] = useState<StrategicCollectionField[]>([newField(0)]);
   const nameInputId = useId();
   const valid =
@@ -432,6 +485,7 @@ function NewCollection({ channelId }: { channelId: string }) {
 
   function reset() {
     setName("");
+    setUsage("fixed");
     setFields([newField(0)]);
   }
 
@@ -443,6 +497,7 @@ function NewCollection({ channelId }: { channelId: string }) {
       if (!valid) return;
       await createLibraryCollection({
         channelId,
+        usage,
         name: name.trim(),
         fields: fields.map((field) => ({ ...field, label: field.label.trim() })),
       });
@@ -489,6 +544,28 @@ function NewCollection({ channelId }: { channelId: string }) {
               placeholder="Ex: CTAs"
             />
           </div>
+          <div className="space-y-2">
+            <Label>{t("Uso da coleção")}</Label>
+            <Select
+              value={usage}
+              onValueChange={(value) => setUsage(value as "fixed" | "consumable")}
+            >
+              <SelectTrigger aria-label={t("Uso da coleção")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fixed">{t("Fixa")}</SelectItem>
+                <SelectItem value="consumable">{t("Consumível")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                usage === "fixed"
+                  ? "Os itens permanecem na coleção após o uso."
+                  : "Os itens são reservados ao escolher e excluídos somente quando o Processo termina. Falha ou cancelamento mantém a reserva até excluir ou reiniciar a execução.",
+              )}
+            </p>
+          </div>
 
           <div>
             <div className="flex items-center justify-between gap-3">
@@ -519,21 +596,22 @@ function NewCollection({ channelId }: { channelId: string }) {
                     placeholder={`Nome do campo ${index + 1}`}
                   />
                   <Select
-                    value={field.type}
-                    onValueChange={(type) =>
-                      updateField(field.id, { type: type as StrategicCollectionField["type"] })
+                    value={shapeOption(field.shape)}
+                    onValueChange={(option) =>
+                      updateField(field.id, { shape: shapeFromOption(option) })
                     }
                   >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="text">Texto curto</SelectItem>
-                      <SelectItem value="textarea">Texto longo</SelectItem>
-                      <SelectItem value="number">Número</SelectItem>
-                      <SelectItem value="image">Imagem</SelectItem>
-                      <SelectItem value="url">Link</SelectItem>
-                      <SelectItem value="thumbnail_layout">Layout de thumbnail</SelectItem>
+                      <SelectItem value="content:text">Texto</SelectItem>
+                      <SelectItem value="content:image">Imagem</SelectItem>
+                      <SelectItem value="content:audio">Áudio</SelectItem>
+                      <SelectItem value="content:video">Vídeo</SelectItem>
+                      <SelectItem value="control:number">Número</SelectItem>
+                      <SelectItem value="control:url">Link</SelectItem>
+                      <SelectItem value="control:thumbnail_layout">Layout de thumbnail</SelectItem>
                     </SelectContent>
                   </Select>
                   <label className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
@@ -610,21 +688,20 @@ function CollectionFieldEditor({
               placeholder={`Nome do campo ${index + 1}`}
             />
             <Select
-              value={field.type}
-              onValueChange={(type) =>
-                onUpdate(field.id, { type: type as StrategicCollectionField["type"] })
-              }
+              value={shapeOption(field.shape)}
+              onValueChange={(option) => onUpdate(field.id, { shape: shapeFromOption(option) })}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="text">Texto curto</SelectItem>
-                <SelectItem value="textarea">Texto longo</SelectItem>
-                <SelectItem value="number">Número</SelectItem>
-                <SelectItem value="image">Imagem</SelectItem>
-                <SelectItem value="url">Link</SelectItem>
-                <SelectItem value="thumbnail_layout">Layout de thumbnail</SelectItem>
+                <SelectItem value="content:text">Texto</SelectItem>
+                <SelectItem value="content:image">Imagem</SelectItem>
+                <SelectItem value="content:audio">Áudio</SelectItem>
+                <SelectItem value="content:video">Vídeo</SelectItem>
+                <SelectItem value="control:number">Número</SelectItem>
+                <SelectItem value="control:url">Link</SelectItem>
+                <SelectItem value="control:thumbnail_layout">Layout de thumbnail</SelectItem>
               </SelectContent>
             </Select>
             <label className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
@@ -651,7 +728,14 @@ function CollectionFieldEditor({
   );
 }
 
-function NewCollectionItem({ collection }: { collection: StrategicCollection }) {
+function NewCollectionItem({
+  collection,
+  item,
+}: {
+  collection: StrategicCollection;
+  item?: ChannelLibraryItem;
+}) {
+  const { t } = useAppPreferences();
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<Record<string, CollectionItemValue>>({});
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
@@ -664,13 +748,13 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
           ? value.boxes.length > 0
           : value !== undefined;
     if (field.required && !hasValue) return false;
-    if (field.type === "url" && hasValue) {
+    if (isControl(field, "url") && hasValue) {
       return typeof value === "string" && isValidHttpUrl(value.trim());
     }
     return true;
   });
 
-  async function uploadImage(fieldId: string, file?: File) {
+  async function uploadMedia(fieldId: string, file?: File) {
     if (!file) return;
     setUploadingFieldId(fieldId);
     try {
@@ -678,7 +762,7 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
       setValues((current) => ({ ...current, [fieldId]: storedFile }));
       toast.success(`${file.name} salvo localmente.`);
     } catch (error) {
-      toast.error("Não foi possível salvar a imagem", {
+      toast.error("Não foi possível salvar o arquivo", {
         description: error instanceof Error ? error.message : undefined,
       });
     } finally {
@@ -687,25 +771,30 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
   }
 
   const saveLock = useRef(false);
+  const [saving, setSaving] = useState(false);
   async function save() {
     if (saveLock.current) return;
     saveLock.current = true;
     try {
-      if (!valid) return;
-      await createLibraryItem({
-        channelId: collection.channelId,
-        collectionId: collection.id,
-        values: Object.fromEntries(
-          collection.fields.map((field) => {
-            const value = values[field.id];
-            if (typeof value === "string") {
-              return [field.id, field.type === "number" && value ? Number(value) : value.trim()];
-            }
-            return [field.id, value ?? ""];
-          }),
-        ),
-      });
-      toast.success(`Item adicionado a “${collection.name}”.`);
+      if (!valid || uploadingFieldId || item?.reservation) return;
+      setSaving(true);
+      const nextValues = Object.fromEntries(
+        collection.fields.map((field) => {
+          const value = values[field.id];
+          if (typeof value === "string") {
+            return [field.id, isControl(field, "number") && value ? Number(value) : value.trim()];
+          }
+          return [field.id, value ?? ""];
+        }),
+      );
+      if (item) await updateLibraryItem({ ...item, values: nextValues });
+      else
+        await createLibraryItem({
+          channelId: collection.channelId,
+          collectionId: collection.id,
+          values: nextValues,
+        });
+      toast.success(item ? t("Item atualizado") : t(`Item adicionado a “${collection.name}”.`));
       setValues({});
       setOpen(false);
     } catch (error) {
@@ -714,6 +803,7 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
       });
     } finally {
       saveLock.current = false;
+      setSaving(false);
     }
   }
 
@@ -721,7 +811,9 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
+        if (saving || uploadingFieldId) return;
         setOpen(nextOpen);
+        if (nextOpen) setValues(item ? structuredClone(item.values) : {});
         if (!nextOpen) {
           setValues({});
           setUploadingFieldId(null);
@@ -729,14 +821,31 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" variant="outline" className="gap-1.5">
-          <Plus className="size-3.5" /> Adicionar item
+        <Button
+          size={item ? "icon" : "sm"}
+          variant={item ? "ghost" : "outline"}
+          className={item ? "size-8" : "gap-1.5"}
+          disabled={Boolean(item?.reservation)}
+          aria-label={t(item ? "Editar item" : "Adicionar item")}
+        >
+          {item ? (
+            <Pencil className="size-3.5" />
+          ) : (
+            <>
+              <Plus className="size-3.5" /> {t("Adicionar item")}
+            </>
+          )}
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Novo item em {collection.name}</DialogTitle>
-          <DialogDescription>Preencha o formato definido para esta coleção.</DialogDescription>
+          <DialogTitle>
+            {item ? t("Editar item") : t("Novo item")} —{" "}
+            <span data-i18n-ignore>{collection.name}</span>
+          </DialogTitle>
+          <DialogDescription>
+            {t("Preencha o formato definido para esta coleção.")}
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           {collection.fields.map((field) => {
@@ -744,10 +853,10 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
             return (
               <div key={field.id} className="space-y-1.5">
                 <Label>
-                  {field.label}
+                  <span data-i18n-ignore>{field.label}</span>
                   {field.required && <span className="ml-1 text-destructive">*</span>}
                 </Label>
-                {field.type === "textarea" ? (
+                {isContent(field, "text") ? (
                   <Textarea
                     value={typeof fieldValue === "string" ? fieldValue : ""}
                     onChange={(event) =>
@@ -755,7 +864,7 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
                     }
                     rows={4}
                   />
-                ) : field.type === "thumbnail_layout" ? (
+                ) : isControl(field, "thumbnail_layout") ? (
                   <div className="rounded-xl border border-border/70 bg-background/30 p-3">
                     <CompositionCanvas
                       boxes={isThumbnailLayout(fieldValue) ? fieldValue.boxes : []}
@@ -771,23 +880,32 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
                       resolução 16:9.
                     </p>
                   </div>
-                ) : field.type === "image" ? (
+                ) : field.shape.kind === "content" && field.shape.family !== "text" ? (
                   <div className="rounded-xl border border-dashed border-input p-4">
                     {isStoredFile(fieldValue) ? (
                       <div className="space-y-3">
-                        <img
-                          src={fieldValue.url}
-                          alt={fieldValue.name}
-                          className="max-h-56 w-full rounded-lg object-contain"
-                        />
-                        <p className="truncate text-center text-xs text-muted-foreground">
+                        {field.shape.family === "image" ? (
+                          <img
+                            src={fieldValue.url}
+                            alt={fieldValue.name}
+                            className="max-h-56 w-full rounded-lg object-contain"
+                          />
+                        ) : field.shape.family === "audio" ? (
+                          <audio controls src={fieldValue.url} className="w-full" />
+                        ) : (
+                          <video controls src={fieldValue.url} className="max-h-56 w-full" />
+                        )}
+                        <p
+                          data-i18n-ignore
+                          className="truncate text-center text-xs text-muted-foreground"
+                        >
                           {fieldValue.name}
                         </p>
                       </div>
                     ) : (
                       <div className="text-center text-xs text-muted-foreground">
                         <ImageIcon className="mx-auto mb-2 size-5" />
-                        Nenhuma imagem selecionada
+                        {t("Nenhum arquivo selecionado")}
                       </div>
                     )}
                     <label className="mt-3 flex cursor-pointer items-center justify-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm">
@@ -796,20 +914,24 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
                       ) : (
                         <ImageIcon className="size-4" />
                       )}
-                      {isStoredFile(fieldValue) ? "Substituir imagem" : "Selecionar imagem"}
+                      {t(isStoredFile(fieldValue) ? "Substituir arquivo" : "Selecionar arquivo")}
                       <input
                         type="file"
-                        accept="image/*"
+                        accept={`${field.shape.family}/*`}
                         className="hidden"
-                        disabled={uploadingFieldId === field.id}
-                        onChange={(event) => void uploadImage(field.id, event.target.files?.[0])}
+                        disabled={Boolean(uploadingFieldId) || saving}
+                        onChange={(event) => void uploadMedia(field.id, event.target.files?.[0])}
                       />
                     </label>
                   </div>
                 ) : (
                   <Input
                     type={
-                      field.type === "number" ? "number" : field.type === "url" ? "url" : "text"
+                      isControl(field, "number")
+                        ? "number"
+                        : isControl(field, "url")
+                          ? "url"
+                          : "text"
                     }
                     value={
                       typeof fieldValue === "string" || typeof fieldValue === "number"
@@ -819,10 +941,10 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
                     onChange={(event) =>
                       setValues((current) => ({ ...current, [field.id]: event.target.value }))
                     }
-                    placeholder={field.type === "url" ? "https://..." : undefined}
+                    placeholder={isControl(field, "url") ? "https://..." : undefined}
                   />
                 )}
-                {field.type === "url" &&
+                {isControl(field, "url") &&
                   typeof fieldValue === "string" &&
                   fieldValue.trim() &&
                   !isValidHttpUrl(fieldValue.trim()) && (
@@ -833,8 +955,13 @@ function NewCollectionItem({ collection }: { collection: StrategicCollection }) 
               </div>
             );
           })}
-          <Button className="w-full gradient-brand text-white" disabled={!valid} onClick={save}>
-            Adicionar item
+          <Button
+            className="w-full gradient-brand text-white"
+            disabled={!valid || saving || Boolean(uploadingFieldId) || Boolean(item?.reservation)}
+            onClick={save}
+          >
+            {saving && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+            {t(item ? "Salvar alterações" : "Adicionar item")}
           </Button>
         </div>
       </DialogContent>

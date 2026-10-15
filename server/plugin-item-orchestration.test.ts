@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { BlockExecutionItem } from "../src/lib/domain";
 import type { PluginCapability, PluginExecutionRequest } from "../src/lib/plugin-contract";
-import { createPersistentPluginJob } from "./plugin-job-store";
+import { createPersistentPluginJob, type PersistentPluginJob } from "./plugin-job-store";
 import {
   appendOrchestratedOutput,
   blockExecutionItemsForJob,
-  combineOrchestratedTextOutput,
+  canFinalizeFromDurableOrchestratedItems,
   completeCurrentOrchestratedItem,
+  belongsToSameItemActionGroup,
   declaredItemOrchestration,
   failCurrentOrchestratedItem,
   invocationRequestForJob,
   itemProgressForJob,
+  itemActionRequestForJob,
   legacyItemOrchestration,
-  requestForNextOrchestratedItem,
+  orchestratedPartialValues,
   resumedItemOrchestration,
   resumedItemOrchestrationFromItems,
   selectedItemOrchestrationFromItems,
@@ -30,15 +33,7 @@ const request = {
   settings: {},
   inputs: { prompts: ["one", "two", "three"] },
   inputContract: [],
-  outputContract: [
-    {
-      key: "generated_images",
-      portKey: "images",
-      label: "Imagens",
-      type: "list",
-      required: true,
-    },
-  ],
+  outputContract: [],
   context: {
     locale: "pt-BR",
     timeZone: "America/Sao_Paulo",
@@ -58,6 +53,59 @@ const capability = {
   },
 } as PluginCapability;
 
+test("retoma lacunas no meio do lote sem atribuir o output de outro item pela contagem", () => {
+  const batchRequest = {
+    ...request,
+    inputs: { prompts: Array.from({ length: 16 }, (_, i) => `scene ${i}`) },
+  };
+  const orchestration: NonNullable<PersistentPluginJob["itemOrchestration"]> =
+    declaredItemOrchestration(capability, batchRequest)!;
+  orchestration.workItems = orchestration.workItems!.map((item, index) =>
+    [8, 11].includes(index) ? item : { ...item, status: "completed", output: `result ${index}` },
+  );
+  orchestration.accumulatedItems = orchestration.workItems
+    .filter((item) => item.output !== undefined)
+    .map((item) => item.output!);
+  const prior = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request: batchRequest,
+    timeoutMs: 60_000,
+    itemOrchestration: orchestration,
+  });
+  const resumed: NonNullable<PersistentPluginJob["itemOrchestration"]> = resumedItemOrchestration(
+    capability,
+    { ...batchRequest, attempt: 2 },
+    prior,
+  )!;
+  assert.equal(resumed.currentIndex, 8);
+  assert.deepEqual(
+    resumed.workItems!.filter((item) => item.status !== "completed").map((item) => item.order),
+    [8, 11],
+  );
+  assert.equal(resumed.workItems![8].output, undefined);
+  assert.equal(resumed.workItems![11].output, undefined);
+  assert.equal(resumed.workItems![9].output, "result 9");
+  assert.equal(resumed.workItems![12].output, "result 12");
+  assert.deepEqual(resumed.itemIds, orchestration.itemIds);
+  prior.request.outputContract = [
+    {
+      key: "images",
+      portKey: "images",
+      label: "Images",
+      required: true,
+      shape: { kind: "content", family: "text", cardinality: "many", representation: "inline" },
+    },
+  ];
+  prior.partialValues = { images: orchestration.accumulatedItems as string[] };
+  prior.itemOrchestration!.workItems![8].status = "completed";
+  prior.itemOrchestration!.workItems![8].output = "new result 8";
+  const values = orchestratedPartialValues(prior, { images: ["new result 8"] });
+  assert.equal((values.images as string[]).length, 15);
+  assert.equal((values.images as string[])[8], "new result 8");
+  assert.equal((values.images as string[])[9], "result 9");
+});
+
 test("expande uma lista em chamadas atômicas com ID e posição", () => {
   const itemOrchestration = declaredItemOrchestration(capability, request);
   const job = createPersistentPluginJob({
@@ -74,7 +122,6 @@ test("expande uma lista em chamadas atômicas com ID e posição", () => {
     },
   });
   job.itemOrchestration!.currentIndex = 1;
-  job.partialValues = { generated_images: ["image-a"] };
   const invocation = invocationRequestForJob(job, { mode: "start" });
   assert.equal(invocation.inputs.prompts, "two");
   assert.equal(invocation.configuration.accountProfile, "backup");
@@ -82,166 +129,89 @@ test("expande uma lista em chamadas atômicas com ID e posição", () => {
     itemId: job.itemOrchestration!.itemIds[1],
     index: 1,
     total: 3,
-    completedItems: ["image-a"],
   });
 });
 
-test("acumula outputs parciais sem repetir itens anteriores", () => {
-  const first = appendOrchestratedOutput({}, { images: ["image-a"] }, "images");
-  const second = appendOrchestratedOutput(first, { images: ["image-b"] }, "images");
-  assert.deepEqual(second.images, ["image-a", "image-b"]);
-});
-
-test("combina itens textuais em uma saída longa na ordem original", () => {
-  assert.deepEqual(
-    combineOrchestratedTextOutput(
-      { parts: ["Bloco um", "Bloco dois"], result: "Bloco dois" },
-      "parts",
-      "result",
-    ),
-    { parts: ["Bloco um", "Bloco dois"], result: "Bloco um\n\nBloco dois" },
-  );
-});
-
-test("continua a mesma conversa no item seguinte e preserva contexto para fallback", () => {
-  const job = createPersistentPluginJob({
+test("resposta terminal pode consolidar unidades já publicadas sem repetir output agregado", () => {
+  const itemOrchestration = declaredItemOrchestration(capability, request)!;
+  let job = createPersistentPluginJob({
     pluginId: "test.browser",
     pluginVersion: "1.0.0",
     request,
     timeoutMs: 60_000,
+    itemOrchestration,
   });
-  const nextRequest = requestForNextOrchestratedItem(job, {
-    conversationId: "https://provider.test/chat/1",
-    sourceProfile: "primary",
-    fallbackContext: "Bloco 1 concluído",
-  });
-  assert.deepEqual(nextRequest.conversation, {
-    mode: "reuse",
-    id: "https://provider.test/chat/1",
-    sourceProfile: "primary",
-    fallbackContext: "Bloco 1 concluído",
-  });
+  for (const output of ["image-one", "image-two", "image-three"]) {
+    job = completeCurrentOrchestratedItem(job, output);
+    const orchestration = job.itemOrchestration;
+    assert.ok(orchestration);
+    const workItems = orchestration.workItems;
+    assert.ok(workItems);
+    const next = workItems.findIndex((item) => item.status !== "completed");
+    if (next >= 0) orchestration.currentIndex = next;
+  }
+
+  assert.equal(canFinalizeFromDurableOrchestratedItems(job, undefined), true);
+  assert.equal(canFinalizeFromDurableOrchestratedItems(job, "duplicate"), false);
 });
 
-test("incrementa a tentativa lógica ao repetir um job", () => {
-  const job = createPersistentPluginJob({
-    pluginId: "test.browser",
-    pluginVersion: "1.0.0",
-    request,
-    timeoutMs: 60_000,
-  });
-  job.retryCount = 2;
-  assert.equal(invocationRequestForJob(job, { mode: "start" }).attempt, 3);
-});
-
-test("troca continuação por contexto quando o fallback muda de perfil", () => {
-  const job = createPersistentPluginJob({
-    pluginId: "test.browser",
-    pluginVersion: "1.0.0",
-    request: {
-      ...request,
-      conversation: {
-        mode: "reuse",
-        id: "https://provider.test/chat/1",
-        sourceProfile: "primary",
-        fallbackContext: "Resultado anterior",
-        continuationMessage: "Ajuste somente o contraste.",
+test("usa uma associação estrutural declarada quando a coleção principal está ausente", () => {
+  const associatedCapability = {
+    ...capability,
+    execution: {
+      ...capability.execution,
+      itemOrchestration: {
+        ...capability.execution.itemOrchestration!,
+        collectionAssociations: [
+          {
+            key: "prompt-records",
+            inputPort: "prompt_records",
+            outputPort: "images",
+          },
+        ],
       },
     },
-    timeoutMs: 60_000,
-    profileFallback: {
-      configurationKey: "accountProfile",
-      candidates: ["primary", "backup"],
-      activeIndex: 1,
-      history: [],
+  } satisfies PluginCapability;
+  const associatedRequest = {
+    ...request,
+    inputs: {
+      prompt_records: [{ visual_prompt: "Ana em plano médio" }, { visual_prompt: "Beto em close" }],
     },
-  });
-  assert.deepEqual(invocationRequestForJob(job, { mode: "start" }).conversation, {
-    mode: "new",
-    fallbackContext: "Resultado anterior",
-    continuationMessage: "Ajuste somente o contraste.",
-  });
+  } satisfies PluginExecutionRequest;
+
+  const orchestration = declaredItemOrchestration(associatedCapability, associatedRequest);
+  assert.equal(orchestration?.inputPort, "prompt_records");
+  assert.equal(orchestration?.outputPort, "images");
+  assert.equal(orchestration?.workItems?.length, 2);
 });
 
-test("transmite recoveryAuthorization somente em start válido com três alvos coincidentes e retryCount 0", () => {
-  const recoveryAuth = {
-    version: "1" as const,
-    token: "auth-token-123",
-    authorizedAt: "2026-09-09T12:00:00.000Z",
-    origin: "user_action" as const,
-    keyId: "core_ed25519_test",
-    algorithm: "ed25519" as const,
-    target: {
-      executionId: "execution",
-      blockId: "block",
-      attempt: 1,
-    },
-    signature: "dGVzdC1zaWduYXR1cmU=",
-  };
-  const makeJob = (overrides?: Partial<typeof recoveryAuth.target>) =>
-    createPersistentPluginJob({
-      pluginId: "test.browser",
-      pluginVersion: "1.0.0",
-      request: {
-        ...request,
-        recoveryAuthorization: {
-          ...recoveryAuth,
-          target: { ...recoveryAuth.target, ...overrides },
-        },
+test("preserva a associação estrutural quando ela contém um único item", () => {
+  const associatedCapability = {
+    ...capability,
+    execution: {
+      ...capability.execution,
+      itemOrchestration: {
+        ...capability.execution.itemOrchestration!,
+        collectionAssociations: [
+          {
+            key: "prompt-records",
+            inputPort: "prompt_records",
+            outputPort: "images",
+          },
+        ],
       },
-      timeoutMs: 60_000,
-    });
+    },
+  } satisfies PluginCapability;
+  const associatedRequest = {
+    ...request,
+    inputs: {
+      prompt_records: [{ visual_prompt: "Ana em plano médio" }],
+    },
+  } satisfies PluginExecutionRequest;
 
-  // 1. Start válido com alvos coincidentes e retryCount 0 repassa autorização
-  const validJob = makeJob();
-  const startReq = invocationRequestForJob(validJob, { mode: "start" });
-  assert.deepEqual(startReq.recoveryAuthorization, recoveryAuth);
-
-  // 2. Resume suprime a autorização
-  const resumeReq = invocationRequestForJob(validJob, { mode: "resume", jobId: "remote-job-1" });
-  assert.equal(resumeReq.recoveryAuthorization, undefined);
-
-  // 3. Cancel suprime a autorização
-  const cancelReq = invocationRequestForJob(validJob, { mode: "cancel", jobId: "remote-job-1" });
-  assert.equal(cancelReq.recoveryAuthorization, undefined);
-
-  // 4. Retry automático (retryCount > 0) suprime a autorização mesmo em start
-  validJob.retryCount = 1;
-  const autoRetryReq = invocationRequestForJob(validJob, { mode: "start" });
-  assert.equal(autoRetryReq.attempt, 2);
-  assert.equal(autoRetryReq.recoveryAuthorization, undefined);
-
-  // 5. Divergência individual: executionId divergente
-  const diffExecJob = makeJob({ executionId: "different-exec-id" });
-  assert.equal(
-    invocationRequestForJob(diffExecJob, { mode: "start" }).recoveryAuthorization,
-    undefined,
-  );
-
-  // 6. Divergência individual: blockId divergente
-  const diffBlockJob = makeJob({ blockId: "different-block-id" });
-  assert.equal(
-    invocationRequestForJob(diffBlockJob, { mode: "start" }).recoveryAuthorization,
-    undefined,
-  );
-
-  // 7. Divergência individual: attempt divergente
-  const diffAttemptJob = makeJob({ attempt: 99 });
-  assert.equal(
-    invocationRequestForJob(diffAttemptJob, { mode: "start" }).recoveryAuthorization,
-    undefined,
-  );
-});
-
-test("consumidores e requests legados sem autorização permanecem compatíveis", () => {
-  const job = createPersistentPluginJob({
-    pluginId: "test.browser",
-    pluginVersion: "1.0.0",
-    request: { ...request },
-    timeoutMs: 60_000,
-  });
-  const startReq = invocationRequestForJob(job, { mode: "start" });
-  assert.equal(startReq.recoveryAuthorization, undefined);
+  const orchestration = declaredItemOrchestration(associatedCapability, associatedRequest);
+  assert.equal(orchestration?.inputPort, "prompt_records");
+  assert.equal(orchestration?.workItems?.length, 1);
 });
 
 test("materializa itens operacionais com identidade e linhagem persistentes", () => {
@@ -299,6 +269,97 @@ test("materializa itens operacionais com identidade e linhagem persistentes", ()
   assert.equal(resumed.workItems![1].attempt, 2);
 });
 
+test("progresso do lote não é substituído por variantes incrementais", () => {
+  const orchestration = declaredItemOrchestration(capability, request)!;
+  let job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request,
+    timeoutMs: 60_000,
+    itemOrchestration: orchestration,
+  });
+  job = startCurrentOrchestratedItem(job);
+  job = completeCurrentOrchestratedItem(job, ["image-a"]);
+  job.incrementalItems = [
+    {
+      id: "variant-a",
+      order: 0,
+      input: "one",
+      output: "image-a",
+      status: "completed",
+      attempt: 1,
+      attempts: [],
+      pluginCorrelation: { key: "variant-a", outputPort: "images", outputKey: "images" },
+    },
+  ];
+
+  assert.deepEqual(itemProgressForJob(job), {
+    total: 3,
+    completed: 1,
+    pending: 2,
+    currentIndex: 0,
+    failedIndex: undefined,
+  });
+});
+
+test("remove unidades obsoletas de tentativas antigas sem perder unidades retomadas pelo job", () => {
+  const itemOrchestration = declaredItemOrchestration(capability, request)!;
+  const resumedItem = itemOrchestration.workItems![0] as BlockExecutionItem;
+  resumedItem.attempt = 1;
+  resumedItem.status = "completed";
+  resumedItem.output = "image-a";
+  const job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request: { ...request, attempt: 2 },
+    timeoutMs: 60_000,
+    itemOrchestration,
+  });
+  const currentItems = [
+    {
+      id: "obsolete-input",
+      kind: "list_item" as const,
+      order: 0,
+      input: "old",
+      status: "pending" as const,
+      attempt: 1,
+      attempts: [],
+      provenance: { origin: "block_input" as const, inputPort: "old-port" },
+    },
+    {
+      id: "current-input",
+      kind: "scalar" as const,
+      order: 0,
+      input: "current",
+      status: "pending" as const,
+      attempt: 2,
+      attempts: [],
+      provenance: { origin: "block_input" as const, inputPort: "context" },
+    },
+  ];
+
+  const items = blockExecutionItemsForJob(job, currentItems)!;
+
+  assert.equal(
+    items.some((item) => item.id === "obsolete-input"),
+    false,
+  );
+  assert.equal(
+    items.some((item) => item.id === "current-input"),
+    false,
+  );
+  assert.equal(
+    items.some((item) => item.id === itemOrchestration.workItems![0].id),
+    true,
+  );
+});
+
+test("acumula outputs parciais sem repetir itens anteriores", () => {
+  const first = appendOrchestratedOutput({}, { images: ["image-a"] }, "images");
+  const second = appendOrchestratedOutput(first, { images: ["image-b"] }, "images");
+  assert.deepEqual(second.images, ["image-a", "image-b"]);
+});
+
 test("retoma um lote a partir do primeiro item ainda não concluído", () => {
   const previous = createPersistentPluginJob({
     pluginId: "test.browser",
@@ -310,6 +371,10 @@ test("retoma um lote a partir do primeiro item ainda não concluído", () => {
   previous.status = "failed";
   previous.itemOrchestration!.currentIndex = 2;
   previous.itemOrchestration!.accumulatedItems = ["image-a", "image-b"];
+  for (const [index, output] of ["image-a", "image-b"].entries()) {
+    previous.itemOrchestration!.workItems![index].status = "completed";
+    previous.itemOrchestration!.workItems![index].output = output;
+  }
 
   assert.deepEqual(itemProgressForJob(previous), {
     total: 3,
@@ -381,7 +446,7 @@ test("retoma itens pendentes usando somente o estado persistido da execução", 
   assert.deepEqual(resumed?.accumulatedItems, ["image-a"]);
 });
 
-test("considera todos os itens concluídos quando o job termina", () => {
+test("mantém fallback legado quando o snapshot ainda não possui estado durável por item", () => {
   const job = createPersistentPluginJob({
     pluginId: "test.browser",
     pluginVersion: "1.0.0",
@@ -405,4 +470,125 @@ test("reconstrói uma saída textual a partir dos itens acumulados", () => {
   const second = appendOrchestratedOutput(first, { parts: ["segunda"] }, "parts", "result", "\n\n");
   assert.deepEqual(second.parts, ["primeira", "segunda"]);
   assert.equal(second.result, "primeira\n\nsegunda");
+});
+
+test("incrementa a tentativa lógica ao repetir um job", () => {
+  const job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request,
+    timeoutMs: 60_000,
+  });
+  job.retryCount = 2;
+  assert.equal(invocationRequestForJob(job, { mode: "start" }).attempt, 3);
+});
+
+test("troca continuação por contexto quando o fallback muda de perfil", () => {
+  const job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request: {
+      ...request,
+      conversation: {
+        mode: "reuse",
+        id: "https://provider.test/chat/1",
+        sourceProfile: "primary",
+        fallbackContext: "Resultado anterior",
+        continuationMessage: "Ajuste somente o contraste.",
+      },
+    },
+    timeoutMs: 60_000,
+    profileFallback: {
+      configurationKey: "accountProfile",
+      candidates: ["primary", "backup"],
+      activeIndex: 1,
+      history: [],
+    },
+  });
+  assert.deepEqual(invocationRequestForJob(job, { mode: "start" }).conversation, {
+    mode: "new",
+    fallbackContext: "Resultado anterior",
+    continuationMessage: "Ajuste somente o contraste.",
+  });
+});
+
+test("regenera uma única variante por item_action, preservando o lote, a posição e a tentativa", () => {
+  const job = createPersistentPluginJob({
+    pluginId: "test.browser",
+    pluginVersion: "1.0.0",
+    request,
+    timeoutMs: 60_000,
+    itemOrchestration: declaredItemOrchestration(capability, request),
+  });
+  const batchItem = job.itemOrchestration!.workItems![1]!;
+  const variant = {
+    id: "core-variant-b",
+    order: 3,
+    input: "two",
+    output: "image-b",
+    status: "completed" as const,
+    attempt: 1,
+    attempts: [],
+    pluginCorrelation: {
+      key: "provider-generation",
+      variantKey: "candidate-b",
+      batchItemId: batchItem.id,
+      outputPort: "images",
+      outputKey: "images",
+    },
+  };
+  const action = itemActionRequestForJob({
+    job,
+    item: variant,
+    outputPort: "images",
+    attempt: 2,
+    traceId: "action-trace",
+  });
+
+  assert.deepEqual(action.invocation, {
+    mode: "item_action",
+    action: "regenerate",
+    itemId: "core-variant-b",
+    outputPort: "images",
+  });
+  assert.deepEqual(action.batch, { itemId: batchItem.id, index: 1, total: 3 });
+  assert.deepEqual(action.itemAction, {
+    key: "provider-generation",
+    variantKey: "candidate-b",
+    input: "two",
+    output: "image-b",
+    attempt: 2,
+  });
+  assert.equal(action.attempt, 2);
+});
+
+test("seleção local não desloca variantes de outro item de lote", () => {
+  const first = {
+    id: "variant-a1",
+    order: 0,
+    input: "cidade",
+    status: "completed" as const,
+    attempt: 1,
+    attempts: [],
+    pluginCorrelation: {
+      key: "provider",
+      variantKey: "a",
+      batchItemId: "batch-city",
+      outputPort: "images",
+      outputKey: "images",
+    },
+  };
+  const sibling = {
+    ...first,
+    id: "variant-b1",
+    pluginCorrelation: { ...first.pluginCorrelation, variantKey: "b" },
+  };
+  const otherBatch = {
+    ...first,
+    id: "variant-a2",
+    pluginCorrelation: { ...first.pluginCorrelation, batchItemId: "batch-forest" },
+  };
+
+  assert.equal(belongsToSameItemActionGroup(first, sibling), true);
+  assert.equal(belongsToSameItemActionGroup(first, otherBatch), false);
 });

@@ -1,109 +1,29 @@
-# Referência: ContentFlow Plugin API v1
+# Referência: ContentFlow Plugin API v2
 
-Leia este arquivo sempre que o plugin envolver manifesto, portas, tipos, execução, jobs, retries, artifacts, versionamento ou compatibilidade.
+Leia [`docs/CONTENT_CONTRACT.md`](documentation.md) e [`docs/ecosystem/protocol.md`](documentation.md).
 
-## Manifesto essencial
+Cada capability declara portas semânticas com `key`, `label`, `shape` e `required`. O `shape` é um `ContentShape`, `ControlShape` ou `RecordShape`. Não existem `acceptedTypes`, `producedTypes`, `acceptedInputTypes`, `producedOutputTypes`, `multiple` ou `deliveryTypes`.
 
-O arquivo `contentflow.plugin.json` fica na raiz do pacote. Os campos essenciais são `apiVersion: "1"`, `id` reverso e imutável, `name`, `version` SemVer, `description`, `author`, `license`, `runtime`, `entrypoint` e `capabilities`. Declare `minCoreVersion` quando aplicável. O runtime v1 é Node/ESM, normalmente `>=26 <27`.
+O handler lê `request.inputs[portKey]` e devolve `values[portKey]`. Cardinalidade pertence ao shape da porta. Um plugin nunca infere cardinalidade por array nem devolve uma família genérica de arquivo/mídia.
 
-Cada capability deve declarar `id`, `operator` (`IA` ou `Código`), `blockTypes`, `processTypes` quando necessário, `inputPorts`, `outputPorts`, `execution`, `sideEffects`, `cost`, `dataPolicy`, `blockConfigSchema` e, quando útil, `outputSchema`. `deliveryTypes` classifica o pacote para descoberta, mas não substitui as portas. `instructionUsage` informa se a capability exige, aceita ou ignora a instrução resolvida do bloco; ausência equivale a `optional`.
+Para saídas `text/many` e `record/many` produzidas por IA, o usuário descreve a intenção e o
+plugin traduz o `outputContract` para instrução técnica estruturada, faz parsing estrito e devolve
+somente o valor tipado. Introduções, Markdown ou comentários não podem virar itens por divisão de
+linhas. Quando um campo `identifier` declara `referencesInputId`, use somente os IDs concedidos em
+`inputDeliveries`; o Core valida a integridade e o plugin consumidor materializa a relação na
+operação específica do fornecedor.
 
-No manifesto, `branding.iconPath` pode apontar para PNG/WebP local de até 512 KiB, relativo ao pacote, sem URL, caminho absoluto, `..` ou symlink externo. Recomenda-se 256 × 256; o autor precisa possuir direito de uso. `profileSetup`, `execution.itemOrchestration` e `supportsConversationContinuation` são contratos funcionais: só os declare quando handler e testes cobrirem seus ciclos completos.
+O request preserva contratos, deliveries, IDs e contexto concedidos pelo Core. O plugin não inventa IDs universais. `execution.itemOrchestration` pode operar um membro de uma porta `many`, mantendo a identidade atribuída pelo Core.
 
-Use schemas JSON Schema Draft 2020-12 dentro do subconjunto aceito pelo núcleo. Configurações devem ter raiz `object`; prefira `additionalProperties: false`; defaults precisam satisfazer o próprio schema; propriedades desconhecidas devem ser rejeitadas antes de invocar o handler.
+Em uma porta de saída `many` orquestrada item a item, uma unidade pode devolver um valor atômico
+ou uma lista de variantes atômicas do mesmo shape. Não envolva um valor em lista por conveniência:
+use a lista somente quando a ferramenta realmente produziu mais de uma variante para a unidade.
+O Core valida cada variante e preserva a mesma linhagem de origem em todas elas.
 
-## Portas e binding
+Sucesso, pending, erro, cancelamento, idempotência, artifacts, profiles, Browser Bridge e services mantêm as regras de segurança do protocolo público. Artifacts são representações materiais de conteúdo; não são família.
 
-Portas são semânticas. Defina `key` estável, `label`, tipos aceitos/produzidos, `required`, `multiple`, `recordFields` e `presentation` somente quando necessário. O núcleo filtra por operador, bloco e processo, faz binding automático apenas quando inequívoco e solicita mapeamento quando houver ambiguidade.
+Erros reportam códigos e fatos de recovery estruturados; nunca devolvem a ação desejada. Distinga `BRIDGE_MISSING`, `BRIDGE_INCOMPATIBLE`, `BRIDGE_PAGE_UNAVAILABLE` e `COMMAND_OUTCOME_UNKNOWN`, porque instalação, página transitória e efeito externo incerto possuem recuperações incompatíveis. O Core pode enviar `recoveryDirective.reload_page` somente depois de decidir que a recarga é segura; o cliente aplica a diretiva antes de validar novamente a Bridge. Mensagem humana não participa da política, e um plugin não escolhe retry, reload, fallback, reconciliação ou intervenção.
 
-O handler deve usar `request.inputs[portKey]`, nunca labels. Outputs usam as chaves técnicas das portas declaradas. `acceptedInputTypes` e `producedOutputTypes` são resumos; as portas são a autoridade de binding.
+A Bridge reporta fatos técnicos; o plugin é a camada de tradução semântica do fornecedor. Normalize textos/códigos equivalentes para a taxonomia universal. Atividade incomum, tráfego suspeito e detecção anti-bot tornam-se `PROVIDER_SECURITY_CHALLENGE` com intervenção `provider_security_challenge`, não `RATE_LIMIT`; o Core decide o que fazer. Não envie texto específico para o Core interpretar e não classifique por conveniência quando a recuperação segura for diferente.
 
-## Request e services
-
-A requisição inclui, entre outros campos, `executionId`, `traceId`, `blockId`, `capabilityId`, `attempt`, `invocation`, `configuration`, `settings`, `inputs`, `inputContract`, `inputDeliveries`, `outputContract`, `validation`, `retryFeedback`, `resolvedInstruction`, `unresolvedInstructionVariables`, `batch`, `conversation` e `context`.
-
-Capabilities com `instructionUsage: required` devem falhar de forma clara quando `resolvedInstruction` estiver vazia; `optional` pode combiná-la com configuração própria; `not_applicable` deve ignorá-la. Nunca volte ao template cru quando variáveis ficaram não resolvidas sem tratar `unresolvedInstructionVariables`.
-
-Plugins que preservam uma conversa no provedor podem declarar `supportsConversationContinuation: true`. O request recebe `conversation: { mode: "new" }` ou `conversation: { mode: "reuse", id: "..." }`; o sucesso devolve opcionalmente `conversation: { id: "..." }`. Trate o ID como opaco, valide que pertence ao provedor esperado e nunca inclua tokens. O núcleo só permite reutilização entre blocos anteriores com o mesmo plugin e a mesma conexão local.
-
-`execution.itemOrchestration` declara `inputPort`, `outputPort` e `mode: "sequential"`. O núcleo chama uma vez por item, fornece `request.batch` com ID/índice/total, acumula o output e persiste cada entrega antes da seguinte. O plugin não cria o loop editorial nem reprocessa itens já concluídos.
-
-`profileSetup` habilita `invocation.mode = "configure"` com `action = "status"` ou `"prepare"`. Essas chamadas não pertencem a Projeto e retornam `values.ready`. Perfis alternativos só usam `fallbackConfigurationKey` com aliases preparados explicitamente. Qualquer resposta de erro pode avançar para o próximo alias, inclusive autenticação, rate limit, cota, permissão, upgrade, bloqueio ou validação de output; cancelamento e lista esgotada encerram o fallback.
-
-A assinatura é `execute(request, services)`. Serviços:
-
-| Serviço                          | Regra                                                       |
-| -------------------------------- | ----------------------------------------------------------- |
-| `signal`                         | Encaminhar para operações abortáveis.                       |
-| `getSecret(key)`                 | Só aceita chaves declaradas no manifesto.                   |
-| `resolveInputFile(file)`         | Resolve `StoredFile` autorizado em staging.                 |
-| `getOutputPath(relativePath)`    | Retorna caminho temporário exclusivo de saída.              |
-| `getWorkspacePath(relativePath)` | Retorna caminho persistente dentro do workspace autorizado. |
-
-Secrets nunca aparecem no envelope serializável, Método, snapshot, log ou artifact.
-
-## Valores universais
-
-A API v1 usa `text`, `textarea`, `number`, `boolean`, `list`, `records`, `select`, `multiselect`, `datetime`, `url`, `file`, `files`, `image`, `audio`, `video`, `approval` e `thumbnail_layout`. Strings são UTF-8; números devem ser finitos; datas usam ISO 8601; listas preservam ordem; records não podem conter campos desconhecidos; records não são aninhados.
-
-O núcleo gera IDs universais depois de validar a resposta. Um escalar gera um item; listas, records e coleções de arquivos geram um item por elemento. Não invente IDs do núcleo. IDs externos como `jobId` e `assetId` podem ser preservados como campos de proveniência.
-
-## Respostas
-
-Sucesso:
-
-```js
-{
-  status: "success",
-  values: { result: "valor" },
-  artifacts: [],
-  usage: {},
-  logs: []
-}
-```
-
-Pendência:
-
-```js
-{
-  status: "pending",
-  jobId: "id-opaco",
-  pollAfterMs: 5000,
-  progress: 0.4,
-  message: "Em processamento",
-  partialValues: {},
-  partialArtifacts: []
-}
-```
-
-Erro:
-
-```js
-{
-  status: "error",
-  code: "RATE_LIMIT",
-  message: "Limite temporário do provedor.",
-  retryable: true,
-  retryAfterMs: 30000
-}
-```
-
-Códigos recomendados: `INVALID_INPUT`, `INVALID_CONFIGURATION`, `AUTHENTICATION_FAILED`, `PERMISSION_DENIED`, `NOT_FOUND`, `RATE_LIMIT`, `UPSTREAM_UNAVAILABLE`, `TIMEOUT`, `OUTPUT_VALIDATION_FAILED`, `JOB_FAILED` e `CANCELLED`.
-
-## Execução assíncrona e idempotência
-
-Use `invocation.mode = "start"`, `"resume"` e `"cancel"`. `start` inicia o job; `resume` consulta o mesmo `jobId`; `cancel` deve ser idempotente. O handler não pode depender de memória global, PID ou processo sobrevivente. Estado necessário deve estar no provedor, em `jobId` ou no workspace autorizado.
-
-A chave lógica é `executionId + blockId + capabilityId + attempt + invocation.mode`. `start` repetido para a mesma chave não pode criar jobs ou cobranças duplicadas. `resume` pode ser repetido. Após timeout com efeito externo incerto, reconcilie o status pelo ID externo antes de repetir.
-
-## Blocos
-
-`BUSCAR` consulta fontes e preserva origem/licença. `ESCOLHER` seleciona itens preexistentes da coleção estratégica. `CRIAR` produz novas entregas. `VALIDAR` devolve decisões ou seleção; reprovação editorial é `success` válido com `decision: "rejected"`, não erro técnico.
-
-## Compatibilidade
-
-Mudanças compatíveis incluem adicionar capability, ampliar processos/tipos, adicionar configuração opcional com default e melhorar implementação sem mudar semântica. Renomear/remover porta ou capability, tornar campo obrigatório, mudar tipo/significado da saída, remover formato ou alterar permissões/efeitos significativamente exige major do plugin. Mudanças incompatíveis no envelope ou semântica do protocolo exigem nova `apiVersion` do ContentFlow.
-
-O Método salva `pluginId`, `pluginVersion`, `capabilityId`, configuração e bindings. O snapshot registra também hash do pacote e `apiVersion`. Não substitua silenciosamente uma versão ausente por outra.
-
-Fonte: [protocol.md](https://github.com/andremjr/contentflow/blob/main/ecosystem/docs/protocol.md).
+Mudança de shape ou porta é incompatível e exige nova major do plugin. A API v1 não é adaptada pelo runtime v2.

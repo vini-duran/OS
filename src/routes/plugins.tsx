@@ -1,10 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import {
   AlertTriangle,
-  ArrowDown,
-  ArrowUp,
   AudioLines,
   Bot,
   Boxes,
@@ -14,8 +11,6 @@ import {
   Copy,
   Download,
   ExternalLink,
-  Eye,
-  EyeOff,
   FileText,
   FolderPlus,
   GripVertical,
@@ -27,32 +22,13 @@ import {
   RefreshCw,
   Search,
   Sparkles,
-  SlidersHorizontal,
   ShieldCheck,
   SquareArrowOutUpRight,
-  Star,
   Trash2,
   Video,
 } from "lucide-react";
-import {
-  closestCenter,
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  rectSortingStrategy,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
+import { ecosystemCatalogText } from "@/lib/ecosystem-catalog-localization";
 import { AppShell } from "@/components/app-shell";
 import { TopBar } from "@/components/top-bar";
 import { Badge } from "@/components/ui/badge";
@@ -75,17 +51,42 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  PLUGIN_SECTIONS,
-  PLUGIN_SECTION_META,
-  organizePluginList,
-  useAppPreferences,
-  type PluginSection,
-} from "@/lib/app-preferences";
-import { PROCESS_META, type BlockType, type UniversalProcess } from "@/lib/domain";
-import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
+  PROCESS_META,
+  type BlockType,
+  type ContentFamily,
+  type UniversalProcess,
+} from "@/lib/domain";
+import { ECOSYSTEM_DOWNLOADS } from "@/lib/ecosystem-downloads";
 import { pluginCapabilityDescription, pluginCapabilityLabel } from "@/lib/plugin-capability-label";
-import type { PluginDeliveryType, PluginManifest } from "@/lib/plugin-contract";
-import { cn } from "@/lib/utils";
+import type { PluginManifest } from "@/lib/plugin-contract";
+import { localizePluginManifest } from "@/lib/plugin-localization";
+import { useAppPreferences } from "@/lib/app-preferences";
+import {
+  pluginAdministrationText,
+  type PluginAdministrationCompatibility,
+} from "@/lib/plugin-administration-localization";
+import {
+  OrganizeLibraryButton,
+  PluginOrganizationDialog,
+  PluginOrganizationFilters,
+} from "@/components/plugin-organization-controls";
+import { PluginOrganizedLibrary } from "@/components/plugin-organized-library";
+import { pluginAutomaticCardGridStyle } from "@/lib/plugin-card-size";
+import {
+  createOrganizationSection,
+  matchesOrganizationFilter,
+  movePluginToSection,
+  normalizePluginOrganization,
+  removeOrganizationSection,
+  renameOrganizationSection,
+  reorderSectionPlugins,
+  resolveSectionListing,
+  togglePluginFavorite,
+  type PluginOrganization,
+} from "@/lib/plugin-organization";
+import { pluginOrganizationText } from "@/lib/plugin-organization-localization";
+import { PluginProfileNamedUrls } from "@/components/plugin-profile-named-urls";
+import type { AppLanguage } from "@/lib/app-preferences";
 
 export const Route = createFileRoute("/plugins")({
   head: () => ({
@@ -104,13 +105,16 @@ type DiscoveredPlugin = {
   id: string;
   source: "installed" | "local";
   directory: string;
-  manifest: PluginManifest;
+  manifest: Omit<PluginManifest, "apiVersion" | "entrypoint"> & {
+    apiVersion?: string;
+    entrypoint?: string;
+  };
+  compatibility?: PluginAdministrationCompatibility;
   enabled: boolean;
   executable: boolean;
   sandboxed: boolean;
   networkIsolation: boolean;
   profileCount?: number;
-  methodDependencyCount?: number;
 };
 
 type PluginIssue = { directory: string; message: string };
@@ -123,7 +127,24 @@ type PluginUpdate = {
   currentVersion: string;
   version?: string;
   updateAvailable: boolean;
+  apiVersion?: string;
+  minCoreVersion?: string;
+  compatibility?: PluginAdministrationCompatibility;
 };
+
+function displayPluginManifest(plugin: DiscoveredPlugin, language: AppLanguage) {
+  const manifest = plugin.manifest;
+  if (
+    plugin.compatibility?.status === "incompatible" ||
+    manifest.apiVersion !== "2" ||
+    !manifest.entrypoint
+  )
+    return manifest;
+  return localizePluginManifest(
+    { ...manifest, apiVersion: "2", entrypoint: manifest.entrypoint },
+    language,
+  );
+}
 type PluginMethodDependency = {
   channelId: string;
   channelName: string;
@@ -139,14 +160,42 @@ type PluginProfileUsage = PluginMethodDependency & {
   fallbackPosition?: number;
 };
 
-type ManagedPluginProfile = {
+type PublicBrowserProfile = {
   id: string;
-  pluginId: string;
   name: string;
   alias: string;
   createdAt: string;
   updatedAt: string;
+};
+
+type PluginProfileBinding = {
+  pluginId: string;
+  profileId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PluginProfileInventory = {
+  linked: Array<{
+    profile: PublicBrowserProfile;
+    binding: PluginProfileBinding;
+    readiness?: { state: string; checkedAt?: string; preparedAt?: string };
+  }>;
+  candidates: Array<{
+    profile: PublicBrowserProfile;
+    linkedPluginIds: string[];
+  }>;
+  uses: Array<{
+    profileId: string;
+    pluginId: string;
+    methods: PluginProfileUsage[];
+  }>;
+};
+
+type ManagedPluginProfile = PublicBrowserProfile & {
+  pluginId: string;
   usages: PluginProfileUsage[];
+  bindingUpdatedAt: string;
 };
 
 type LocalPluginConnection = {
@@ -177,46 +226,48 @@ const PERMISSION_LABEL: Record<string, string> = {
 };
 
 const DELIVERY_META: Record<
-  PluginDeliveryType,
+  ContentFamily,
   { label: string; icon: typeof FileText; className: string }
 > = {
   text: { label: "Texto", icon: FileText, className: "bg-sky-500/10 text-sky-600" },
   image: { label: "Imagem", icon: Image, className: "bg-violet-500/10 text-violet-600" },
   audio: { label: "Áudio", icon: AudioLines, className: "bg-amber-500/10 text-amber-600" },
   video: { label: "Vídeo", icon: Video, className: "bg-rose-500/10 text-rose-600" },
-  processing: {
-    label: "Processamento",
-    icon: SlidersHorizontal,
-    className: "bg-emerald-500/10 text-emerald-600",
-  },
 };
 
-function deliveryTypes(plugin: DiscoveredPlugin) {
-  return plugin.manifest.deliveryTypes?.length
-    ? plugin.manifest.deliveryTypes
-    : (["processing"] satisfies PluginDeliveryType[]);
+function deliveryFamilies(plugin: DiscoveredPlugin) {
+  return Array.from(
+    new Set(
+      plugin.manifest.capabilities.flatMap((capability) =>
+        capability.outputPorts.flatMap((port) =>
+          port.shape.kind === "content" ? [port.shape.family] : [],
+        ),
+      ),
+    ),
+  );
 }
 
 function PluginsPage() {
+  const { language } = useAppPreferences();
   const [data, setData] = useState<PluginResponse>({ plugins: [], issues: [] });
   const [loading, setLoading] = useState(true);
   const [updates, setUpdates] = useState<Record<string, PluginUpdate>>({});
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateCheckFailed, setUpdateCheckFailed] = useState(false);
   const [search, setSearch] = useState("");
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  useFocusSearchShortcut(searchInputRef);
-  const [deliveryFilter, setDeliveryFilter] = useState<"all" | PluginDeliveryType>("all");
+  const [deliveryFilter, setDeliveryFilter] = useState<"all" | ContentFamily>("all");
   const [blockFilter, setBlockFilter] = useState<"all" | BlockType>("all");
   const [processFilter, setProcessFilter] = useState<"all" | UniversalProcess>("all");
-  const [sectionFilter, setSectionFilter] = useState<"all" | "favorites" | PluginSection>("all");
-  const [showHidden, setShowHidden] = useState(false);
-  const [manageOpen, setManageOpen] = useState(false);
-
-  const { pluginOrganization, setPluginOrganization } = useAppPreferences();
-  const panelSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
+  const [organization, setOrganization] = useState<PluginOrganization | null>(null);
+  const [organizationReady, setOrganizationReady] = useState(false);
+  const [organizationError, setOrganizationError] = useState(false);
+  const [organizerOpen, setOrganizerOpen] = useState(false);
+  const [sectionFilter, setSectionFilter] = useState<string | "all">("all");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [savingOrganization, setSavingOrganization] = useState(false);
+  const [organizationMutationError, setOrganizationMutationError] = useState<string | null>(null);
+  const revisionRef = useRef("");
+  const savingRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -233,33 +284,39 @@ function PluginsPage() {
     }
   }, []);
 
-  const checkUpdates = useCallback(async (notify = false) => {
-    setCheckingUpdates(true);
-    try {
-      const response = await fetch(`/api/plugins/updates${notify ? "?refresh=true" : ""}`);
-      const result = (await response.json()) as { updates?: PluginUpdate[]; error?: string };
-      if (!response.ok)
-        throw new Error(result.error ?? "Não foi possível consultar as atualizações.");
-      const next = Object.fromEntries((result.updates ?? []).map((update) => [update.id, update]));
-      setUpdates(next);
-      if (notify) {
-        const count = Object.values(next).filter((update) => update.updateAvailable).length;
-        toast.success(
-          count
-            ? `${count} ${count === 1 ? "plugin tem" : "plugins têm"} atualização`
-            : "Todos os plugins estão atualizados",
+  const checkUpdates = useCallback(
+    async (notify = false) => {
+      setCheckingUpdates(true);
+      setUpdateCheckFailed(false);
+      try {
+        const response = await fetch(`/api/plugins/updates${notify ? "?refresh=true" : ""}`);
+        const result = (await response.json()) as { updates?: PluginUpdate[]; error?: string };
+        if (!response.ok)
+          throw new Error(result.error ?? "Não foi possível consultar as atualizações.");
+        const next = Object.fromEntries(
+          (result.updates ?? []).map((update) => [update.id, update]),
         );
+        setUpdates(next);
+        if (notify) {
+          const count = Object.values(next).filter((update) => update.updateAvailable).length;
+          toast.success(
+            count
+              ? `${count} · ${ecosystemCatalogText("available", language)}`
+              : ecosystemCatalogText("upToDate", language),
+          );
+        }
+      } catch (error) {
+        setUpdateCheckFailed(true);
+        if (notify)
+          toast.error(ecosystemCatalogText("unavailable", language), {
+            description: error instanceof Error ? error.message : undefined,
+          });
+      } finally {
+        setCheckingUpdates(false);
       }
-    } catch (error) {
-      setUpdates({});
-      if (notify)
-        toast.error("Não foi possível verificar atualizações", {
-          description: error instanceof Error ? error.message : undefined,
-        });
-    } finally {
-      setCheckingUpdates(false);
-    }
-  }, []);
+    },
+    [language],
+  );
 
   const refreshPluginsAndUpdates = useCallback(async () => {
     await refresh();
@@ -271,16 +328,133 @@ function PluginsPage() {
     void checkUpdates();
   }, [checkUpdates, refresh]);
 
+  const loadOrganization = useCallback(async () => {
+    setOrganizationError(false);
+    try {
+      const response = await fetch("/api/plugins/organization");
+      if (!response.ok) throw new Error("A API local não respondeu.");
+      const result = (await response.json()) as {
+        organization?: unknown;
+        revision?: string;
+      };
+      setOrganization(normalizePluginOrganization(result.organization));
+      const revision = typeof result.revision === "string" ? result.revision : "";
+      revisionRef.current = revision;
+      setOrganizationReady(true);
+    } catch {
+      setOrganizationError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOrganization();
+  }, [loadOrganization]);
+
+  async function persistOrganization(next: PluginOrganization) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSavingOrganization(true);
+    setOrganizationMutationError(null);
+    try {
+      const response = await fetch("/api/plugins/organization", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ organization: next, revision: revisionRef.current }),
+      });
+      const result = (await response.json()) as {
+        organization?: unknown;
+        revision?: string;
+        error?: string;
+      };
+      if (response.status === 409) {
+        setOrganization(normalizePluginOrganization(result.organization));
+        const revision = typeof result.revision === "string" ? result.revision : "";
+        revisionRef.current = revision;
+        toast.error(pluginOrganizationText("saveConflict", language));
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? "organization");
+      setOrganization(normalizePluginOrganization(result.organization));
+      const revision = typeof result.revision === "string" ? result.revision : revisionRef.current;
+      revisionRef.current = revision;
+    } catch (error) {
+      toast.error(pluginOrganizationText("saveFailed", language), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+      await loadOrganization();
+    } finally {
+      savingRef.current = false;
+      setSavingOrganization(false);
+    }
+  }
+
+  function handleToggleFavorite(pluginId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = togglePluginFavorite(organization, pluginId);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleReorderSection(sectionId: string, visibleOrderedIds: string[]) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = reorderSectionPlugins(organization, sectionId, visibleOrderedIds);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleMovePlugin(pluginId: string, sectionId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const next = movePluginToSection(organization, pluginId, sectionId);
+    setOrganization(next);
+    void persistOrganization(next);
+  }
+
+  function handleCreateSection(name: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = createOrganizationSection(organization, name);
+    if (!result.ok) {
+      setOrganizationMutationError(pluginOrganizationText("invalidSectionName", language));
+      return;
+    }
+    setOrganizationMutationError(null);
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
+  function handleRenameSection(sectionId: string, name: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = renameOrganizationSection(organization, sectionId, name);
+    if (!result.ok) {
+      setOrganizationMutationError(pluginOrganizationText("invalidSectionName", language));
+      return;
+    }
+    setOrganizationMutationError(null);
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
+  function handleRemoveSection(sectionId: string) {
+    if (!organization || !organizationReady || savingRef.current) return;
+    const result = removeOrganizationSection(organization, sectionId);
+    if (!result.ok) return;
+    setOrganization(result.organization);
+    void persistOrganization(result.organization);
+  }
+
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const filteredPlugins = data.plugins.filter((plugin) => {
-    const capabilities = plugin.manifest.capabilities;
+    const localizedManifest = displayPluginManifest(plugin, language);
+    const capabilities = localizedManifest.capabilities;
     const matchesSearch =
       !normalizedSearch ||
-      [plugin.manifest.name, plugin.manifest.description, plugin.manifest.author, plugin.id].some(
-        (value) => value.toLocaleLowerCase().includes(normalizedSearch),
-      );
+      [
+        localizedManifest.name,
+        localizedManifest.description,
+        plugin.manifest.author,
+        plugin.id,
+      ].some((value) => value.toLocaleLowerCase().includes(normalizedSearch));
     const matchesDelivery =
-      deliveryFilter === "all" || deliveryTypes(plugin).includes(deliveryFilter);
+      deliveryFilter === "all" || deliveryFamilies(plugin).includes(deliveryFilter);
     const matchesBlock =
       blockFilter === "all" ||
       capabilities.some((capability) => capability.blockTypes.includes(blockFilter));
@@ -289,61 +463,13 @@ function PluginsPage() {
       capabilities.some((capability) => capability.processTypes?.includes(processFilter));
     return matchesSearch && matchesDelivery && matchesBlock && matchesProcess;
   });
-
-  const organized = useMemo(
-    () =>
-      organizePluginList(filteredPlugins, pluginOrganization, {
-        showHidden,
-        sectionFilter,
-      }),
-    [filteredPlugins, pluginOrganization, showHidden, sectionFilter],
-  );
-
   const filtersActive =
     Boolean(normalizedSearch) ||
     deliveryFilter !== "all" ||
     blockFilter !== "all" ||
     processFilter !== "all" ||
     sectionFilter !== "all" ||
-    showHidden;
-
-  const canReorderFromPanel =
-    !normalizedSearch &&
-    deliveryFilter === "all" &&
-    blockFilter === "all" &&
-    processFilter === "all" &&
-    !showHidden &&
-    sectionFilter !== "favorites";
-
-  const reorderPanelSection = useCallback(
-    (section: PluginSection, plugins: DiscoveredPlugin[], event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const oldIndex = plugins.findIndex((plugin) => `panel-${plugin.id}` === active.id);
-      const newIndex = plugins.findIndex((plugin) => `panel-${plugin.id}` === over.id);
-      if (oldIndex < 0 || newIndex < 0) return;
-      setPluginOrganization((current) => ({
-        ...current,
-        sectionOrder: {
-          ...current.sectionOrder,
-          [section]: arrayMove(
-            plugins.map((plugin) => plugin.id),
-            oldIndex,
-            newIndex,
-          ),
-        },
-      }));
-    },
-    [setPluginOrganization],
-  );
-
-  const hasAnyPlugins =
-    sectionFilter === "favorites"
-      ? organized.favorites.length > 0
-      : sectionFilter !== "all"
-        ? (organized.sections[sectionFilter]?.length ?? 0) > 0
-        : organized.favorites.length > 0 ||
-          PLUGIN_SECTIONS.some((s) => (organized.sections[s]?.length ?? 0) > 0);
+    favoritesOnly;
 
   function clearFilters() {
     setSearch("");
@@ -351,7 +477,39 @@ function PluginsPage() {
     setBlockFilter("all");
     setProcessFilter("all");
     setSectionFilter("all");
-    setShowHidden(false);
+    setFavoritesOnly(false);
+  }
+
+  const organizationVisibleCount = (() => {
+    if (!organization || !organizationReady) return filteredPlugins.length;
+    const listing = resolveSectionListing(
+      organization,
+      data.plugins.map((plugin) => plugin.id),
+    );
+    const baseIds = new Set(filteredPlugins.map((plugin) => plugin.id));
+    const sections =
+      sectionFilter === "all"
+        ? organization.sections
+        : organization.sections.filter((section) => section.id === sectionFilter);
+    return sections.reduce(
+      (total, section) =>
+        total +
+        (listing[section.id] ?? []).filter(
+          (pluginId) =>
+            baseIds.has(pluginId) &&
+            matchesOrganizationFilter(organization, pluginId, {
+              sectionId: sectionFilter,
+              favoritesOnly,
+            }),
+        ).length,
+      0,
+    );
+  })();
+
+  function pluginDisplayName(pluginId: string) {
+    const plugin = data.plugins.find((candidate) => candidate.id === pluginId);
+    if (!plugin) return pluginId;
+    return String(displayPluginManifest(plugin, language).name);
   }
 
   return (
@@ -364,15 +522,11 @@ function PluginsPage() {
         actions={
           <div className="flex items-center gap-2">
             <InstallPluginDialog onInstalled={refresh} />
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5"
-              onClick={() => setManageOpen(true)}
-            >
-              <SlidersHorizontal className="size-4" />
-              Organizar biblioteca
-            </Button>
+            <OrganizeLibraryButton
+              language={language}
+              disabled={!organizationReady || savingOrganization}
+              onClick={() => setOrganizerOpen(true)}
+            />
             <Button
               size="sm"
               variant="outline"
@@ -386,156 +540,123 @@ function PluginsPage() {
               <RefreshCw
                 className={loading || checkingUpdates ? "size-4 animate-spin" : "size-4"}
               />
-              Verificar atualizações
+              {ecosystemCatalogText("updates", language)}
             </Button>
           </div>
         }
       />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+      <main className="mx-auto w-full flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+        {updateCheckFailed && (
+          <p role="alert" className="mb-4 text-sm text-warning">
+            {ecosystemCatalogText("unavailable", language)}
+          </p>
+        )}
         <section className="mb-4 rounded-xl border border-brand/25 bg-card/55 p-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-md">
-              <h2 className="text-sm font-semibold">Componentes externos</h2>
+              <h2 className="text-sm font-semibold">
+                {pluginOrganizationText("externalComponentsTitle", language)}
+              </h2>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                Consulte os componentes e suas instruções. Instale somente os plugins que você
-                precisa pela opção Instalar plugin.
+                {pluginOrganizationText("externalComponentsDescription", language)}
               </p>
             </div>
             <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[44rem]">
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-                <a href={ECOSYSTEM_RESOURCES.plugins} target="_blank" rel="noreferrer">
+                <a href={ECOSYSTEM_DOWNLOADS.plugins} target="_blank" rel="noreferrer">
                   <Boxes className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Consultar plugins</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("consultPlugins", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Mesmo fluxo para qualquer autor
+                      {pluginOrganizationText("consultPluginsDescription", language)}
                     </span>
                   </span>
                   <ExternalLink className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-                <a href={ECOSYSTEM_RESOURCES.browserBridge} target="_blank" rel="noreferrer">
+                <a href={ECOSYSTEM_DOWNLOADS.browserBridge} target="_blank" rel="noreferrer">
                   <SquareArrowOutUpRight className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Configurar Browser Bridge</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("configureBrowserBridge", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Somente para automação web
+                      {pluginOrganizationText("browserBridgeDescription", language)}
                     </span>
                   </span>
-                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
+                  <Download className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
               <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
                 <a
-                  href={ECOSYSTEM_RESOURCES.pluginDevelopmentSkill}
+                  href={ECOSYSTEM_DOWNLOADS.pluginDevelopmentSkill}
                   target="_blank"
                   rel="noreferrer"
                 >
                   <Sparkles className="size-4 shrink-0 text-brand-soft" />
                   <span className="min-w-0 text-left">
-                    <span className="block text-xs font-semibold">Consultar skill de plugins</span>
+                    <span className="block text-xs font-semibold">
+                      {pluginOrganizationText("consultPluginSkill", language)}
+                    </span>
                     <span className="block text-[10px] font-normal text-muted-foreground">
-                      Para criar com um agente de IA
+                      {pluginOrganizationText("pluginSkillDescription", language)}
                     </span>
                   </span>
-                  <ExternalLink className="ml-auto size-3.5 shrink-0" />
+                  <Download className="ml-auto size-3.5 shrink-0" />
                 </a>
               </Button>
             </div>
           </div>
         </section>
 
-        {organized.hiddenWithDependenciesCount > 0 && !showHidden && (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/40 bg-warning/10 p-3.5 text-xs text-foreground">
-            <div className="flex items-center gap-2.5">
-              <AlertTriangle className="size-4 shrink-0 text-warning" />
-              <div>
-                <span className="font-semibold">
-                  {organized.hiddenWithDependenciesCount === 1
-                    ? "1 plugin em uso por Métodos está oculto da biblioteca."
-                    : `${organized.hiddenWithDependenciesCount} plugins em uso por Métodos estão ocultos da biblioteca.`}
-                </span>{" "}
-                <span className="text-muted-foreground">
-                  Eles continuam executando normalmente nos seus canais. Ocultar afeta apenas a
-                  biblioteca.
-                </span>
-              </div>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5 h-7 text-xs ml-auto"
-              onClick={() => setShowHidden(true)}
-            >
-              <Eye className="size-3.5" />
-              Exibir plugins ocultos
-            </Button>
-          </div>
-        )}
-
         <section className="rounded-xl border border-border bg-card/40 p-3 sm:p-4">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{data.plugins.length} plugins</Badge>
-            {organized.hiddenCount > 0 && (
-              <Button
-                size="sm"
-                variant={showHidden ? "secondary" : "outline"}
-                className="h-7 gap-1 text-xs"
-                onClick={() => setShowHidden((prev) => !prev)}
-              >
-                {showHidden ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                {showHidden
-                  ? "Ocultar plugins ocultos"
-                  : `Mostrar ocultos (${organized.hiddenCount})`}
-              </Button>
-            )}
             {filtersActive && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ml-auto h-7 text-xs"
-                onClick={clearFilters}
-              >
+              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={clearFilters}>
                 Limpar filtros
               </Button>
             )}
           </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-[minmax(13rem,1fr)_repeat(4,minmax(8.5rem,0.35fr))]">
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[minmax(15rem,2.8fr)_repeat(4,minmax(0,1fr))]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                ref={searchInputRef}
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Pesquisar plugins por nome..."
                 className="pl-9"
-                aria-keyshortcuts="Meta+F Control+F"
               />
             </div>
-            <Select
-              value={sectionFilter}
-              onValueChange={(value) =>
-                setSectionFilter(value as "all" | "favorites" | PluginSection)
-              }
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Seção" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas as seções</SelectItem>
-                <SelectItem value="favorites">⭐ Favoritos</SelectItem>
-                {PLUGIN_SECTIONS.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {PLUGIN_SECTION_META[s].label}
+            {organization && organizationReady ? (
+              <PluginOrganizationFilters
+                organization={organization}
+                sectionId={sectionFilter}
+                favoritesOnly={favoritesOnly}
+                language={language}
+                disabled={savingOrganization}
+                onSectionChange={setSectionFilter}
+                onFavoritesChange={setFavoritesOnly}
+              />
+            ) : (
+              <Select value="all" disabled>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder={pluginOrganizationText("allSections", language)} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">
+                    {pluginOrganizationText("allSections", language)}
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                </SelectContent>
+              </Select>
+            )}
             <Select
               value={deliveryFilter}
-              onValueChange={(value) => setDeliveryFilter(value as "all" | PluginDeliveryType)}
+              onValueChange={(value) => setDeliveryFilter(value as "all" | ContentFamily)}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Capacidade" />
@@ -582,7 +703,24 @@ function PluginsPage() {
               </SelectContent>
             </Select>
           </div>
+          {organizationError && !organizationReady && (
+            <p role="alert" className="mt-3 flex flex-wrap items-center gap-2 text-xs text-warning">
+              {pluginOrganizationText("loadFailed", language)}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7"
+                onClick={() => void loadOrganization()}
+              >
+                {pluginOrganizationText("retry", language)}
+              </Button>
+            </p>
+          )}
         </section>
+        <p className="mt-3 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <GripVertical className="size-4 shrink-0" aria-hidden />
+          <span>{pluginOrganizationText("dragReorderHelp", language)}</span>
+        </p>
 
         {loading ? (
           <div className="grid min-h-72 place-items-center text-sm text-muted-foreground">
@@ -590,112 +728,68 @@ function PluginsPage() {
               <LoaderCircle className="size-4 animate-spin" /> Procurando plugins locais...
             </span>
           </div>
-        ) : hasAnyPlugins ? (
-          <div className="space-y-6 mt-4">
-            {canReorderFromPanel && (
-              <p className="rounded-lg border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-muted-foreground">
-                Arraste o ícone{" "}
-                <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" /> no canto
-                inferior direito de um card para reorganizar a seção atual.
-              </p>
-            )}
-            {/* 1. Favoritos no topo (quando visualizando todas as seções) */}
-            {sectionFilter === "all" && organized.favorites.length > 0 && (
-              <section key="favorites-top">
-                <div className="mb-3 flex items-center gap-2">
-                  <Star className="size-4 fill-amber-400 text-amber-400" />
-                  <h2 className="text-sm font-semibold">Favoritos</h2>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {organized.favorites.length}
-                  </Badge>
-                </div>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                  {organized.favorites.map((plugin) => (
-                    <PluginCard
-                      key={`fav-${plugin.source}-${plugin.id}`}
-                      plugin={plugin}
-                      update={updates[plugin.id]}
-                      onChanged={refreshPluginsAndUpdates}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* 2. Visualização exclusiva de favoritos */}
-            {sectionFilter === "favorites" && (
-              <section key="favorites-only">
-                <div className="mb-3 flex items-center gap-2">
-                  <Star className="size-4 fill-amber-400 text-amber-400" />
-                  <h2 className="text-sm font-semibold">Favoritos</h2>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {organized.favorites.length}
-                  </Badge>
-                </div>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                  {organized.favorites.map((plugin) => (
-                    <PluginCard
-                      key={`fav-${plugin.source}-${plugin.id}`}
-                      plugin={plugin}
-                      update={updates[plugin.id]}
-                      onChanged={refreshPluginsAndUpdates}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* 3. Seções do usuário */}
-            {sectionFilter === "all" &&
-              PLUGIN_SECTIONS.map((sectionKey) => {
-                const sectionPlugins = organized.sections[sectionKey];
-                if (!sectionPlugins?.length) return null;
+        ) : organization && organizationReady ? (
+          organizationVisibleCount > 0 ? (
+            <PluginOrganizedLibrary
+              organization={organization}
+              inventoryIds={data.plugins.map((plugin) => plugin.id)}
+              filter={{
+                sectionId: sectionFilter,
+                favoritesOnly,
+                matchesBaseFilter: (pluginId) =>
+                  filteredPlugins.some((plugin) => plugin.id === pluginId),
+              }}
+              language={language}
+              disabled={savingOrganization}
+              renderCard={(pluginId) => {
+                const plugin = data.plugins.find((candidate) => candidate.id === pluginId);
+                if (!plugin) return null;
                 return (
-                  <section key={sectionKey}>
-                    <div className="mb-3 flex items-center gap-2">
-                      <h2 className="text-sm font-semibold">
-                        {PLUGIN_SECTION_META[sectionKey].label}
-                      </h2>
-                      <Badge variant="secondary" className="text-[10px]">
-                        {sectionPlugins.length}
-                      </Badge>
-                    </div>
-                    <SortablePluginGrid
-                      section={sectionKey}
-                      plugins={sectionPlugins}
-                      updates={updates}
-                      onChanged={refreshPluginsAndUpdates}
-                      sensors={panelSensors}
-                      enabled={canReorderFromPanel}
-                      onDragEnd={reorderPanelSection}
-                    />
-                  </section>
+                  <PluginCard
+                    key={`${plugin.source}-${plugin.id}`}
+                    plugin={plugin}
+                    update={updates[plugin.id]}
+                    onChanged={refreshPluginsAndUpdates}
+                  />
                 );
-              })}
-
-            {/* 4. Visualização de seção específica */}
-            {sectionFilter !== "all" && sectionFilter !== "favorites" && (
-              <section key={sectionFilter}>
-                <div className="mb-3 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">
-                    {PLUGIN_SECTION_META[sectionFilter].label}
-                  </h2>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {organized.sections[sectionFilter]?.length ?? 0}
-                  </Badge>
-                </div>
-                <SortablePluginGrid
-                  section={sectionFilter}
-                  plugins={organized.sections[sectionFilter] ?? []}
-                  updates={updates}
-                  onChanged={refreshPluginsAndUpdates}
-                  sensors={panelSensors}
-                  enabled={canReorderFromPanel}
-                  onDragEnd={reorderPanelSection}
-                />
-              </section>
-            )}
-          </div>
+              }}
+              pluginNameFor={pluginDisplayName}
+              onToggleFavorite={handleToggleFavorite}
+              onReorderSection={handleReorderSection}
+            />
+          ) : (
+            <section className="mt-5 grid min-h-72 place-items-center rounded-xl border border-dashed border-border bg-card/25 p-8 text-center">
+              <div>
+                <Plug className="mx-auto size-8 text-muted-foreground" />
+                <h2 className="mt-3 text-sm font-semibold">
+                  {data.plugins.length
+                    ? "Nenhum plugin corresponde aos filtros"
+                    : "Nenhum plugin instalado ainda"}
+                </h2>
+                <p className="mt-1 max-w-lg text-xs text-muted-foreground">
+                  {data.plugins.length
+                    ? "Ajuste a pesquisa ou limpe os filtros para voltar a visualizar o catálogo."
+                    : "A interface já está preparada para descobrir plugins reais. Nenhum dado de exemplo foi criado."}
+                </p>
+                {filtersActive && (
+                  <Button size="sm" variant="outline" className="mt-4" onClick={clearFilters}>
+                    Limpar filtros
+                  </Button>
+                )}
+              </div>
+            </section>
+          )
+        ) : filteredPlugins.length ? (
+          <section className="mt-4 grid" style={pluginAutomaticCardGridStyle()}>
+            {filteredPlugins.map((plugin) => (
+              <PluginCard
+                key={`${plugin.source}-${plugin.id}`}
+                plugin={plugin}
+                update={updates[plugin.id]}
+                onChanged={refreshPluginsAndUpdates}
+              />
+            ))}
+          </section>
         ) : (
           <section className="mt-5 grid min-h-72 place-items-center rounded-xl border border-dashed border-border bg-card/25 p-8 text-center">
             <div>
@@ -719,12 +813,6 @@ function PluginsPage() {
           </section>
         )}
 
-        <PluginLibraryManagementDialog
-          open={manageOpen}
-          onOpenChange={setManageOpen}
-          plugins={data.plugins}
-        />
-
         {data.issues.length > 0 && (
           <section className="mt-5 rounded-xl border border-warning/40 bg-warning/5 p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-warning">
@@ -740,6 +828,24 @@ function PluginsPage() {
           </section>
         )}
       </main>
+      {organization && (
+        <PluginOrganizationDialog
+          open={organizerOpen}
+          onOpenChange={setOrganizerOpen}
+          organization={organization}
+          inventory={data.plugins.map((plugin) => ({
+            id: plugin.id,
+            name: pluginDisplayName(plugin.id),
+          }))}
+          language={language}
+          disabled={savingOrganization}
+          mutationError={organizationMutationError}
+          onCreateSection={handleCreateSection}
+          onRenameSection={handleRenameSection}
+          onRemoveSection={handleRemoveSection}
+          onMovePlugin={handleMovePlugin}
+        />
+      )}
     </AppShell>
   );
 }
@@ -857,27 +963,13 @@ function PluginCard({
   update?: PluginUpdate;
   onChanged: () => Promise<void>;
 }) {
-  const { manifest } = plugin;
-  const types = deliveryTypes(plugin);
+  const { language } = useAppPreferences();
+  const manifest = displayPluginManifest(plugin, language);
+  const incompatible = plugin.compatibility?.status === "incompatible";
+  const families = deliveryFamilies(plugin);
   const [open, setOpen] = useState(false);
   const [iconFailed, setIconFailed] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const {
-    pluginOrganization,
-    togglePluginFavorite,
-    setPluginSection,
-    movePluginInSection,
-    setPluginHidden,
-  } = useAppPreferences();
-
-  const pref = pluginOrganization.items[plugin.id] ?? {
-    section: "none",
-    favorite: false,
-    hidden: false,
-  };
-  const isFavorite = Boolean(pref.favorite);
-  const isHidden = Boolean(pref.hidden);
-
   const initials = manifest.name
     .split(/\s+/)
     .filter(Boolean)
@@ -939,59 +1031,33 @@ function PluginCard({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              (event.key === "Enter" || event.key === " ")
-            ) {
-              event.preventDefault();
-              event.currentTarget.click();
-            }
-          }}
+        <button
+          type="button"
           aria-label={`Abrir detalhes de ${manifest.name}`}
-          className={`group relative flex aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-4 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 ${
-            isHidden ? "opacity-60 hover:opacity-100" : ""
-          }`}
+          className="group relative flex w-full aspect-square min-h-40 flex-col items-center justify-center overflow-hidden rounded-2xl border border-border bg-card/55 p-5 text-center shadow-sm transition hover:-translate-y-0.5 hover:border-brand/45 hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
         >
-          <button
-            type="button"
-            aria-label={isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-            title={isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-            className="absolute left-3 top-3 z-10 rounded-full p-1 transition hover:bg-muted/80 text-muted-foreground hover:text-amber-400"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              togglePluginFavorite(plugin.id);
-            }}
-          >
-            <Star
-              className={`size-4 ${
-                isFavorite ? "fill-amber-400 text-amber-400" : "opacity-40 hover:opacity-100"
-              }`}
-            />
-          </button>
-
           <span className="absolute right-3 top-3 flex items-center gap-2">
-            {isHidden && (
-              <span
-                className="size-2 rounded-full bg-muted-foreground ring-4 ring-muted-foreground/10"
-                title="Oculto na biblioteca"
-              >
-                <span className="sr-only">Oculto na biblioteca</span>
-              </span>
-            )}
             {update?.updateAvailable && (
               <span
                 className="size-2 rounded-full bg-sky-500 ring-4 ring-sky-500/10"
-                title={`Atualização disponível: v${update.version}`}
+                title={`${pluginAdministrationText("updateAvailable", language)}: v${update.version}`}
               >
-                <span className="sr-only">Atualização disponível</span>
+                <span className="sr-only">
+                  {pluginAdministrationText("updateAvailable", language)}
+                </span>
               </span>
             )}
-            {!plugin.enabled && (
+            {incompatible && (
+              <span
+                className="size-2 rounded-full bg-destructive ring-4 ring-destructive/10"
+                title={pluginAdministrationText("incompatible", language)}
+              >
+                <span className="sr-only">
+                  {pluginAdministrationText("incompatible", language)}
+                </span>
+              </span>
+            )}
+            {!plugin.enabled && !incompatible && (
               <span
                 className="size-2 rounded-full bg-warning ring-4 ring-warning/10"
                 title="Plugin ainda não ativado"
@@ -1000,36 +1066,31 @@ function PluginCard({
               </span>
             )}
           </span>
-          <span className="grid size-14 place-items-center rounded-2xl border border-border/70 bg-gradient-to-br from-brand/15 to-secondary text-xl font-semibold tracking-tight text-brand-soft transition-transform group-hover:scale-105">
+          <span className="grid size-16 place-items-center rounded-2xl border border-border/70 bg-gradient-to-br from-brand/15 to-secondary text-xl font-semibold tracking-tight text-brand-soft transition-transform group-hover:scale-105">
             {manifest.branding?.iconPath && !iconFailed ? (
               <img
                 src={`/api/plugins/${encodeURIComponent(plugin.id)}/icon?v=${encodeURIComponent(manifest.version)}`}
                 alt=""
-                className="size-9 object-contain"
+                className="size-10 object-contain"
                 onError={() => setIconFailed(true)}
               />
             ) : (
               initials || <Plug className="size-6" />
             )}
           </span>
-          <h2 className="mt-3 line-clamp-2 text-sm font-semibold leading-snug">{manifest.name}</h2>
-          <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] max-w-[15rem] text-[11px] leading-snug text-muted-foreground">
+          <h2 className="mt-3 line-clamp-2 text-base font-semibold leading-snug">
+            {manifest.name}
+          </h2>
+          <p className="mt-1.5 line-clamp-3 min-h-[2.75rem] text-[13px] leading-snug text-muted-foreground">
             {manifest.description}
           </p>
-          <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
-            {isHidden && (
-              <span className="inline-flex items-center gap-1 rounded bg-muted/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                <EyeOff className="size-2.5" /> Oculto
-              </span>
-            )}
-            {manifest.profileSetup && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-soft">
-                <CircleUserRound className="size-3" /> {plugin.profileCount ?? 0}{" "}
-                {plugin.profileCount === 1 ? "perfil" : "perfis"}
-              </span>
-            )}
-          </div>
-        </div>
+          {manifest.profileSetup && (
+            <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-brand-soft">
+              <CircleUserRound className="size-3" /> {plugin.profileCount ?? 0}{" "}
+              {plugin.profileCount === 1 ? "perfil" : "perfis"}
+            </span>
+          )}
+        </button>
       </DialogTrigger>
 
       <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
@@ -1053,7 +1114,12 @@ function PluginCard({
                 <Badge variant="secondary" className="text-[10px]">
                   v{manifest.version}
                 </Badge>
-                {!plugin.enabled && (
+                {incompatible && (
+                  <Badge variant="outline" className="text-[10px] text-destructive">
+                    {pluginAdministrationText("incompatible", language)}
+                  </Badge>
+                )}
+                {!plugin.enabled && !incompatible && (
                   <Badge variant="outline" className="text-[10px] text-warning">
                     Desativado
                   </Badge>
@@ -1083,178 +1149,134 @@ function PluginCard({
           </div>
         </div>
 
-        <section>
-          <h3 className="text-xs font-semibold">O que este plugin faz</h3>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {types.map((type) => {
-              const meta = DELIVERY_META[type];
-              const Icon = meta.icon;
-              return (
-                <span
-                  key={type}
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${meta.className}`}
-                >
-                  <Icon className="size-3" /> {meta.label}
-                </span>
-              );
-            })}
-          </div>
-          <div className="mt-3 space-y-2">
-            {manifest.capabilities.slice(0, 3).map((capability) => (
-              <div
-                key={capability.id}
-                className="rounded-lg border border-border/70 bg-card/50 px-3 py-2.5"
-              >
-                <div className="flex items-center gap-2">
-                  {capability.operator === "IA" ? (
-                    <Bot className="size-3.5 text-brand-soft" />
-                  ) : (
-                    <Code2 className="size-3.5 text-brand-soft" />
-                  )}
-                  <span className="text-xs font-medium">{pluginCapabilityLabel(capability)}</span>
-                </div>
-                {pluginCapabilityDescription(capability) && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    {pluginCapabilityDescription(capability)}
-                  </p>
-                )}
-              </div>
-            ))}
-            {manifest.capabilities.length > 3 && (
-              <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
-                <span>+ {manifest.capabilities.length - 3}</span>
-                <span>Recursos disponíveis</span>
+        {incompatible && (
+          <section
+            role="alert"
+            className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs"
+          >
+            <p>
+              {pluginAdministrationText(
+                plugin.compatibility?.reason ?? "invalid_manifest",
+                language,
+              )}
+            </p>
+            <p className="mt-1">{pluginAdministrationText("executionBlocked", language)}</p>
+            <p className="mt-2">
+              {pluginAdministrationText("apiVersion", language)}: {manifest.apiVersion ?? "—"}
+            </p>
+            {manifest.minCoreVersion && (
+              <p>
+                {pluginAdministrationText("minCoreVersion", language)}: {manifest.minCoreVersion}
               </p>
             )}
-          </div>
-          <details className="mt-3 rounded-lg border border-border/70 bg-card/40 px-3">
-            <summary className="flex cursor-pointer items-center gap-1 py-2.5 text-[11px] font-medium text-muted-foreground">
-              <span>Detalhes técnicos</span>
-              <span>({manifest.capabilities.length})</span>
-            </summary>
-            <div className="divide-y divide-border">
-              {manifest.capabilities.map((capability) => (
-                <div key={capability.id} className="py-2.5">
-                  <div className="flex flex-wrap items-center gap-1.5">
+          </section>
+        )}
+
+        {!incompatible && (
+          <section>
+            <h3 className="text-xs font-semibold">O que este plugin faz</h3>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {families.map((family) => {
+                const meta = DELIVERY_META[family];
+                const Icon = meta.icon;
+                return (
+                  <span
+                    key={family}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${meta.className}`}
+                  >
+                    <Icon className="size-3" /> {meta.label}
+                  </span>
+                );
+              })}
+            </div>
+            <div className="mt-3 space-y-2">
+              {manifest.capabilities.slice(0, 3).map((capability) => (
+                <div
+                  key={capability.id}
+                  className="rounded-lg border border-border/70 bg-card/50 px-3 py-2.5"
+                >
+                  <div className="flex items-center gap-2">
+                    {capability.operator === "IA" ? (
+                      <Bot className="size-3.5 text-brand-soft" />
+                    ) : (
+                      <Code2 className="size-3.5 text-brand-soft" />
+                    )}
                     <span className="text-xs font-medium">{pluginCapabilityLabel(capability)}</span>
-                    <Badge variant="outline" className="ml-auto text-[9px]">
-                      {capability.operator}
-                    </Badge>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {capability.blockTypes.map((block) => (
-                      <Badge key={block} variant="secondary" className="text-[9px]">
-                        {BLOCK_LABEL[block]}
-                      </Badge>
-                    ))}
-                    {(capability.processTypes ?? []).map((process) => (
-                      <Badge key={process} variant="outline" className="text-[9px]">
-                        {PROCESS_META[process as UniversalProcess].label}
-                      </Badge>
-                    ))}
-                  </div>
-                  <code className="mt-2 block text-[10px] text-muted-foreground">
-                    {capability.id}
-                  </code>
+                  {pluginCapabilityDescription(capability) && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {pluginCapabilityDescription(capability)}
+                    </p>
+                  )}
                 </div>
               ))}
+              {manifest.capabilities.length > 3 && (
+                <p className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+                  <span>+ {manifest.capabilities.length - 3}</span>
+                  <span>Recursos disponíveis</span>
+                </p>
+              )}
             </div>
-          </details>
-        </section>
-
-        <section className="rounded-xl border border-border bg-muted/15 p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <ShieldCheck className="size-3.5 text-brand-soft" /> Permissões declaradas
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {manifest.permissions.length ? (
-              manifest.permissions.map((permission) => (
-                <Badge key={permission} variant="outline" className="text-[9px]">
-                  {PERMISSION_LABEL[permission] ?? permission}
-                </Badge>
-              ))
-            ) : (
-              <span className="text-[11px] text-muted-foreground">Sem permissões adicionais.</span>
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-xl border border-border bg-muted/15 p-3.5">
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <SlidersHorizontal className="size-3.5 text-brand-soft" /> Organização na biblioteca
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label className="text-[11px] text-muted-foreground">Seção</Label>
-              <Select
-                value={pref.section}
-                onValueChange={(value) => setPluginSection(plugin.id, value as PluginSection)}
-              >
-                <SelectTrigger className="mt-1 h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PLUGIN_SECTIONS.map((sectionKey) => (
-                    <SelectItem key={sectionKey} value={sectionKey} className="text-xs">
-                      {PLUGIN_SECTION_META[sectionKey].label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-[11px] text-muted-foreground">Ordem nesta seção</Label>
-              <div className="mt-1 flex items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-8 gap-1 text-xs"
-                  onClick={() => movePluginInSection(plugin.id, "up")}
-                >
-                  <ArrowUp className="size-3" /> Mover para cima
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-8 gap-1 text-xs"
-                  onClick={() => movePluginInSection(plugin.id, "down")}
-                >
-                  <ArrowDown className="size-3" /> Mover para baixo
-                </Button>
+            <details className="mt-3 rounded-lg border border-border/70 bg-card/40 px-3">
+              <summary className="flex cursor-pointer items-center gap-1 py-2.5 text-[11px] font-medium text-muted-foreground">
+                <span>Detalhes técnicos</span>
+                <span>({manifest.capabilities.length})</span>
+              </summary>
+              <div className="divide-y divide-border">
+                {manifest.capabilities.map((capability) => (
+                  <div key={capability.id} className="py-2.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-xs font-medium">
+                        {pluginCapabilityLabel(capability)}
+                      </span>
+                      <Badge variant="outline" className="ml-auto text-[9px]">
+                        {capability.operator}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {capability.blockTypes.map((block) => (
+                        <Badge key={block} variant="secondary" className="text-[9px]">
+                          {BLOCK_LABEL[block]}
+                        </Badge>
+                      ))}
+                      {(capability.processTypes ?? []).map((process) => (
+                        <Badge key={process} variant="outline" className="text-[9px]">
+                          {PROCESS_META[process as UniversalProcess].label}
+                        </Badge>
+                      ))}
+                    </div>
+                    <code className="mt-2 block text-[10px] text-muted-foreground">
+                      {capability.id}
+                    </code>
+                  </div>
+                ))}
               </div>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2 pt-2 border-t border-border/60">
-            <Button
-              type="button"
-              size="sm"
-              variant={isFavorite ? "secondary" : "outline"}
-              className="gap-1.5 h-8 text-xs"
-              onClick={() => togglePluginFavorite(plugin.id)}
-            >
-              <Star className={`size-3.5 ${isFavorite ? "fill-amber-400 text-amber-400" : ""}`} />
-              {isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={isHidden ? "secondary" : "outline"}
-              className="gap-1.5 h-8 text-xs"
-              onClick={() => setPluginHidden(plugin.id, !isHidden)}
-            >
-              {isHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-              {isHidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"}
-            </Button>
-          </div>
-          <p className="mt-2 text-[10px] text-muted-foreground leading-relaxed">
-            Organizar ou ocultar afeta apenas a biblioteca neste dispositivo. Não altera nem
-            desativa o plugin e não interrompe Métodos configurados.
-          </p>
-        </section>
+            </details>
+          </section>
+        )}
 
-        <CommunityAccessPanel plugin={plugin} onChanged={onChanged} />
+        {!incompatible && (
+          <section className="rounded-xl border border-border bg-muted/15 p-3">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <ShieldCheck className="size-3.5 text-brand-soft" /> Permissões declaradas
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {manifest.permissions.length ? (
+                manifest.permissions.map((permission) => (
+                  <Badge key={permission} variant="outline" className="text-[9px]">
+                    {PERMISSION_LABEL[permission] ?? permission}
+                  </Badge>
+                ))
+              ) : (
+                <span className="text-[11px] text-muted-foreground">
+                  Sem permissões adicionais.
+                </span>
+              )}
+            </div>
+          </section>
+        )}
+
+        {!incompatible && <CommunityAccessPanel plugin={plugin} onChanged={onChanged} />}
 
         {manifest.secretKeys?.length ? <PluginConnectionsPanel plugin={plugin} /> : null}
 
@@ -1272,14 +1294,16 @@ function PluginCard({
               </a>
             </Button>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => exportManifest(plugin)}
-          >
-            <Download className="size-3.5" /> Exportar manifesto
-          </Button>
+          {!incompatible && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => exportManifest(plugin)}
+            >
+              <Download className="size-3.5" /> Exportar manifesto
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -1297,103 +1321,6 @@ function PluginCard({
         </footer>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function SortablePluginCard({
-  plugin,
-  update,
-  onChanged,
-}: {
-  plugin: DiscoveredPlugin;
-  update?: PluginUpdate;
-  onChanged: () => Promise<void>;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    setActivatorNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: `panel-${plugin.id}` });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn("relative", isDragging && "z-10 opacity-75")}
-    >
-      <PluginCard plugin={plugin} update={update} onChanged={onChanged} />
-      <button
-        ref={setActivatorNodeRef}
-        type="button"
-        className="absolute bottom-3 right-3 z-20 touch-none rounded-md border border-border/80 bg-background/85 p-1.5 text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
-        aria-label={`Arrastar ${plugin.manifest.name} para reorganizar`}
-        title="Segure e arraste para reorganizar"
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="size-4" aria-hidden="true" />
-      </button>
-    </div>
-  );
-}
-
-function SortablePluginGrid({
-  section,
-  plugins,
-  updates,
-  onChanged,
-  sensors,
-  enabled,
-  onDragEnd,
-}: {
-  section: PluginSection;
-  plugins: DiscoveredPlugin[];
-  updates: Record<string, PluginUpdate>;
-  onChanged: () => Promise<void>;
-  sensors: ReturnType<typeof useSensors>;
-  enabled: boolean;
-  onDragEnd: (section: PluginSection, plugins: DiscoveredPlugin[], event: DragEndEvent) => void;
-}) {
-  const grid = (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-      {plugins.map((plugin) =>
-        enabled ? (
-          <SortablePluginCard
-            key={`${plugin.source}-${plugin.id}`}
-            plugin={plugin}
-            update={updates[plugin.id]}
-            onChanged={onChanged}
-          />
-        ) : (
-          <PluginCard
-            key={`${plugin.source}-${plugin.id}`}
-            plugin={plugin}
-            update={updates[plugin.id]}
-            onChanged={onChanged}
-          />
-        ),
-      )}
-    </div>
-  );
-
-  if (!enabled) return grid;
-  return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragEnd={(event) => onDragEnd(section, plugins, event)}
-    >
-      <SortableContext
-        items={plugins.map((plugin) => `panel-${plugin.id}`)}
-        strategy={rectSortingStrategy}
-      >
-        {grid}
-      </SortableContext>
-    </DndContext>
   );
 }
 
@@ -1648,11 +1575,14 @@ function PluginConnectionsPanel({ plugin }: { plugin: DiscoveredPlugin }) {
 
 function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
   type ProfileStatus = "unknown" | "checking" | "ready" | "missing" | "preparing";
+  const { t } = useAppPreferences();
   const [profiles, setProfiles] = useState<ManagedPluginProfile[]>([]);
+  const [candidates, setCandidates] = useState<PublicBrowserProfile[]>([]);
   const [statuses, setStatuses] = useState<Record<string, ProfileStatus>>({});
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [existingProfileId, setExistingProfileId] = useState("");
   const [editingId, setEditingId] = useState<string>();
   const [editingName, setEditingName] = useState("");
   const [browserBridgeDirectory, setBrowserBridgeDirectory] = useState("");
@@ -1660,15 +1590,34 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`);
-      const result = (await response.json()) as {
-        profiles?: ManagedPluginProfile[];
-        browserBridgeDirectory?: string;
+      const [inventoryResponse, legacyResponse] = await Promise.all([
+        fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profile-inventory`),
+        fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`),
+      ]);
+      const result = (await inventoryResponse.json()) as PluginProfileInventory & {
         error?: string;
       };
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os perfis.");
-      setProfiles(result.profiles ?? []);
-      setBrowserBridgeDirectory(result.browserBridgeDirectory ?? "");
+      if (!inventoryResponse.ok) {
+        throw new Error(result.error ?? "Não foi possível carregar os perfis.");
+      }
+      const usesByProfile = new Map(
+        (result.uses ?? [])
+          .filter((entry) => entry.pluginId === plugin.id)
+          .map((entry) => [entry.profileId, entry.methods] as const),
+      );
+      setProfiles(
+        (result.linked ?? []).map(({ profile, binding }) => ({
+          ...profile,
+          pluginId: plugin.id,
+          usages: usesByProfile.get(profile.id) ?? [],
+          bindingUpdatedAt: binding.updatedAt,
+        })),
+      );
+      setCandidates((result.candidates ?? []).map(({ profile }) => profile));
+      if (legacyResponse.ok) {
+        const legacy = (await legacyResponse.json()) as { browserBridgeDirectory?: string };
+        setBrowserBridgeDirectory(legacy.browserBridgeDirectory ?? "");
+      }
     } catch (error) {
       toast.error("Não foi possível carregar os perfis", {
         description: error instanceof Error ? error.message : undefined,
@@ -1691,7 +1640,7 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
       profiles.map(async (profile) => {
         try {
           const response = await fetch(
-            `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}/status`,
+            `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings/${encodeURIComponent(profile.id)}/status`,
             { method: "POST", signal: controller.signal },
           );
           const result = (await response.json()) as { ready?: boolean };
@@ -1711,12 +1660,24 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
   async function createProfile() {
     setCreating(true);
     try {
-      const response = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/profiles`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      const result = (await response.json()) as ManagedPluginProfile & { error?: string };
+      if (existingProfileId) {
+        const profile = candidates.find((candidate) => candidate.id === existingProfileId);
+        if (!profile) throw new Error("O perfil selecionado não está mais disponível.");
+        if (await linkProfile(profile)) setExistingProfileId("");
+        return;
+      }
+      const response = await fetch(
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        },
+      );
+      const result = (await response.json()) as {
+        profile?: PublicBrowserProfile;
+        error?: string;
+      };
       if (!response.ok) throw new Error(result.error ?? "Não foi possível criar o perfil.");
       setName("");
       await load();
@@ -1732,23 +1693,50 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
     }
   }
 
+  async function linkProfile(profile: PublicBrowserProfile) {
+    const confirmed = window.confirm(
+      t(
+        `Vincular ${profile.name} a ${plugin.manifest.name}? Este plugin poderá usar a sessão local já existente neste perfil.`,
+      ),
+    );
+    if (!confirmed) return false;
+    const response = await fetch(
+      `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings/${encodeURIComponent(profile.id)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sharedSessionConsent: true,
+          profileUpdatedAt: profile.updatedAt,
+        }),
+      },
+    );
+    const result = (await response.json()) as { error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Não foi possível adicionar o perfil.");
+    await load();
+    toast.success("Perfil adicionado", {
+      description: "Agora prepare a conta para confirmar a sessão neste perfil.",
+    });
+    return true;
+  }
+
   async function copyBrowserBridgeDirectory() {
     if (!browserBridgeDirectory) return;
     await navigator.clipboard.writeText(browserBridgeDirectory);
     toast.success("Caminho da extensão copiado");
   }
 
-  async function renameProfile(profile: ManagedPluginProfile) {
+  async function renameProfile(profile: PublicBrowserProfile) {
     try {
       const response = await fetch(
-        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}`,
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings/${encodeURIComponent(profile.id)}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: editingName }),
+          body: JSON.stringify({ name: editingName, profileUpdatedAt: profile.updatedAt }),
         },
       );
-      const result = (await response.json()) as ManagedPluginProfile & { error?: string };
+      const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Não foi possível renomear o perfil.");
       setEditingId(undefined);
       await load();
@@ -1760,14 +1748,21 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
     }
   }
 
-  async function prepareProfile(profile: ManagedPluginProfile) {
+  async function prepareProfile(profile: PublicBrowserProfile) {
     setStatuses((current) => ({ ...current, [profile.id]: "preparing" }));
     toast.info("Prepare a conta na janela do navegador", {
-      description: plugin.manifest.profileSetup?.description,
+      description: [
+        plugin.manifest.profileSetup?.description,
+        t(
+          "A janela continuará aberta. Instale ou atualize a extensão, faça login e feche o navegador quando terminar.",
+        ),
+      ]
+        .filter(Boolean)
+        .join(" "),
     });
     try {
       const response = await fetch(
-        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}/prepare`,
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings/${encodeURIComponent(profile.id)}/prepare`,
         { method: "POST" },
       );
       const result = (await response.json()) as {
@@ -1779,27 +1774,48 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
         throw new Error(result.error ?? "O login não foi confirmado pelo plugin.");
       }
       setStatuses((current) => ({ ...current, [profile.id]: "ready" }));
-      toast.success("Perfil pronto", { description: result.message });
+      toast.success("Perfil pronto", {
+        description: [
+          result.message,
+          t("O perfil está pronto. Feche o navegador quando terminar a configuração."),
+        ]
+          .filter(Boolean)
+          .join(" "),
+      });
     } catch (error) {
       setStatuses((current) => ({ ...current, [profile.id]: "missing" }));
       toast.error("Não foi possível preparar o perfil", {
-        description: error instanceof Error ? error.message : undefined,
+        description: [
+          error instanceof Error ? error.message : undefined,
+          t(
+            "A janela permanecerá aberta para você corrigir a extensão ou o login. Feche o navegador quando terminar.",
+          ),
+        ]
+          .filter(Boolean)
+          .join(" "),
       });
     }
   }
 
   async function removeProfile(profile: ManagedPluginProfile) {
-    if (profile.usages.length) return;
     if (
       !window.confirm(
-        `Remover ${profile.name} do gerenciamento? A pasta de sessão local não será apagada.`,
+        t(
+          profile.usages.length
+            ? "Este perfil ainda está vinculado a processos. Ao removê-lo deste plugin, será necessário configurar outro perfil nesses processos antes de executar. O perfil global e a sessão local serão preservados."
+            : "Remover este perfil deste plugin? O perfil global e a sessão local serão preservados.",
+        ),
       )
     )
       return;
     try {
       const response = await fetch(
-        `/api/plugins/${encodeURIComponent(plugin.id)}/profiles/${encodeURIComponent(profile.id)}`,
-        { method: "DELETE" },
+        `/api/plugins/${encodeURIComponent(plugin.id)}/profile-bindings/${encodeURIComponent(profile.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bindingUpdatedAt: profile.bindingUpdatedAt }),
+        },
       );
       if (!response.ok) {
         const result = (await response.json()) as { error?: string };
@@ -1861,12 +1877,40 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
             value={name}
             maxLength={64}
             placeholder="Nome do novo perfil"
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              setName(event.target.value);
+              if (event.target.value) setExistingProfileId("");
+            }}
           />
+          <Select
+            value={existingProfileId}
+            onValueChange={(profileId) => {
+              setExistingProfileId(profileId);
+              setName("");
+            }}
+            disabled={!candidates.length}
+          >
+            <SelectTrigger className="sm:min-w-56">
+              <SelectValue
+                placeholder={
+                  candidates.length
+                    ? t("Usar perfil existente")
+                    : t("Nenhum perfil existente disponível")
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {candidates.map((profile) => (
+                <SelectItem key={profile.id} value={profile.id}>
+                  {profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
             type="button"
             size="sm"
-            disabled={creating || !name.trim()}
+            disabled={creating || (!name.trim() && !existingProfileId)}
             onClick={() => void createProfile()}
           >
             {creating ? (
@@ -1976,12 +2020,7 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
                       variant="ghost"
                       className="size-8 text-destructive"
                       aria-label={`Remover ${profile.name}`}
-                      title={
-                        profile.usages.length
-                          ? "Troque as referências antes de remover"
-                          : "Remover do gerenciamento"
-                      }
-                      disabled={Boolean(profile.usages.length)}
+                      title={t("Desvincular deste plugin")}
                       onClick={() => void removeProfile(profile)}
                     >
                       <Trash2 className="size-3.5" />
@@ -2027,6 +2066,9 @@ function PluginProfilesPanel({ plugin }: { plugin: DiscoveredPlugin }) {
                       Este perfil ainda não é utilizado por nenhum Método.
                     </p>
                   )}
+                  {plugin.manifest.profileSetup?.namedUrls && (
+                    <PluginProfileNamedUrls key={`${plugin.id}:${profile.id}`} pluginId={plugin.id} profileId={profile.id} />
+                  )}
                 </article>
               );
             })}
@@ -2052,6 +2094,7 @@ function UpdateInstalledPluginPanel({
 }) {
   const [folderPath, setFolderPath] = useState("");
   const [updating, setUpdating] = useState(false);
+  const { language } = useAppPreferences();
 
   async function updateFromCatalog() {
     setUpdating(true);
@@ -2128,6 +2171,21 @@ function UpdateInstalledPluginPanel({
             )}
             Atualizar plugin
           </Button>
+        </div>
+      )}
+      {update?.compatibility?.status === "incompatible" && (
+        <div role="alert" className="mt-3 rounded-lg border border-warning/30 p-3 text-xs">
+          <p className="font-semibold">
+            {pluginAdministrationText("blockedCatalog", language)}: {update.version}
+          </p>
+          <p className="mt-1">
+            {pluginAdministrationText(update.compatibility.reason ?? "invalid_manifest", language)}
+          </p>
+          {update.minCoreVersion && (
+            <p>
+              {pluginAdministrationText("minCoreVersion", language)}: {update.minCoreVersion}
+            </p>
+          )}
         </div>
       )}
       <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
@@ -2339,292 +2397,4 @@ function exportManifest(plugin: DiscoveredPlugin) {
     description:
       "Para compartilhar um plugin funcional, envie também a pasta completa do executor.",
   });
-}
-
-function SortablePluginRow({ id, children }: { id: string; children: ReactNode }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    setActivatorNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={cn(
-        "relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 py-2.5 pl-8 first:pt-0 last:pb-0",
-        isDragging && "z-10 rounded-lg bg-muted/80 opacity-80 shadow-lg",
-      )}
-    >
-      <button
-        ref={setActivatorNodeRef}
-        type="button"
-        className="absolute left-0 top-1/2 -translate-y-1/2 touch-none rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
-        aria-label="Arrastar para reorganizar"
-        title="Arrastar para reorganizar"
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="size-4" aria-hidden="true" />
-      </button>
-      {children}
-    </div>
-  );
-}
-
-function PluginLibraryManagementDialog({
-  open,
-  onOpenChange,
-  plugins,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  plugins: DiscoveredPlugin[];
-}) {
-  const {
-    pluginOrganization,
-    togglePluginFavorite,
-    setPluginSection,
-    movePluginInSection,
-    setPluginHidden,
-    setPluginOrganization,
-  } = useAppPreferences();
-
-  const pluginMap = useMemo(() => new Map(plugins.map((p) => [p.id, p])), [plugins]);
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  const reorderSection = useCallback(
-    (section: PluginSection, orderedPlugins: DiscoveredPlugin[], event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const oldIndex = orderedPlugins.findIndex((plugin) => plugin.id === active.id);
-      const newIndex = orderedPlugins.findIndex((plugin) => plugin.id === over.id);
-      if (oldIndex < 0 || newIndex < 0) return;
-      setPluginOrganization((current) => ({
-        ...current,
-        sectionOrder: {
-          ...current.sectionOrder,
-          [section]: arrayMove(
-            orderedPlugins.map((plugin) => plugin.id),
-            oldIndex,
-            newIndex,
-          ),
-        },
-      }));
-    },
-    [setPluginOrganization],
-  );
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Organizar biblioteca de plugins</DialogTitle>
-          <DialogDescription>
-            Defina favoritos, organize plugins em seções, ajuste a ordem manual e oculte plugins sem
-            afetar os Métodos ou a execução.
-          </DialogDescription>
-        </DialogHeader>
-
-        <p className="rounded-lg border border-brand/25 bg-brand/5 px-3 py-2 text-xs text-muted-foreground">
-          Arraste pelo ícone <GripVertical className="mx-0.5 inline size-3.5" aria-hidden="true" />{" "}
-          para reorganizar a ordem dentro da seção. Os botões de seta continuam disponíveis.
-        </p>
-
-        <div className="space-y-6 pt-2">
-          {PLUGIN_SECTIONS.map((sectionKey) => {
-            const sectionMeta = PLUGIN_SECTION_META[sectionKey];
-            const orderedIds = pluginOrganization.sectionOrder[sectionKey] ?? [];
-            const sectionPlugins = orderedIds
-              .map((id) => pluginMap.get(id))
-              .filter((p): p is DiscoveredPlugin => Boolean(p));
-
-            for (const plugin of plugins) {
-              const pref = pluginOrganization.items[plugin.id];
-              const sec = pref?.section ?? "none";
-              if (sec === sectionKey && !orderedIds.includes(plugin.id)) {
-                sectionPlugins.push(plugin);
-              }
-            }
-
-            return (
-              <div
-                key={sectionKey}
-                className="rounded-xl border border-border bg-card/60 p-3 sm:p-4"
-              >
-                <div className="flex items-center justify-between mb-3 border-b border-border/70 pb-2">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-xs font-semibold">{sectionMeta.label}</h3>
-                    <Badge variant="secondary" className="text-[10px]">
-                      {sectionPlugins.length}
-                    </Badge>
-                  </div>
-                </div>
-
-                {sectionPlugins.length === 0 ? (
-                  <p className="text-xs text-muted-foreground py-2 italic">
-                    Nenhum plugin nesta seção.
-                  </p>
-                ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={(event) => reorderSection(sectionKey, sectionPlugins, event)}
-                  >
-                    <SortableContext
-                      items={sectionPlugins.map((plugin) => plugin.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="divide-y divide-border/60">
-                        {sectionPlugins.map((plugin, index) => {
-                          const pref = pluginOrganization.items[plugin.id] ?? {
-                            section: "none",
-                            favorite: false,
-                            hidden: false,
-                          };
-                          const isFirst = index === 0;
-                          const isLast = index === sectionPlugins.length - 1;
-
-                          return (
-                            <SortablePluginRow key={plugin.id} id={plugin.id}>
-                              <div className="flex items-center gap-3 min-w-0 flex-1">
-                                <button
-                                  type="button"
-                                  aria-label={
-                                    pref.favorite
-                                      ? "Remover dos favoritos"
-                                      : "Adicionar aos favoritos"
-                                  }
-                                  title={
-                                    pref.favorite
-                                      ? "Remover dos favoritos"
-                                      : "Adicionar aos favoritos"
-                                  }
-                                  className="p-1 text-muted-foreground hover:text-amber-400 transition shrink-0"
-                                  onClick={() => togglePluginFavorite(plugin.id)}
-                                >
-                                  <Star
-                                    className={`size-4 ${
-                                      pref.favorite
-                                        ? "fill-amber-400 text-amber-400"
-                                        : "opacity-40 hover:opacity-100"
-                                    }`}
-                                  />
-                                </button>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    <span className="text-xs font-semibold truncate">
-                                      {plugin.manifest.name}
-                                    </span>
-                                    <Badge variant="outline" className="text-[9px]">
-                                      v{plugin.manifest.version}
-                                    </Badge>
-                                    {pref.hidden && (
-                                      <Badge variant="secondary" className="text-[9px] gap-1">
-                                        <EyeOff className="size-2.5" /> Oculto
-                                      </Badge>
-                                    )}
-                                    {(plugin.methodDependencyCount ?? 0) > 0 && (
-                                      <Badge
-                                        variant="outline"
-                                        className="text-[9px] text-brand-soft border-brand/40"
-                                      >
-                                        Em uso por {plugin.methodDependencyCount} bloco(s)
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground truncate mt-0.5">
-                                    {plugin.manifest.author} · {plugin.id}
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                                {/* Reorder buttons */}
-                                <div className="flex items-center rounded border border-border">
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    className="size-7 rounded-none"
-                                    disabled={isFirst}
-                                    title="Mover para cima"
-                                    aria-label="Mover para cima"
-                                    onClick={() => movePluginInSection(plugin.id, "up")}
-                                  >
-                                    <ArrowUp className="size-3.5" />
-                                  </Button>
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    className="size-7 rounded-none border-l border-border"
-                                    disabled={isLast}
-                                    title="Mover para baixo"
-                                    aria-label="Mover para baixo"
-                                    onClick={() => movePluginInSection(plugin.id, "down")}
-                                  >
-                                    <ArrowDown className="size-3.5" />
-                                  </Button>
-                                </div>
-
-                                {/* Section selector */}
-                                <Select
-                                  value={pref.section}
-                                  onValueChange={(val) =>
-                                    setPluginSection(plugin.id, val as PluginSection)
-                                  }
-                                >
-                                  <SelectTrigger className="h-7 w-32 text-xs">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {PLUGIN_SECTIONS.map((s) => (
-                                      <SelectItem key={s} value={s} className="text-xs">
-                                        {PLUGIN_SECTION_META[s].label}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-
-                                {/* Hide / Show toggle */}
-                                <Button
-                                  size="sm"
-                                  variant={pref.hidden ? "secondary" : "ghost"}
-                                  className="h-7 text-xs gap-1"
-                                  title={
-                                    pref.hidden ? "Exibir na biblioteca" : "Ocultar da biblioteca"
-                                  }
-                                  onClick={() => setPluginHidden(plugin.id, !pref.hidden)}
-                                >
-                                  {pref.hidden ? (
-                                    <Eye className="size-3" />
-                                  ) : (
-                                    <EyeOff className="size-3" />
-                                  )}
-                                  <span className="hidden md:inline">
-                                    {pref.hidden ? "Exibir" : "Ocultar"}
-                                  </span>
-                                </Button>
-                              </div>
-                            </SortablePluginRow>
-                          );
-                        })}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
 }

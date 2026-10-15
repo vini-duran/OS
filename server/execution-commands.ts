@@ -1,4 +1,5 @@
 import { deriveProcessOutput } from "../src/lib/process-output";
+import { captureCollectionSelection } from "../src/lib/strategic-library";
 import { applyGeneratedProjectTitle } from "../src/lib/project-title";
 import {
   PROCESS_META,
@@ -6,8 +7,6 @@ import {
   type BlockItemRetryScope,
   type Channel,
   type ChannelLibraryItem,
-  type PluginRecoveryAuthorization,
-  type PluginRecoveryAuthorizationTarget,
   type ProcessExecution,
   type ProcessId,
   type ProcessMethod,
@@ -15,13 +14,7 @@ import {
   type RuntimeValue,
   type StrategicCollection,
 } from "../src/lib/domain";
-import { CoreKeyStore } from "./security/core-keystore";
-import {
-  captureProjectStrategy,
-  completedProcessProgress,
-  nextExecutableProcess,
-  projectProcessOrder,
-} from "../src/lib/process-order";
+import { captureProjectStrategy, refreshProjectProcessStrategy } from "../src/lib/process-order";
 import {
   createProcessOutputFields,
   getMethodConfigurationIssue,
@@ -29,41 +22,35 @@ import {
   normalizeMethodBlocks,
 } from "../src/lib/human-workflow";
 import { getPresentationRestrictionIssue } from "../src/lib/presentation";
+import { validateRuntimeValueAgainstShape } from "../src/lib/runtime-value-validation";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
-import { attemptAfterRetryInvalidation } from "../src/lib/retry-attempt";
+import { recordBlockDeliveries, recordProcessOutputDelivery } from "../src/lib/deliveries";
 import {
-  pluginConversationFallbackAttachments,
-  pluginConversationFallbackContext,
-} from "../src/lib/conversation-context";
-import {
-  invalidateBlockDeliveries,
-  recordBlockDeliveries,
-  recordProcessOutputDelivery,
-} from "../src/lib/deliveries";
+  applyCompletedBlockTransition,
+  applyCurrentBlockDeliveryAcceptance,
+  applyExecutionProjectProjection,
+  applyHumanBlockCompletion,
+  applyManualBlockRetry,
+  applyValidationOutcome,
+  createCanonicalProcessExecution,
+  validationOutcomeFromValues,
+} from "../src/lib/execution-core";
 
 /** Synchronous domain transitions. The caller owns the SQLite transaction. */
-export function executionCommands(
-  db: {
-    channels: Channel[];
-    projects: Project[];
-    executions: ProcessExecution[];
-    libraryItems: ChannelLibraryItem[];
-    libraryCollections: StrategicCollection[];
-  },
-  keyStore?: CoreKeyStore,
-) {
+export function executionCommands(db: {
+  channels: Channel[];
+  projects: Project[];
+  executions: ProcessExecution[];
+  libraryItems: ChannelLibraryItem[];
+  libraryCollections: StrategicCollection[];
+  adaptMethod?: (
+    method: ProcessMethod,
+    source: "strategy_snapshot" | "persisted_channel",
+  ) => ProcessMethod | undefined;
+}) {
   const touchExecution = (execution: ProcessExecution) => {
     execution.updatedAt = new Date().toISOString();
   };
-  function completeProjectStage(project: Project, stage: ProcessId) {
-    project.stages = { ...project.stages, [stage]: "done" };
-    const order = projectProcessOrder(project);
-    const next = nextExecutableProcess(order, project.stages, project.runFrom, project.runThrough);
-    project.currentStage = next ?? stage;
-    project.state = next ? project.stages[next] : "done";
-    project.progress = completedProcessProgress(project.stages);
-  }
-
   function startProcessExecution(projectId: string, processType: ProcessId) {
     const existing = db.executions.find(
       (item) => item.projectId === projectId && item.processType === processType,
@@ -77,9 +64,16 @@ export function executionCommands(
         channel,
         db.executions.some((item) => item.projectId === projectId),
       );
-    const method = project?.strategySnapshot?.methods[processType] ?? channel?.methods[processType];
+    const snapshotMethod = project?.strategySnapshot?.methods?.[processType];
+    const storedMethod = channel?.methods?.[processType] ?? snapshotMethod;
+    const method = storedMethod
+      ? db.adaptMethod
+        ? db.adaptMethod(storedMethod, channel ? "persisted_channel" : "strategy_snapshot")
+        : storedMethod
+      : undefined;
     const normalizedMethod = method
       ? {
+          contractVersion: method.contractVersion,
           name: method.name || `Método de ${PROCESS_META[processType].label}`,
           imageUrl: method.imageUrl,
           processType,
@@ -96,120 +90,77 @@ export function executionCommands(
     }
     const now = new Date().toISOString();
     const methodSnapshot: ProcessMethod = {
+      contractVersion: normalizedMethod.contractVersion,
       name: normalizedMethod.name,
       imageUrl: normalizedMethod.imageUrl,
       processType,
-      blocks: structuredClone(normalizedMethod.blocks),
+      blocks: normalizedMethod.blocks,
     };
-    const execution: ProcessExecution = {
-      id: crypto.randomUUID(),
+    const creation = createCanonicalProcessExecution({
+      executionId: crypto.randomUUID(),
       projectId,
       channelId: channel.id,
       processType,
       methodSnapshot,
-      blocks: methodSnapshot.blocks.map((block, index) => ({
-        blockId: block.id,
-        status:
-          index === 0
-            ? block.operator === "Humano" && !block.plugin
-              ? "awaiting_human"
-              : "blocked_executor"
-            : "pending",
-        values: {},
-        attempt: 1,
-        startedAt: index === 0 ? now : undefined,
-      })),
-      status:
-        methodSnapshot.blocks[0]?.operator === "Humano" && !methodSnapshot.blocks[0]?.plugin
-          ? "awaiting_human"
-          : "blocked_executor",
-      outputStatus: "pending",
-      createdAt: now,
-      updatedAt: now,
-    };
+      now,
+    });
+    if (!creation.ok) return undefined;
+    const execution = creation.execution;
     db.executions.unshift(execution);
-    project.stages = {
-      ...project.stages,
-      [processType]: execution.status === "awaiting_human" ? "awaiting_human" : "processing",
-    };
-    project.currentStage = processType;
-    project.state = project.stages[processType];
+    applyExecutionProjectProjection(project, execution);
     touchExecution(execution);
     return execution;
   }
 
-  function finalizeOrRequestOutput(execution: ProcessExecution) {
-    const project = db.projects.find((item) => item.id === execution.projectId);
-    const output = deriveProcessOutput(execution);
-    if (output) {
-      execution.output = output;
-      recordProcessOutputDelivery(execution, output.values, output.createdAt);
-      execution.outputStatus = "completed";
-      execution.status = "completed";
-      if (project) {
-        completeProjectStage(project, execution.processType);
-        applyGeneratedProjectTitle(project, execution);
-      }
-    } else {
-      execution.outputStatus = "awaiting_human";
-      execution.status = "awaiting_output";
-      if (project) {
-        project.stages = { ...project.stages, [execution.processType]: "awaiting_human" };
-        project.currentStage = execution.processType;
-        project.state = "awaiting_human";
-      }
-    }
-    touchExecution(execution);
-    return execution;
-  }
-
-  function activateNextBlock(execution: ProcessExecution, completedIndex: number) {
-    const nextExecution = execution.blocks[completedIndex + 1];
-    const nextBlock = execution.methodSnapshot.blocks[completedIndex + 1];
-    if (!nextExecution || !nextBlock) return finalizeOrRequestOutput(execution);
-
+  function activateNextBlock(execution: ProcessExecution, completedBlockId: string) {
     const now = new Date().toISOString();
-    nextExecution.startedAt = now;
-    nextExecution.attempt = Math.max(1, nextExecution.attempt ?? 1);
-    nextExecution.error = undefined;
-    nextExecution.status =
-      nextBlock.operator === "Humano" && !nextBlock.plugin ? "awaiting_human" : "blocked_executor";
-    execution.status =
-      nextExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
+    const transition = applyCompletedBlockTransition(execution, completedBlockId, now, {
+      deriveProcessOutput,
+      recordProcessOutputDelivery,
+    });
+    if (!transition.ok) {
+      throw new Error(
+        `Execution Core blocked transition: ${transition.decision.reason} (${transition.diagnostics
+          .map((diagnostic) => diagnostic.code)
+          .join(", ")})`,
+      );
+    }
+
     const project = db.projects.find((item) => item.id === execution.projectId);
     if (project) {
-      project.stages = {
-        ...project.stages,
-        [execution.processType]:
-          nextExecution.status === "awaiting_human" ? "awaiting_human" : "blocked",
-      };
-      project.currentStage = execution.processType;
-      project.state = project.stages[execution.processType];
+      applyExecutionProjectProjection(project, execution);
+      if (execution.status === "completed") applyGeneratedProjectTitle(project, execution);
     }
     touchExecution(execution);
     return execution;
   }
 
   function blockDeliveryIssues(block: ActionBlock, values: Record<string, RuntimeValue>) {
-    const issues = (block.outputs ?? [])
-      .filter((output) => output.required && isEmptyRuntimeValue(values[output.key]))
-      .map((output) => output.label);
-    for (const output of block.outputs ?? []) {
-      const issue = getPresentationRestrictionIssue(output.presentation, values[output.key]);
-      if (issue) issues.push(`${output.label}: ${issue}`);
-    }
-    for (const output of (block.outputs ?? []).filter((field) => field.type === "records")) {
-      const storedRecords = values[output.key];
-      const records = Array.isArray(storedRecords) ? storedRecords : [];
-      records.forEach((record, index) => {
-        if (!record || typeof record !== "object" || Array.isArray(record) || "url" in record)
-          return;
-        for (const recordField of (output.recordFields ?? []).filter((field) => field.required)) {
-          if (isEmptyRuntimeValue(record[recordField.key] as RuntimeValue | undefined)) {
-            issues.push(`${output.label} · registro ${index + 1} · ${recordField.label}`);
-          }
+    const outputs = block.outputs ?? [];
+    const outputKeys = new Set(outputs.map((output) => output.key));
+    const issues = Object.keys(values)
+      .filter((key) => !outputKeys.has(key))
+      .map((key) => `Output desconhecido: ${key}`);
+    issues.push(
+      ...outputs
+        .filter((output) => output.required && isEmptyRuntimeValue(values[output.key]))
+        .map((output) => output.label),
+    );
+    for (const output of outputs) {
+      const value = values[output.key];
+      if (!isEmptyRuntimeValue(value)) {
+        const materialIssues = validateRuntimeValueAgainstShape(output.shape, value, output.key);
+        if (materialIssues.length) {
+          issues.push(`${output.label}: ${materialIssues[0].message}`);
+          continue;
         }
-      });
+      }
+      const issue = getPresentationRestrictionIssue(
+        output.shape,
+        output.presentation,
+        values[output.key],
+      );
+      if (issue) issues.push(`${output.label}: ${issue}`);
     }
     return issues;
   }
@@ -255,11 +206,16 @@ export function executionCommands(
     if (unresolvedInputs.length) return false;
 
     const now = new Date().toISOString();
+    const collection = db.libraryCollections.find(
+      (candidate) => candidate.id === block.collectionId,
+    );
+    if (!collection || !item) return false;
+    captureCollectionSelection(execution, blockId, item, collection, db.executions);
     blockExecution.values = { selectedItemId: itemId };
     blockExecution.status = "completed";
     blockExecution.completedAt = now;
     recordBlockDeliveries(execution, block, blockExecution.values, "completed", now);
-    activateNextBlock(execution, execution.blocks.indexOf(blockExecution));
+    activateNextBlock(execution, blockExecution.blockId);
     return true;
   }
 
@@ -282,107 +238,6 @@ export function executionCommands(
     execution.status = "awaiting_human";
     touchExecution(execution);
     return true;
-  }
-
-  function retryValidatedBlock(
-    execution: ProcessExecution,
-    validationBlock: ActionBlock,
-    validationValues: Record<string, RuntimeValue>,
-  ) {
-    const targetBlockId = validationBlock.validation?.targetBlockId;
-    const targetIndex = execution.methodSnapshot.blocks.findIndex(
-      (candidate) => candidate.id === targetBlockId,
-    );
-    const validationIndex = execution.methodSnapshot.blocks.findIndex(
-      (candidate) => candidate.id === validationBlock.id,
-    );
-    if (targetIndex < 0 || targetIndex >= validationIndex) {
-      return {
-        ok: false as const,
-        message: "O bloco validado não está disponível para nova tentativa.",
-      };
-    }
-
-    const targetBlock = execution.methodSnapshot.blocks[targetIndex];
-    const targetExecution = execution.blocks[targetIndex];
-    const maxAttempts = Math.max(1, validationBlock.validation?.maxAttempts ?? 3);
-    // Provider retries before the first review must not consume editorial
-    // validation rounds. The validator's own attempt tracks those rounds.
-    if ((execution.blocks[validationIndex].attempt ?? 1) >= maxAttempts) {
-      return {
-        ok: false as const,
-        message: `O limite de ${maxAttempts} tentativas foi atingido. Revise o método ou aprove manualmente o resultado atual.`,
-      };
-    }
-
-    const now = new Date().toISOString();
-    const retryMode = validationBlock.validation?.retryMode ?? "full";
-    const retryConversationContext = pluginConversationFallbackContext(
-      targetBlock,
-      targetExecution.values,
-    );
-    const retryConversationAttachments = pluginConversationFallbackAttachments(
-      targetExecution.values,
-    );
-    for (let index = targetIndex; index < execution.blocks.length; index += 1) {
-      const blockExecution = execution.blocks[index];
-      const preserveConversation = index === targetIndex && retryMode === "conversation_feedback";
-      blockExecution.attempt = attemptAfterRetryInvalidation(blockExecution);
-      blockExecution.values = {};
-      blockExecution.error = undefined;
-      blockExecution.logs = undefined;
-      blockExecution.completedAt = undefined;
-      blockExecution.jobId = undefined;
-      blockExecution.progress = undefined;
-      blockExecution.progressMessage = undefined;
-      blockExecution.retryFeedback = undefined;
-      blockExecution.retryMode = undefined;
-      blockExecution.retryConversationContext = undefined;
-      blockExecution.retryConversationAttachments = undefined;
-      blockExecution.recoveryAuthorization = undefined;
-      blockExecution.recoverySnapshot = undefined;
-      if (!preserveConversation) blockExecution.pluginConversation = undefined;
-      if (index === targetIndex) {
-        blockExecution.startedAt = now;
-        blockExecution.retryFeedback = structuredClone(validationValues);
-        blockExecution.retryMode = retryMode;
-        blockExecution.retryConversationContext = retryConversationContext;
-        blockExecution.retryConversationAttachments = retryConversationAttachments;
-        blockExecution.status =
-          targetBlock.operator === "Humano" && !targetBlock.plugin
-            ? "awaiting_human"
-            : "blocked_executor";
-      } else {
-        blockExecution.startedAt = undefined;
-        blockExecution.status = "pending";
-      }
-    }
-    invalidateBlockDeliveries(
-      execution,
-      [
-        ...execution.methodSnapshot.blocks.slice(targetIndex).map((item) => item.id),
-        "__process_output__",
-      ],
-      now,
-    );
-
-    execution.output = undefined;
-    execution.outputStatus = "pending";
-    execution.error = undefined;
-    execution.status =
-      targetExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
-    const project = db.projects.find((candidate) => candidate.id === execution.projectId);
-    if (project) {
-      project.stages = {
-        ...project.stages,
-        [execution.processType]:
-          targetExecution.status === "awaiting_human" ? "awaiting_human" : "blocked",
-      };
-      project.currentStage = execution.processType;
-      project.state = project.stages[execution.processType];
-    }
-    touchExecution(execution);
-    return { ok: true as const, blockName: targetBlock.name ?? targetBlock.type };
   }
 
   function completeHumanBlock(
@@ -425,26 +280,44 @@ export function executionCommands(
     }
     const missing = blockDeliveryIssues(block, values);
     if (missing.length) return { ok: false, missing };
-    const rejected = (block.outputs ?? []).some(
-      (output) => output.type === "approval" && values[output.key] === "rejected",
-    );
-    if (rejected) {
-      blockExecution.values = structuredClone(values);
-      recordBlockDeliveries(execution, block, blockExecution.values, "completed");
-      if (block.type === "VALIDAR" && block.validation?.onReject === "retry_target") {
-        const retry = retryValidatedBlock(execution, block, values);
-        if (!retry.ok) return { ok: false, missing: [retry.message] };
-        return { ok: true, completedProcess: false, retriedBlock: retry.blockName };
-      }
-      touchExecution(execution);
-      return { ok: true, completedProcess: false, pausedValidation: true };
-    }
     const now = new Date().toISOString();
-    blockExecution.values = structuredClone(values);
-    blockExecution.status = "completed";
-    blockExecution.completedAt = now;
+    const completion = applyHumanBlockCompletion(execution, {
+      type: "human_block_completed",
+      blockId,
+      values,
+      now,
+    });
+    if (!completion.ok) {
+      return { ok: false, missing: ["Executor humano indisponível"] };
+    }
     recordBlockDeliveries(execution, block, blockExecution.values, "completed", now);
-    const updated = activateNextBlock(execution, execution.blocks.indexOf(blockExecution));
+    if (block.type === "VALIDAR") {
+      const validation = applyValidationOutcome(
+        execution,
+        block.id,
+        validationOutcomeFromValues(block, blockExecution.values),
+        now,
+      );
+      if (!validation.ok) {
+        touchExecution(execution);
+        return { ok: false, missing: [validation.message] };
+      }
+      if (validation.outcome === "paused") {
+        applyExecutionProjectProjection(project, execution);
+        touchExecution(execution);
+        return { ok: true, completedProcess: false, pausedValidation: true };
+      }
+      if (validation.outcome === "retry_target") {
+        applyExecutionProjectProjection(project, execution);
+        touchExecution(execution);
+        return {
+          ok: true,
+          completedProcess: false,
+          retriedBlock: validation.targetBlockName,
+        };
+      }
+    }
+    const updated = activateNextBlock(execution, blockExecution.blockId);
     return { ok: true, completedProcess: updated.status === "completed" };
   }
 
@@ -456,9 +329,28 @@ export function executionCommands(
     if (!execution || execution.status !== "awaiting_output") {
       return { ok: false, missing: ["Execução indisponível para receber o resultado final"] };
     }
-    const missing = createProcessOutputFields(execution.processType)
-      .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
-      .map((field) => field.label);
+    const outputFields = createProcessOutputFields(execution.processType);
+    const outputKeys = new Set(outputFields.map((field) => field.key));
+    const missing = Object.keys(values)
+      .filter((key) => !outputKeys.has(key))
+      .map((key) => `Output desconhecido: ${key}`);
+    missing.push(
+      ...outputFields
+        .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
+        .map((field) => field.label),
+    );
+    for (const field of outputFields) {
+      const value = values[field.key];
+      if (isEmptyRuntimeValue(value)) continue;
+      const issues = validateRuntimeValueAgainstShape(field.shape, value, field.key);
+      if (issues.length) missing.push(`${field.label}: ${issues[0].message}`);
+      const presentationIssue = getPresentationRestrictionIssue(
+        field.shape,
+        field.presentation,
+        value,
+      );
+      if (presentationIssue) missing.push(`${field.label}: ${presentationIssue}`);
+    }
     if (missing.length) return { ok: false, missing };
 
     execution.output = {
@@ -471,165 +363,81 @@ export function executionCommands(
     execution.status = "completed";
     const project = db.projects.find((item) => item.id === execution.projectId);
     if (project) {
-      completeProjectStage(project, execution.processType);
+      applyExecutionProjectProjection(project, execution);
       applyGeneratedProjectTitle(project, execution);
     }
     touchExecution(execution);
     return { ok: true };
   }
 
-  function acceptBlockDelivery(executionId: string, blockId: string) {
+  function acceptBlockDelivery(
+    executionId: string,
+    blockId: string,
+    recoveredValues: Record<string, RuntimeValue> = {},
+  ) {
     const execution = db.executions.find((item) => item.id === executionId);
     const blockExecution = execution?.blocks.find((item) => item.blockId === blockId);
     const block = execution?.methodSnapshot.blocks.find((item) => item.id === blockId);
+    if (!execution || !blockExecution || !block) {
+      return { ok: false as const, missing: ["Esta entrega não pode ser finalizada neste estado"] };
+    }
+    // Explicitly recovering a missing declared output must never replace preserved work.
     if (
-      !execution ||
-      !blockExecution ||
-      !block ||
-      !["failed", "cancelled"].includes(blockExecution.status) ||
-      block.type === "ESCOLHER" ||
-      block.type === "VALIDAR"
+      Object.entries(recoveredValues).some(
+        ([key, value]) =>
+          !block.outputs?.some((field) => field.key === key) ||
+          (blockExecution.values[key] !== undefined &&
+            JSON.stringify(blockExecution.values[key]) !== JSON.stringify(value)),
+      )
     ) {
       return { ok: false as const, missing: ["Esta entrega não pode ser finalizada neste estado"] };
     }
-    const missing = blockDeliveryIssues(block, blockExecution.values);
+    const values = { ...blockExecution.values, ...recoveredValues };
+    const missing = blockDeliveryIssues(block, values);
     if (missing.length) return { ok: false as const, missing };
 
     const now = new Date().toISOString();
-    blockExecution.status = "completed";
-    blockExecution.completedAt = now;
-    blockExecution.error = undefined;
-    blockExecution.progress = 1;
-    blockExecution.progressMessage = undefined;
-    blockExecution.itemProgress = undefined;
-    blockExecution.itemRetryScope = undefined;
+    const acceptance = applyCurrentBlockDeliveryAcceptance(execution, {
+      type: "current_block_delivery_accepted",
+      blockId,
+      now,
+    });
+    if (!acceptance.ok) {
+      return { ok: false as const, missing: ["Esta entrega não pode ser finalizada neste estado"] };
+    }
+    blockExecution.values = values;
     recordBlockDeliveries(execution, block, blockExecution.values, "completed", now);
-    execution.error = undefined;
-    const updated = activateNextBlock(execution, execution.blocks.indexOf(blockExecution));
+    const updated = activateNextBlock(execution, blockExecution.blockId);
     return { ok: true as const, completedProcess: updated.status === "completed" };
   }
 
   function retryBlockExecution(
     executionId: string,
     blockId: string,
-    retryScopeOrOptions:
-      | BlockItemRetryScope
-      | { confirmSnapshotRevision?: string; retryScope?: BlockItemRetryScope; itemId?: string }
-      | string = "all",
-    argItemId?: string,
+    retryScope: BlockItemRetryScope = "all",
+    itemId?: string,
   ) {
-    let retryScope: BlockItemRetryScope = "all";
-    let itemId = argItemId;
-    let confirmSnapshotRevision: string | undefined;
-
-    if (typeof retryScopeOrOptions === "object" && retryScopeOrOptions !== null) {
-      confirmSnapshotRevision = retryScopeOrOptions.confirmSnapshotRevision?.trim();
-      if (retryScopeOrOptions.retryScope) {
-        retryScope = retryScopeOrOptions.retryScope;
-      }
-      if (retryScopeOrOptions.itemId) {
-        itemId = retryScopeOrOptions.itemId;
-      }
-    } else if (typeof retryScopeOrOptions === "string") {
-      if (
-        retryScopeOrOptions === "all" ||
-        retryScopeOrOptions === "remaining" ||
-        retryScopeOrOptions === "selected"
-      ) {
-        retryScope = retryScopeOrOptions;
-      } else {
-        confirmSnapshotRevision = retryScopeOrOptions.trim();
-      }
-    }
-
     const execution = db.executions.find((item) => item.id === executionId);
-    const blockExecution = execution?.blocks.find((item) => item.blockId === blockId);
-    const block = execution?.methodSnapshot.blocks.find((item) => item.id === blockId);
-    if (
-      !execution ||
-      !blockExecution ||
-      !block ||
-      (!["failed", "cancelled"].includes(blockExecution.status) &&
-        !(retryScope === "selected" && blockExecution.status === "completed"))
-    )
-      return false;
-
-    // Se há snapshot pendente, exige confirmação correspondente ANTES de qualquer mutação
-    if (blockExecution.recoverySnapshot) {
-      if (
-        !confirmSnapshotRevision ||
-        blockExecution.recoverySnapshot.snapshotRevision !== confirmSnapshotRevision
-      ) {
-        return false;
-      }
-    } else if (confirmSnapshotRevision) {
-      return false;
-    }
-
-    const nextAttempt = (blockExecution.attempt ?? 1) + 1;
-    blockExecution.attempt = nextAttempt;
-    invalidateBlockDeliveries(execution, [blockId]);
-    blockExecution.error = undefined;
-    blockExecution.pluginConversation = undefined;
-    blockExecution.jobId = undefined;
-    blockExecution.traceId = undefined;
-
-    if (retryScope === "selected" && !blockExecution.items?.some((item) => item.id === itemId)) {
-      return false;
-    }
-    blockExecution.itemRetryScope = retryScope;
-    blockExecution.itemRetryId = retryScope === "selected" ? itemId : undefined;
-    blockExecution.completedAt = undefined;
-    if (retryScope === "all") {
-      blockExecution.values = {};
-      blockExecution.itemProgress = undefined;
-      blockExecution.progress = undefined;
-    } else if (blockExecution.itemProgress?.total) {
-      blockExecution.progress =
-        blockExecution.itemProgress.completed / blockExecution.itemProgress.total;
-    }
-    blockExecution.progressMessage = undefined;
-
-    // Emite autorização de recuperação assinada somente quando a confirmação do snapshot é válida
-    if (confirmSnapshotRevision && blockExecution.recoverySnapshot) {
-      const snapshot = blockExecution.recoverySnapshot;
-      const target: PluginRecoveryAuthorizationTarget = {
-        executionId: execution.id,
-        blockId: block.id,
-        attempt: nextAttempt,
-        externalTarget: {
-          system: snapshot.system,
-          runId: snapshot.runId,
-          targetId: snapshot.targetId,
-          cycle: snapshot.cycle,
-          snapshotRevision: snapshot.snapshotRevision,
-        },
-      };
-      const signer = keyStore ?? new CoreKeyStore();
-      const recoveryAuth = signer.signRecoveryAuthorization({ target });
-
-      blockExecution.recoveryAuthorization = recoveryAuth;
-      blockExecution.recoveryHistory = [...(blockExecution.recoveryHistory ?? []), recoveryAuth];
-      blockExecution.recoverySnapshot = undefined;
-    } else {
-      blockExecution.recoveryAuthorization = undefined;
-      blockExecution.recoverySnapshot = undefined;
-    }
-    blockExecution.status =
-      block.operator === "Humano" && !block.plugin ? "awaiting_human" : "blocked_executor";
-    execution.error = undefined;
-    execution.status =
-      blockExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
+    if (!execution) return false;
     const project = db.projects.find((item) => item.id === execution.projectId);
-    if (project) {
-      project.stages = {
-        ...project.stages,
-        [execution.processType]:
-          blockExecution.status === "awaiting_human" ? "awaiting_human" : "blocked",
-      };
-      project.currentStage = execution.processType;
-      project.state = project.stages[execution.processType];
-    }
+    const channel = db.channels.find((item) => item.id === execution.channelId);
+    const storedCurrentMethod = channel?.methods?.[execution.processType];
+    const currentMethod = storedCurrentMethod
+      ? db.adaptMethod
+        ? db.adaptMethod(storedCurrentMethod, "persisted_channel")
+        : storedCurrentMethod
+      : undefined;
+    if (!project) return false;
+    if (channel && (!currentMethod || getMethodConfigurationIssue(currentMethod))) return false;
+    const result = applyManualBlockRetry(
+      execution,
+      { type: "manual_block_retry_requested", blockId, scope: retryScope, itemId },
+      new Date().toISOString(),
+      currentMethod,
+    );
+    if (!result.ok) return false;
+    if (channel) refreshProjectProcessStrategy(project, channel, execution.processType);
+    applyExecutionProjectProjection(project, execution);
     touchExecution(execution);
     return true;
   }

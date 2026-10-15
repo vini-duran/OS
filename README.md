@@ -1,56 +1,61 @@
+> **Fork da equipe — candidata de fonte1.3.7,15/10/2026:** esta branch consolida a revisao usada na origem e preserva a ancestralidade do fork antigo. Nao e instalador nem release estavel. Comece por [Core da equipe](docs/ecosystem/CORE_137_OWNER_CANDIDATE.md) e [autorizacao registrada](docs/AUTORIZACAO_E_LICENCA.md). Pacote macOS ARM64 e aceite do outro orquestrador sao etapas posteriores. Documentacao original abaixo preservada; links oficiais/catalogos nao identificam automaticamente o pacote desta branch.
+
 # ContentFlow
-
-## Ecossistema vini-duran — entrada pela main
-
-Este fork mantém o aplicativo, runtime e contratos técnicos. A main é fonte
-consolidada, não a identidade de um pacote já publicado.
-
-- [Entrada e configuração do agente](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/entrada/README.md).
-- [Instalar/atualizar esta máquina](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/docs/fluxos/manutencao-local/README.md).
-- [Publicar ou adotar plugins e ferramentas da equipe](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/team-bootstrap/skills/contentflow-universal-integration-governance/references/publicacao-e-adocao.md).
-- [Evoluir, validar localmente e publicar nosso fork](docs/UPSTREAM_SYNC.md).
-- [Versão aprovada, plataformas, rotas e evidências](https://github.com/vini-duran/ContentFlow_Universal_Integrations/blob/main/configs/distribution/README.md):
-  consulte o manifesto na revisão fixada; não escolher a versão pelo histórico.
-- [Históricos de integração](docs/historico/README.md): fatos e limites de
-  rodadas anteriores, sem procedimentos concorrentes na raiz.
-
-O número de versão em `package.json` identifica esta fonte; o manifesto universal
-identifica a distribuição consumível. Commits documentais não mudam o ZIP.
-As escolhas da Proposta Única pertencem ao humano e ao repositório do projeto.
-
-| Destino | Responsabilidade |
-| --- | --- |
-| [Universal](https://github.com/vini-duran/ContentFlow_Universal_Integrations) | Entrada, skills, mecanismos compartilhados e atualização preservativa |
-| [Automation_Magnata](https://github.com/vini-duran/Automation_Magnata) | Proposta Única, Métodos, estratégia e operação do Magnata |
-| Este fork | Aplicativo, runtime e compatibilidade; upstream somente consulta/fetch |
-
-Não mova pastas de projetos existentes nem dados/cofre para dentro do aplicativo.
-Windows e Linux não estão homologados por esta rodada do nosso ecossistema.
 
 O ContentFlow é um gerenciador estratégico de Métodos para produção de conteúdo. Ele separa a estratégia — processos, blocos, operadores, prompts, parâmetros e aprovações — da execução funcional feita por pessoas ou por plugins independentes.
 
 > O núcleo e os plugins são produtos separados. O aplicativo funciona sem plugins; nenhum pacote do ecossistema é incorporado, ativado ou tratado como confiável pela distribuição do núcleo.
 
+## O que já faz
+
+O aplicativo organiza Canais e Projetos, oferece um construtor visual de Métodos, Biblioteca Estratégica, importação/exportação v3, snapshots de execução, entregas tipadas, aprovações humanas e filas do Orquestrador. Métodos humanos funcionam sem plugins; operadores IA e Código usam capabilities instaladas e autorizadas pelo usuário.
+
+A gramática combina oito Processos — Tema, Título, Thumbnail, Roteiro, Narração e Áudio, Assets Visuais, Edição e Publicação — com quatro Blocos (`BUSCAR`, `ESCOLHER`, `CRIAR`, `VALIDAR`) e três Operadores (Humano, IA, Código). O Método define a estratégia; o plugin implementa a ferramenta usada em um Bloco.
+
+O produto possui uso real relatado em temas, títulos, thumbnails e roteiros. Isso não comprova toda combinação de integração ou uma produção automática completa. Consulte [estado atual e limitações](docs/CURRENT_STATE.md): Métodos são lineares, recuperação automática não é universal e a cobertura real varia por cenário.
+
 ## Encontre o que precisa
 
-| Área         | Conteúdo                                                                         | Comece aqui                                                                                            |
-| ------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Núcleo       | Interface React, API local, execução de Métodos, persistência e desktop Electron | [`docs/README.md`](docs/README.md)                                                                     |
-| Ecossistema  | Protocolo público, plugins, exemplos, Browser Bridge, Plugin Kit e skills        | [`ecosystem/README.md`](ecosystem/README.md)                                                           |
-| Criar plugin | Guia rápido, templates, testes e contratos da Plugin API v1                      | [`ecosystem/docs/quickstart.md`](ecosystem/docs/quickstart.md)                                         |
-| Criar Método | Skill portátil para modelar e validar arquivos `.contentflow-method.json`        | [`ecosystem/skills/contentflow-method-development/`](ecosystem/skills/contentflow-method-development/) |
-| Releases     | Distribuições do nosso fork e limites de instalação                            | [GitHub Releases do fork](https://github.com/vini-duran/OS/releases)                                    |
+| Área         | Conteúdo                                                                         | Comece aqui                                                                                          |
+| ------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Núcleo       | Interface React, API local, execução de Métodos, persistência e desktop Electron | [`docs/README.md`](docs/README.md)                                                                   |
+| Estado atual | Capacidades presentes, limitações e alcance das evidências                       | [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md)                                                     |
+| Ecossistema  | Protocolo público, plugins, exemplos, Browser Bridge, Plugin Kit e skills        | [`ecosystem/README.md`](ecosystem/README.md)                                                         |
+| Criar plugin | Guia rápido, templates, testes e contratos da Plugin API v2                      | [`docs/ecosystem/quickstart.md`](docs/ecosystem/quickstart.md)                                       |
+| Criar Método | Formato v3, contratos, validação e execução                                      | [Referência de Métodos](ecosystem/skills/contentflow-method-development/references/method-format.md) |
+| Desenvolver  | Cenários verticais, regressões e ferramentas internas                            | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)                                                         |
+| Releases     | Instaladores e versões portáteis para Windows                                    | [GitHub Releases](https://github.com/andremjr/contentflow/releases)                                  |
 
-## Instalação e preservação
+## Quero apenas usar o ContentFlow no Windows
 
-No macOS, siga [DESKTOP_MACOS.md](docs/DESKTOP_MACOS.md). O manifesto universal
-define o artefato e as rotas de migração aceitas; a última versão numérica do
-autor não substitui essa decisão. Projetos, plugins e credenciais existentes
-devem ser preservados e conferidos antes/depois. Uma instalação vazia começa
-sem plugins: eles são pacotes separados, sujeitos a consentimento.
+Você não precisa instalar Git, Node, npm nem abrir terminal.
 
-O [registro de atualização do fork para 1.1.0](docs/FORK_UPDATE_V1_1.md) documenta a validação local e a transferência segura. O [guia Windows herdado](docs/DESKTOP.md) documenta o produto upstream;
-não representa homologação do nosso fork nessa plataforma.
+1. Abra a [release estável mais recente](https://github.com/andremjr/contentflow/releases/latest).
+2. Em **Assets**, baixe o arquivo que termina em `x64-Setup.exe` — esta é a opção recomendada.
+3. Instale e abra o ContentFlow. O aviso do Windows pode aparecer enquanto o aplicativo ainda não possui assinatura digital comercial; confirme que o download veio deste repositório oficial.
+4. Crie um Canal, monte ou importe um Método e crie seu primeiro Projeto.
+5. Plugins são opcionais e baixados separadamente. O aplicativo funciona sem eles; quando quiser automação, abra **Plugins**, baixe o pacote, extraia-o e instale todos de uma vez informando a pasta raiz.
+
+Projetos, plugins e credenciais ficam na área de dados do usuário e são preservados nas atualizações. Por isso, quem atualiza continua vendo os plugins que já instalou. Em uma instalação realmente nova, com a área de dados vazia, a tela **Plugins** começa zerada: os plugins não estão no instalador nem no portátil e só aparecem depois que a pessoa baixa o ZIP separado e instala cada pacote pelo aplicativo. Veja o [guia completo para Windows](docs/DESKTOP.md) e, se algo falhar, consulte primeiro as mensagens exibidas no próprio bloco ou plugin.
+
+## Como usar e estender
+
+No Canal, associe um Método a cada Processo e configure a ordem da estratégia. No editor, combine Blocos, escolha operadores e conecte entradas às saídas compatíveis. Ao iniciar um Projeto, o núcleo congela a estratégia, executa os Blocos e apresenta entregas e pendências humanas. Acompanhe o resultado no Projeto e forneça os inputs ou aprovações solicitados.
+
+Um Método é uma composição declarativa de ações; um plugin é um pacote executável independente que oferece capabilities. Para criar um Método, consulte [formato](ecosystem/skills/contentflow-method-development/references/method-format.md), [validação](ecosystem/skills/contentflow-method-development/references/validation.md) e [execução](ecosystem/skills/contentflow-method-development/references/runtime-execution.md). Para plugins, siga o [tutorial com Plugin Kit, sandbox e execução no aplicativo](docs/ecosystem/tutorial.md).
+
+## Como os componentes se relacionam
+
+```text
+Método / Blocos → snapshot → Core de execução → Humano ou plugin
+                                 ↑                  ↓
+                        estado e deliveries ← resultado validado
+Plugin → API / código local / Browser Bridge → página do navegador
+Perfil físico → vínculo explícito + readiness → lease → instância Chrome
+Orquestrador → agenda Projetos conforme estratégia congelada e recursos
+```
+
+O Core controla estado, identidades e decisões universais; o plugin conhece a ferramenta; a Bridge transporta operações autorizadas. Cada perfil físico atende uma execução de navegador por vez. Paralelismo usa perfis distintos e unidades exclusivas. A [arquitetura](docs/ARCHITECTURE.md) detalha responsabilidades e contratos.
 
 ## Estrutura do repositório
 
@@ -59,23 +64,24 @@ contentflow/
 ├── src/                 interface e domínio compartilhado do núcleo
 ├── server/              API local, persistência e motor de execução
 ├── desktop/             shell Electron, empacotamento e atualização
-├── docs/                arquitetura, produto, desktop e licenciamento
+├── docs/                documentação do núcleo e do ecossistema
+│   └── ecosystem/       Plugin API, segurança, guias e evidências
 ├── ecosystem/           tudo que é externo ao núcleo
 │   ├── plugins/         pacotes de referência e exemplos comunitários
 │   ├── browser-bridge/  extensão companheira para automação de navegador
 │   ├── plugin-kit/      CLI e templates para autores
 │   ├── skills/          skills de criação de plugins e Métodos
-│   └── docs/            protocolo, segurança e guias do ecossistema
+│   └── tests/           validações integradas do ecossistema
 └── .github/             automações e governança do repositório
 ```
 
-As pastas `src`, `server` e `desktop` compõem o produto ContentFlow. A pasta `ecosystem` contém ferramentas e pacotes interoperáveis, publicados no mesmo repositório apenas para facilitar descoberta, estudo e desenvolvimento.
+As pastas `src`, `server` e `desktop` compõem o produto ContentFlow. A pasta `docs` concentra toda a documentação, com o protocolo público isolado em `docs/ecosystem`. A pasta `ecosystem` contém apenas ferramentas, testes e pacotes interoperáveis, publicados no mesmo repositório para facilitar descoberta, estudo e desenvolvimento.
 
 ## Plugins
 
 Os pacotes atualmente disponíveis em [`ecosystem/plugins/reference`](ecosystem/plugins/reference/) são plugins independentes disponibilizados separadamente. Eles não fazem parte do núcleo e sua presença neste repositório não representa promessa de manutenção contínua, suporte, disponibilidade de provedores ou compatibilidade futura. Cada plugin possui identidade, versão, permissões, dependências e licença próprias; quem cria ou distribui um plugin é responsável por seu pacote.
 
-O ContentFlow valida todos os plugins pela mesma Plugin API v1, solicita consentimento local e executa o código em processo separado com a sandbox de permissões do Node. APIs oficiais, automações de navegador, FFmpeg, Python e regras específicas de fornecedores permanecem dentro dos respectivos plugins.
+O ContentFlow valida todos os plugins pela mesma Plugin API v2, solicita consentimento local e executa o código em processo separado com a sandbox de permissões do Node. APIs oficiais, automações de navegador, FFmpeg, Python e regras específicas de fornecedores permanecem dentro dos respectivos plugins.
 
 O instalador aceita tanto a pasta de um plugin quanto a raiz extraída de `ContentFlow-Plugins.zip`. No segundo caso, valida o conjunto antes de instalar, adiciona todos os plugins novos em lote e preserva sem sobrescrever os que já estavam instalados.
 
@@ -88,8 +94,8 @@ o mesmo consentimento, a mesma ativação e a mesma sandbox.
 Requisitos: Node.js 26 e npm 10 ou superior.
 
 ```sh
-git clone https://github.com/vini-duran/OS.git
-cd OS
+git clone https://github.com/andremjr/contentflow.git
+cd contentflow
 npm ci
 npm run dev
 ```
@@ -107,14 +113,22 @@ npm run plugin:kit -- create ./meu-plugin
 npm run plugin:kit -- check ./meu-plugin
 ```
 
+O desenvolvimento atual parte de Métodos/plugins e cenários verticais reais: observar resultado e invariantes, investigar falhas, corrigir na autoridade correta, acrescentar regressão quando aplicável e repetir o cenário. Veja o [processo de desenvolvimento](docs/DEVELOPMENT.md).
+
 ## Documentação essencial
 
 - [Arquitetura e visão de produto](docs/ARCHITECTURE.md)
-- [Plugin API v1](ecosystem/docs/protocol.md)
-- [Segurança de plugins](ecosystem/docs/security.md)
-- [Automação de navegador](ecosystem/docs/browser-automation.md)
-- [Distribuição e responsabilidades](ecosystem/docs/distribution.md)
+- [Estado atual e limitações](docs/CURRENT_STATE.md)
+- [Desenvolvimento e validação vertical](docs/DEVELOPMENT.md)
+- [Mapa e autoridade da documentação](docs/README.md)
+- [Interface do plugin](docs/PLUGIN_INTERFACE.md)
+- [Plugin API v2](docs/ecosystem/protocol.md)
+- [Segurança de plugins](docs/ecosystem/security.md)
+- [Automação de navegador](docs/ecosystem/browser-automation.md)
+- [Distribuição e responsabilidades](docs/ecosystem/distribution.md)
 - [Licença e uso de IA](LICENSE)
+
+Registros de fases anteriores estão no [índice histórico](docs/history/README.md), separados da documentação de uso e dos contratos atuais.
 
 ## Licença
 

@@ -9,9 +9,37 @@ import {
   type Project,
   type StoredFile,
   type StrategicCollection,
+  type ValueShape,
 } from "../../src/lib/domain";
 import { planPortableMethodTransfer } from "../../src/lib/method-file";
 import { effectiveProcessOrder } from "../../src/lib/process-order";
+
+function contentShape(
+  family: "text" | "image" | "audio" | "video",
+  cardinality: "one" | "many" = "one",
+): ValueShape {
+  return {
+    kind: "content",
+    family,
+    cardinality,
+    representation: family === "text" ? "inline" : "artifact",
+  };
+}
+
+function controlShape(
+  control:
+    | "identifier"
+    | "number"
+    | "boolean"
+    | "selection"
+    | "datetime"
+    | "url"
+    | "approval"
+    | "thumbnail_layout",
+  cardinality: "one" | "many" = "one",
+): ValueShape {
+  return { kind: "control", control, cardinality };
+}
 
 async function seed(request: APIRequestContext) {
   const id = randomUUID();
@@ -32,7 +60,7 @@ async function seed(request: APIRequestContext) {
             id: `field-${processType}`,
             key: processType,
             label: `Resultado ${processType}`,
-            type: processType === "theme" ? "textarea" : processType === "title" ? "text" : "image",
+            shape: contentShape(processType === "thumbnail" ? "image" : "text"),
             required: true,
           },
         ],
@@ -61,6 +89,15 @@ async function seed(request: APIRequestContext) {
   return channel;
 }
 
+test("CTA do projeto na barra lateral aponta para o site oficial", async ({ page }) => {
+  await page.goto("/dashboard");
+  const cta = page.getByRole("link", { name: /Saiba mais sobre o projeto ContentFlow/ });
+  await expect(cta).toBeVisible();
+  await expect(cta).toHaveText("Saiba mais sobre o projeto ContentFlow");
+  await expect(cta).toHaveAttribute("href", "https://andremjr.github.io/contentflow/");
+  await expect(cta).toHaveAttribute("target", "_blank");
+});
+
 test("reordena Processos na barra lateral, persiste e rejeita dependência posterior", async ({
   page,
   request,
@@ -82,11 +119,13 @@ test("reordena Processos na barra lateral, persiste e rejeita dependência poste
     "aria-label",
     "Reordenar processo Roteiro",
   );
-  await page.getByRole("button", { name: "Reordenar processo Roteiro" }).focus();
+  const dragStatus = page.getByRole("status").filter({ hasText: /draggable item/i });
+  const keyboardScriptHandle = page.getByRole("button", { name: "Reordenar processo Roteiro" });
+  await keyboardScriptHandle.focus();
   await page.keyboard.press("Space");
-  await page.waitForTimeout(150);
+  await expect(dragStatus).toContainText("moved over droppable area script");
   await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("ArrowDown");
+  await expect(dragStatus).toContainText("moved over droppable area thumbnail");
   await page.keyboard.press("Space");
   await expect
     .poll(async () => {
@@ -94,10 +133,13 @@ test("reordena Processos na barra lateral, persiste e rejeita dependência poste
       return channels.find((item) => item.id === channel.id)?.processOrder?.slice(2, 4);
     })
     .toEqual(["thumbnail", "script"]);
-  await page.getByRole("button", { name: "Reordenar processo Roteiro" }).focus();
+  const reorderedScriptHandle = page.getByRole("button", { name: "Reordenar processo Roteiro" });
+  await expect(reorderedScriptHandle).toBeEnabled();
+  await reorderedScriptHandle.focus();
   await page.keyboard.press("Space");
-  await page.waitForTimeout(150);
+  await expect(dragStatus).toContainText("moved over droppable area script");
   await page.keyboard.press("ArrowUp");
+  await expect(dragStatus).toContainText("moved over droppable area thumbnail");
   await page.keyboard.press("Space");
   await expect
     .poll(async () => {
@@ -113,11 +155,13 @@ test("reordena Processos na barra lateral, persiste e rejeita dependência poste
         {
           id: "script-reference",
           label: "Roteiro",
-          type: "textarea",
-          source: "previous_process",
-          sourceProcessType: "script",
-          blockId: "__process_output__",
-          sourceKey: "script",
+          shape: contentShape("text"),
+          binding: {
+            kind: "previous_process",
+            processType: "script",
+            blockId: "__process_output__",
+            outputKey: "script",
+          },
         },
       ],
     })),
@@ -258,7 +302,7 @@ test("prévia de reutilização inclui dependências transitivas e mantém itens
             id: "script-output-local-e2e",
             key: "script",
             label: "Roteiro",
-            type: "textarea",
+            shape: contentShape("text"),
             required: true,
           },
         ],
@@ -279,11 +323,13 @@ test("prévia de reutilização inclui dependências transitivas e mantém itens
         {
           id: "script-input-local-e2e",
           label: "Roteiro",
-          type: "textarea",
-          source: "previous_process",
-          sourceProcessType: "script",
-          sourceKey: "script",
-          blockId: "script-local-e2e",
+          shape: contentShape("text"),
+          binding: {
+            kind: "previous_process",
+            processType: "script",
+            outputKey: "script",
+            blockId: "script-local-e2e",
+          },
         },
       ],
     })),
@@ -371,7 +417,14 @@ test("compartilhamento exporta itens somente após marcar a opção", async ({ p
     id: randomUUID(),
     channelId: source.id,
     name: "Fórmulas compartilháveis E2E",
-    fields: [{ id: "formula-e2e", label: "Fórmula", type: "textarea", required: true }],
+    fields: [
+      {
+        id: "formula-e2e",
+        label: "Fórmula",
+        shape: contentShape("text"),
+        required: true,
+      },
+    ],
     createdAt: new Date().toISOString(),
   };
   expect((await request.post("/api/library/collections", { data: collection })).ok()).toBeTruthy();
@@ -456,7 +509,7 @@ test("aplicação atômica remapeia coleções, preserva itens locais e rejeita 
       {
         id: "source-formula",
         label: "Fórmula",
-        type: "textarea",
+        shape: contentShape("text"),
         required: true,
       },
     ],
@@ -506,7 +559,7 @@ test("aplicação atômica remapeia coleções, preserva itens locais e rejeita 
             id: "source-script-output",
             label: "Roteiro",
             key: "script",
-            type: "textarea",
+            shape: contentShape("text"),
             required: true,
           },
         ],
@@ -530,11 +583,13 @@ test("aplicação atômica remapeia coleções, preserva itens locais e rejeita 
         {
           id: "source-script-input",
           label: "Roteiro",
-          type: "textarea",
-          source: "previous_process",
-          sourceProcessType: "script",
-          sourceKey: "script",
-          blockId: "source-script-block",
+          shape: contentShape("text"),
+          binding: {
+            kind: "previous_process",
+            processType: "script",
+            outputKey: "script",
+            blockId: "source-script-block",
+          },
         },
       ],
     })),
@@ -551,7 +606,7 @@ test("aplicação atômica remapeia coleções, preserva itens locais e rejeita 
       {
         id: "target-formula",
         label: "Fórmula",
-        type: "textarea",
+        shape: contentShape("text"),
         required: true,
       },
     ],
@@ -640,7 +695,7 @@ test("aplicação com itens copia asset local com novo vínculo e preserva conte
     id: randomUUID(),
     channelId: source.id,
     name: "Referências visuais E2E",
-    fields: [{ id: "source-image", label: "Imagem", type: "image", required: true }],
+    fields: [{ id: "source-image", label: "Imagem", shape: contentShape("image"), required: true }],
     createdAt: new Date().toISOString(),
   };
   expect(
@@ -853,16 +908,15 @@ test("expõe e persiste o contrato ambíguo do plugin no editor do Método", asy
       {
         id: "prompts",
         label: "Prompts",
-        type: "list",
-        source: "static",
-        staticValue: "Primeiro\nSegundo",
+        shape: contentShape("text", "many"),
+        binding: { kind: "runtime" },
       },
       {
         id: "sections",
         label: "Quantidade",
-        type: "number",
-        source: "static",
-        staticValue: "2",
+        shape: controlShape("number"),
+        binding: { kind: "static", value: "2" },
+        portKey: "sections",
       },
     ],
     outputs: [
@@ -870,7 +924,7 @@ test("expõe e persiste o contrato ambíguo do plugin no editor do Método", asy
         id: "script",
         key: "script",
         label: "Roteiro",
-        type: "textarea",
+        shape: contentShape("text"),
         required: true,
       },
     ],
@@ -893,16 +947,19 @@ test("expõe e persiste o contrato ambíguo do plugin no editor do Método", asy
   await page.goto(`/channel/${channel.id}/methods?process=script`);
   await page.getByRole("button", { name: /01 Criar Roteiro em sequência/ }).click();
   await expect(page.getByText("Requer ajustes", { exact: true })).toBeVisible();
-  await page.getByText("Plugin executor", { exact: true }).click();
+  const pluginTrigger = page.getByRole("button").filter({ hasText: "Plugin executor" });
+  await pluginTrigger.click();
   await expect(page.getByText("Parâmetros do prompt (0)", { exact: true })).toBeVisible();
   await page.getByText("Dados usados pelo plugin", { exact: true }).click();
 
-  const dialog = page.getByRole("dialog");
-  await dialog.getByRole("combobox").nth(2).click();
+  const dialog = page.getByRole("region", { name: "Configurar plugin executor" });
+  await dialog
+    .locator("details")
+    .filter({ hasText: "Dados usados pelo plugin" })
+    .getByRole("combobox")
+    .first()
+    .click();
   await page.getByRole("option", { name: "Outline / estrutura", exact: true }).click();
-  await dialog.getByRole("combobox").nth(3).click();
-  await page.getByRole("option", { name: "Quantidade de blocos", exact: true }).click();
-
   await expect(page.getByText("Pronto para executar", { exact: true })).toBeVisible();
   await expect
     .poll(async () => {
@@ -911,6 +968,9 @@ test("expõe e persiste o contrato ambíguo do plugin no editor do Método", asy
       return saved?.inputs?.map((input) => input.portKey);
     })
     .toEqual(["outline", "sections"]);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(pluginTrigger).toBeFocused();
 });
 
 test("lista o plugin do processo antes de o contrato do bloco estar compatível", async ({
@@ -937,7 +997,7 @@ test("lista o plugin do processo antes de o contrato do bloco estar compatível"
         id: "image",
         key: "image",
         label: "Imagem",
-        type: "image",
+        shape: contentShape("image"),
         required: true,
       },
     ],
@@ -954,11 +1014,9 @@ test("lista o plugin do processo antes de o contrato do bloco estar compatível"
 
   await page.goto(`/channel/${channel.id}/methods?process=script`);
   await page.getByRole("button", { name: /01 Criar Imagem ainda sem contrato/ }).click();
-  const pluginDetails = page.locator("details").filter({ hasText: "Plugin executor" });
-  await pluginDetails.evaluate((element: HTMLDetailsElement) => {
-    element.open = true;
-  });
-  await pluginDetails.getByRole("combobox").click();
+  await page.getByText("Plugin executor", { exact: true }).click();
+  const pluginDialog = page.getByRole("region", { name: "Configurar plugin executor" });
+  await pluginDialog.getByRole("combobox").click();
   await expect(
     page.getByRole("option", { name: "Plugin de Contrato E2E · Resultado", exact: true }),
   ).toBeVisible();
@@ -1037,7 +1095,7 @@ test("centraliza perfis no plugin e deixa o Método apenas selecionar perfis exi
         id: "managed-profile-result",
         key: "result",
         label: "Resultado",
-        type: "text",
+        shape: contentShape("text"),
         required: true,
       },
     ],
@@ -1073,28 +1131,51 @@ test("centraliza perfis no plugin e deixa o Método apenas selecionar perfis exi
   await expect(page.getByText("Perfil novo com acento", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
 
+  const inventory = (await (
+    await request.get(`/api/plugins/${encodeURIComponent(pluginId)}/profile-inventory`)
+  ).json()) as { linked: Array<{ profile: { id: string; alias: string } }> };
+  const profileIdByAlias = new Map(
+    inventory.linked.map(({ profile }) => [profile.alias, profile.id] as const),
+  );
+  const selectedProfileIds = ["Perfil-novo-com-acento", "principal-legado", "reserva-legado"].map(
+    (alias) => {
+      const profileId = profileIdByAlias.get(alias);
+      expect(profileId, `perfil vinculado ${alias}`).toBeTruthy();
+      return profileId!;
+    },
+  );
+
   await page.goto(`/channel/${channel.id}/methods?process=title`);
   await page.getByText("Criar título com perfil", { exact: true }).first().click();
   await page.getByText("Plugin executor", { exact: true }).click();
-  const profileSection = page.locator("section").filter({
-    hasText: "Selecione um perfil já cadastrado",
-  });
+  const profileSection = page
+    .getByTestId("plugin-configuration-panel")
+    .locator("section")
+    .filter({ hasText: "Selecione um perfil já cadastrado" });
   await expect(profileSection).toBeVisible();
   await expect(profileSection.getByRole("textbox")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Preparar perfil" })).toHaveCount(0);
-  await profileSection.getByRole("combobox").click();
-  await page.getByRole("option", { name: "Perfil novo com acento", exact: true }).click();
-  await profileSection.getByLabel("principal-legado", { exact: true }).check();
+  await profileSection.getByRole("combobox").last().click();
+  await page.getByRole("option", { name: /^Perfil novo com acento/ }).click();
+  await expect(profileSection.getByRole("combobox").last()).toContainText("Perfil novo com acento");
+  await profileSection.getByRole("checkbox", { name: /principal-legado/ }).check();
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
 
   await expect
     .poll(async () => {
       const channels = (await (await request.get("/api/channels")).json()) as Channel[];
       const saved = channels.find((candidate) => candidate.id === channel.id);
-      return saved?.methods.title.blocks[0]?.plugin?.configuration;
+      return saved?.methods.title.blocks[0]?.plugin;
     })
-    .toEqual({
-      accountProfile: "Perfil-novo-com-acento",
-      fallbackAccountProfiles: "reserva-legado\nprincipal-legado",
+    .toMatchObject({
+      configuration: {
+        accountProfile: "Perfil-novo-com-acento",
+        fallbackAccountProfiles: "principal-legado\nreserva-legado",
+      },
+      profileExecution: {
+        mode: "fallback",
+        profileIds: selectedProfileIds,
+      },
     });
 });
 
@@ -1105,16 +1186,18 @@ test("editor mantém entradas e variáveis do prompt sincronizadas", async ({ pa
     type: "CRIAR",
     operator: "IA",
     name: "Criar com contexto",
-    instructions: "Use {{inputs.tema_do_video}}.",
+    instructions: "Use {{inputs.tema_anterior}}.",
     inputs: [
       {
         id: "linked-theme",
         label: "Tema anterior",
-        type: "textarea",
-        source: "previous_process",
-        sourceProcessType: "theme",
-        blockId: "__process_output__",
-        sourceKey: "theme",
+        shape: contentShape("text"),
+        binding: {
+          kind: "previous_process",
+          processType: "theme",
+          blockId: "__process_output__",
+          outputKey: "theme",
+        },
       },
     ],
     outputs: [
@@ -1122,14 +1205,15 @@ test("editor mantém entradas e variáveis do prompt sincronizadas", async ({ pa
         id: "linked-result",
         key: "result",
         label: "Resultado",
-        type: "textarea",
+        shape: contentShape("text"),
         required: true,
       },
     ],
     parameters: [],
+    order: 0,
   };
   const methodResponse = await request.put(`/api/channels/${channel.id}/methods/title`, {
-    data: { blocks: [block] },
+    data: { name: "Título com contexto", blocks: [block] },
   });
   expect(methodResponse.ok(), await methodResponse.text()).toBeTruthy();
 
@@ -1173,8 +1257,13 @@ test("editor expõe um campo da coleção como saída do bloco Escolher", async 
     channelId: channel.id,
     name: "Layouts E2E",
     fields: [
-      { id: "layout-name", label: "Nome do layout", type: "text", required: true },
-      { id: "layout-field", label: "Layout", type: "thumbnail_layout", required: true },
+      { id: "layout-name", label: "Nome do layout", shape: contentShape("text"), required: true },
+      {
+        id: "layout-field",
+        label: "Layout",
+        shape: contentShape("text"),
+        required: true,
+      },
     ],
     createdAt: new Date().toISOString(),
   };
@@ -1202,10 +1291,12 @@ test("editor expõe um campo da coleção como saída do bloco Escolher", async 
       {
         id: "chosen-layout",
         label: "layout escolhido",
-        type: "thumbnail_layout",
-        source: "previous_block",
-        blockId: chooseBlock.id,
-        sourceKey: "layout-field",
+        shape: contentShape("text"),
+        binding: {
+          kind: "previous_block",
+          blockId: chooseBlock.id,
+          outputKey: "layout-field",
+        },
       },
     ],
     outputs: [
@@ -1213,7 +1304,7 @@ test("editor expõe um campo da coleção como saída do bloco Escolher", async 
         id: "thumbnail-output",
         key: "thumbnail",
         label: "Thumbnail",
-        type: "image",
+        shape: contentShape("image"),
         required: true,
       },
     ],
@@ -1236,7 +1327,8 @@ test("editor expõe um campo da coleção como saída do bloco Escolher", async 
   await expect(sourceField.getByRole("combobox")).toContainText("Layout");
 
   await page.getByRole("button", { name: "Close" }).click();
-  await page.getByText("Escolher layout", { exact: true }).first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.locator("article > button").filter({ hasText: "Escolher layout" }).click();
   await expect(page.getByText("Coleção estratégica", { exact: true })).toBeVisible();
   await expect(page.getByLabel(/Considerar escolhas anteriores/)).toBeVisible();
   await expect(page.getByText("Item escolhido", { exact: true })).toHaveCount(0);
@@ -1320,7 +1412,7 @@ test("validação resume contextos extensos e permite expandir cada entrega", as
                   id: "long-context-output",
                   key: "long_context",
                   label: "Contexto extenso",
-                  type: "textarea",
+                  shape: contentShape("text"),
                   required: true,
                 },
               ],
@@ -1339,14 +1431,14 @@ test("validação resume contextos extensos e permite expandir cada entrega", as
                   id: "validation-decision",
                   key: "decision",
                   label: "Decisão",
-                  type: "approval",
+                  shape: controlShape("approval"),
                   required: true,
                 },
                 {
                   id: "validation-feedback",
                   key: "feedback",
                   label: "Observações",
-                  type: "textarea",
+                  shape: contentShape("text"),
                   required: false,
                 },
               ],
@@ -1380,8 +1472,13 @@ test("validação resume contextos extensos e permite expandir cada entrega", as
   await page.getByLabel("Contexto extenso").fill(longContext);
   await page.getByRole("button", { name: "Concluir ação humana", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Contexto disponível" })).toBeVisible();
-  const contextItem = page.getByTestId("context-value").filter({ hasText: "Contexto extenso" });
+  const contextSection = page
+    .getByRole("heading", { name: "Contexto disponível" })
+    .locator("xpath=..");
+  await expect(contextSection).toBeVisible();
+  const contextItem = contextSection
+    .getByTestId("context-value")
+    .filter({ hasText: "Contexto extenso" });
   await expect(contextItem).not.toHaveAttribute("open", "");
   await expect(contextItem.getByText(/Final exclusivo\./)).not.toBeVisible();
   await expect(contextItem).toContainText("Início do contexto para revisão.");
@@ -1488,10 +1585,10 @@ test("rascunho sobrevive ao reload e a produção avança até thumbnail fora da
   await expect(
     intermediateResult.getByText("thumbnail-fixture.png", { exact: true }),
   ).not.toBeVisible();
-  await expect(page.getByRole("img", { name: "thumbnail-fixture.png" }).last()).toBeVisible();
+  await expect(page.getByText("thumbnail-fixture.png", { exact: true }).last()).toBeVisible();
   await intermediateResult.locator("summary").click();
   await expect(
-    intermediateResult.getByRole("img", { name: "thumbnail-fixture.png" }),
+    intermediateResult.getByText("thumbnail-fixture.png", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Produtos do projeto", { exact: true })).toHaveCount(0);
   await page.goto(`/project/${id}/theme`);
@@ -1575,7 +1672,7 @@ test("persiste e exibe o snapshot do plugin antes da resposta final", async ({ r
         id: "script",
         key: "script",
         label: "Resultado",
-        type: "textarea",
+        shape: contentShape("text"),
         required: true,
         portKey: "result",
       },
@@ -1664,7 +1761,7 @@ test("edita texto e substitui mídia de um item sem alterar identidade ou posiç
         id: "parts",
         key: "parts",
         label: "Blocos",
-        type: "list" as const,
+        shape: contentShape("text", "many"),
         required: true,
       },
     ],
@@ -1683,7 +1780,7 @@ test("edita texto e substitui mídia de um item sem alterar identidade ou posiç
         id: "files",
         key: "files",
         label: "Arquivos",
-        type: "files" as const,
+        shape: contentShape("image", "many"),
         required: true,
       },
     ],
@@ -1846,6 +1943,7 @@ test("edita texto e substitui mídia de um item sem alterar identidade ou posiç
   await expect(
     page.getByRole("button", { name: "Substituir arquivo", exact: true }).first(),
   ).toBeVisible();
+  await expect(page.getByText("Ver tentativas anteriores", { exact: true })).toHaveCount(0);
 });
 
 test("salva separadamente som e notificações do Windows", async ({ page, request }) => {
@@ -1914,6 +2012,67 @@ test("persiste a visualização escolhida na Biblioteca de Métodos", async ({ p
   await expect
     .poll(async () => (await (await request.get("/api/preferences")).json()).methodsLibraryView)
     .toBe("methods");
+});
+
+test("canal abre cards e lista com responsáveis incompletos nas três línguas", async ({
+  page,
+  request,
+}) => {
+  const channel = await seed(request);
+  const original = await (await request.get("/api/preferences")).json();
+  const cases = [
+    undefined,
+    null,
+    { name: 7, initials: null },
+    { name: "Ana Silva", initials: "AS" },
+  ];
+  for (const [index, assignee] of cases.entries()) {
+    expect(
+      (
+        await request.post("/api/projects", {
+          data: {
+            id: randomUUID(),
+            channelId: channel.id,
+            title: `Projeto incompleto ${index}`,
+            createdAt: new Date().toISOString(),
+            stages: Object.fromEntries(PROCESS_ORDER.map((process) => [process, "not_started"])),
+            currentStage: "theme",
+            state: "not_started",
+            progress: 0,
+            deadline: "—",
+            duration: "—",
+            updatedAt: "—",
+            thumbHue: 0,
+            ...(assignee === undefined ? {} : { assignee }),
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+  }
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    for (const language of ["pt-BR", "en", "es"]) {
+      await request.put("/api/preferences", {
+        data: { ...original, language },
+      });
+      await request.put(`/api/channels/${channel.id}/preferences`, {
+        data: { projectView: "cards" },
+      });
+      await page.goto(`/channel/${channel.id}`);
+      for (const index of cases.keys())
+        await expect(page.getByText(`Projeto incompleto ${index}`, { exact: true })).toBeVisible();
+      await expect(page.getByText("Ana", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: /^(List|Lista)$/ }).click();
+      await expect(page.getByRole("table")).toBeVisible();
+      for (const index of cases.keys())
+        await expect(page.getByText(`Projeto incompleto ${index}`, { exact: true })).toBeVisible();
+      await expect(page.getByRole("cell").filter({ hasText: /^AS\s*Ana$/ })).toBeVisible();
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    await request.put("/api/preferences", { data: original });
+  }
 });
 
 test("carrega um projeto sem mostrar inexistência enquanto aguarda o banco", async ({
@@ -2005,7 +2164,7 @@ test("comandos repetidos são idempotentes e um rascunho atrasado não reabre ex
   ).toBe("cancelled");
 });
 
-test("salva o Método mesmo saindo imediatamente do editor e preserva o snapshot já iniciado", async ({
+test("salva o Método mesmo saindo imediatamente do editor e sincroniza a execução aberta", async ({
   page,
   request,
 }) => {
@@ -2040,7 +2199,7 @@ test("salva o Método mesmo saindo imediatamente do editor e preserva o snapshot
     })
     .toBe("Alteração antes de sair");
   const state = await (await request.get(`/api/executions/${started.result.id}/state`)).json();
-  expect(state.execution.methodSnapshot.blocks[0].name).toBe("Entrega theme");
+  expect(state.execution.methodSnapshot.blocks[0].name).toBe("Alteração antes de sair");
   await page.goto(`/channel/${channel.id}/methods?process=theme`);
   await expect(page.getByText("Alteração antes de sair", { exact: true })).toBeVisible();
 });
@@ -2176,102 +2335,4 @@ test("Free Stock permite conexões parciais, troca de chave e várias chaves do 
   await save.click();
   await expect(dialog.getByText("Pexels reserva", { exact: true })).toBeVisible();
   await expect(dialog.getByText("2 conexões", { exact: true })).toBeVisible();
-});
-
-test("recursos do ecossistema e ausência de catálogo nos três idiomas", async ({
-  page,
-  request,
-}) => {
-  const original = await (await request.get("/api/preferences")).json();
-  const universal = "https://github.com/vini-duran/ContentFlow_Universal_Integrations";
-  try {
-    for (const [language, plugins, bridge, pluginSkill, methodSkill, check, unavailable] of [
-      [
-        "pt-BR",
-        "Consultar plugins",
-        "Configurar Browser Bridge",
-        "Consultar skill de plugins",
-        "Consultar skill de Métodos",
-        "Verificar atualizações",
-        "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.",
-      ],
-      [
-        "en",
-        "Browse plugins",
-        "Set up Browser Bridge",
-        "Consult plugin skill",
-        "Consult Methods skill",
-        "Check for updates",
-        "Catalog updates are unavailable. You can update from a folder.",
-      ],
-      [
-        "es",
-        "Consultar plugins",
-        "Configurar Browser Bridge",
-        "Consultar skill de plugins",
-        "Consultar skill de Métodos",
-        "Buscar actualizaciones",
-        "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
-      ],
-    ]) {
-      await request.put("/api/preferences", { data: { ...original, language } });
-      const initialUpdateCheck = page.waitForResponse(
-        (response) => new URL(response.url()).pathname === "/api/plugins/updates",
-      );
-      await page.goto("/plugins");
-      expect((await initialUpdateCheck).status()).toBe(503);
-      await expect(page.getByRole("link", { name: new RegExp(`^${plugins}`) })).toHaveAttribute(
-        "href",
-        `${universal}/tree/main/plugins`,
-      );
-      await expect(page.getByRole("link", { name: new RegExp(`^${bridge}`) })).toHaveAttribute(
-        "href",
-        "https://github.com/vini-duran/OS/blob/main/ecosystem/browser-bridge/INSTALAR.md",
-      );
-      await expect(page.getByRole("link", { name: new RegExp(`^${pluginSkill}`) })).toHaveAttribute(
-        "href",
-        `${universal}/tree/main/team-bootstrap/skills/contentflow-plugin-development`,
-      );
-      const manualUpdateCheck = page.waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname === "/api/plugins/updates" &&
-          new URL(response.url()).searchParams.get("refresh") === "true",
-      );
-      await page.getByRole("button", { name: check, exact: true }).click();
-      expect((await manualUpdateCheck).status()).toBe(503);
-      await expect(page.getByText(unavailable, { exact: true })).toBeVisible();
-      await expect(page.locator('[data-sonner-toast][data-type="success"]')).toHaveCount(0);
-      await page.goto("/methods");
-      await expect(page.getByRole("link", { name: new RegExp(`^${methodSkill}`) })).toHaveAttribute(
-        "href",
-        `${universal}/tree/main/team-bootstrap/skills/contentflow-method-development`,
-      );
-    }
-  } finally {
-    await request.put("/api/preferences", { data: original });
-  }
-});
-
-test("preserva a entrada visual de pesquisa do canal sem executar pesquisa", async ({
-  page,
-  request,
-}) => {
-  const channel = await seed(request);
-  const original = await (await request.get("/api/preferences")).json();
-  try {
-    for (const [language, heading, button] of [
-      ["pt-BR", "Pesquisa estratégica", "Conectar Radar do Tema"],
-      ["en", "Strategic research", "Connect Theme radar"],
-      ["es", "Investigación estratégica", "Conectar radar del Tema"],
-    ]) {
-      await request.put("/api/preferences", { data: { ...original, language } });
-      await page.goto(`/channel/${channel.id}/research`);
-      await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: button, exact: true })).toBeVisible();
-    }
-  } finally {
-    await request.put("/api/preferences", { data: original });
-  }
-  const runs = await request.get(`/api/channels/${channel.id}/research/runs`);
-  expect((await runs.json()).runs).toEqual([]);
 });

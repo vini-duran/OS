@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, mkdirSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
+import { catalogDownloadUrl } from "./catalog-download";
 
 const CATALOG_SCHEMA_VERSION = 1;
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
@@ -14,10 +15,84 @@ export type PluginCatalogEntry = {
   id: string;
   name: string;
   version: string;
+  apiVersion?: string;
+  minCoreVersion?: string;
   asset: string;
+  downloadUrl?: string;
+  description?: string;
   sha256: string;
   size: number;
 };
+
+export const pluginVersionPattern =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+export function isSafePluginVersion(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 100) return false;
+  const match = pluginVersionPattern.exec(value);
+  return Boolean(match && (!match[4] || match[4].split(".").every((part) => !/^0\d+$/.test(part))));
+}
+
+/** SemVer precedence, including numeric prereleases; build metadata has no precedence. */
+export function comparePluginVersions(left: string, right: string): number {
+  if (!isSafePluginVersion(left) || !isSafePluginVersion(right))
+    throw new Error("A versão do plugin é inválida.");
+  const a = pluginVersionPattern.exec(left)!;
+  const b = pluginVersionPattern.exec(right)!;
+  for (let index = 1; index <= 3; index++) {
+    if (BigInt(a[index]) !== BigInt(b[index])) return BigInt(a[index]) > BigInt(b[index]) ? 1 : -1;
+  }
+  if (a[4] === b[4]) return 0;
+  if (!a[4]) return 1;
+  if (!b[4]) return -1;
+  const next = a[4].split(".");
+  const previous = b[4].split(".");
+  for (let index = 0; index < Math.max(next.length, previous.length); index++) {
+    if (next[index] === undefined) return -1;
+    if (previous[index] === undefined) return 1;
+    if (next[index] === previous[index]) continue;
+    const numericA = /^\d+$/.test(next[index]);
+    const numericB = /^\d+$/.test(previous[index]);
+    if (numericA && numericB) return BigInt(next[index]) > BigInt(previous[index]) ? 1 : -1;
+    if (numericA !== numericB) return numericA ? -1 : 1;
+    return next[index] > previous[index] ? 1 : -1;
+  }
+  return 0;
+}
+
+export function currentCoreVersion() {
+  const root = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
+  const versionPath = [
+    path.join(root, "package.json"),
+    path.join(root, "app", "package.json"),
+    path.join(root, "app", "desktop-dist", "build-info.json"),
+    path.join(root, "desktop-dist", "build-info.json"),
+  ].find(existsSync);
+  if (!versionPath) throw new Error("A versão do ContentFlow não foi encontrada.");
+  const version: unknown = JSON.parse(readFileSync(versionPath, "utf8")).version;
+  if (!isSafePluginVersion(version)) throw new Error("A versão do ContentFlow é inválida.");
+  return version;
+}
+
+export type PluginCompatibility = {
+  status: "compatible" | "incompatible";
+  reason?: "unsupported_api" | "core_version" | "invalid_manifest" | "missing_metadata";
+};
+
+export function pluginCatalogCompatibility(
+  entry: { apiVersion?: string; minCoreVersion?: string },
+  coreVersion = currentCoreVersion(),
+): PluginCompatibility {
+  if (!entry.apiVersion) return { status: "incompatible", reason: "missing_metadata" };
+  if (entry.apiVersion !== "2") return { status: "incompatible", reason: "unsupported_api" };
+  if (
+    entry.minCoreVersion &&
+    (!isSafePluginVersion(entry.minCoreVersion) ||
+      comparePluginVersions(coreVersion, entry.minCoreVersion) < 0)
+  )
+    return { status: "incompatible", reason: "core_version" };
+  return { status: "compatible" };
+}
 
 export type PluginCatalog = {
   schemaVersion: 1;
@@ -30,13 +105,17 @@ function isCatalogEntry(value: unknown): value is PluginCatalogEntry {
   const entry = value as Record<string, unknown>;
   return (
     typeof entry.id === "string" &&
-    /^[a-z0-9.-]+$/.test(entry.id) &&
+    /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(entry.id) &&
     typeof entry.name === "string" &&
     entry.name.trim().length > 0 &&
-    typeof entry.version === "string" &&
-    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(entry.version) &&
+    isSafePluginVersion(entry.version) &&
+    (entry.apiVersion === undefined ||
+      (typeof entry.apiVersion === "string" && /^[0-9]+$/.test(entry.apiVersion))) &&
+    (entry.minCoreVersion === undefined || isSafePluginVersion(entry.minCoreVersion)) &&
     typeof entry.asset === "string" &&
     /^ContentFlow-Plugin-[A-Za-z0-9._-]+\.zip$/.test(entry.asset) &&
+    (entry.downloadUrl === undefined || typeof entry.downloadUrl === "string") &&
+    (entry.description === undefined || typeof entry.description === "string") &&
     typeof entry.sha256 === "string" &&
     /^[A-Fa-f0-9]{64}$/.test(entry.sha256) &&
     Number.isSafeInteger(entry.size) &&
@@ -97,6 +176,7 @@ export async function fetchPluginCatalog(catalogUrl: string): Promise<PluginCata
 }
 
 export function pluginAssetUrl(catalogUrl: string, entry: PluginCatalogEntry) {
+  if (entry.downloadUrl) return catalogDownloadUrl(catalogUrl, entry.downloadUrl);
   const catalog = new URL(catalogUrl);
   const asset = new URL(entry.asset, catalog);
   if (asset.origin !== catalog.origin) throw new Error("A origem do pacote é inválida.");

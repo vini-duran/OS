@@ -1,0 +1,110 @@
+{
+  "format": "contentflow-method",
+  "version": 3,
+  "name": "P60 — Vibes mínimo",
+  "exportedAt": "2026-09-25T12:00:00.000Z",
+  "method": {
+    "name": "P60 — Vibes → VALIDAR",
+    "processType": "assets",
+    "blocks": [
+      {
+        "id": "p60-vibes-generate",
+        "type": "CRIAR",
+        "operator": "IA",
+        "name": "Gerar imagens no Vibes",
+        "instructions": "Gere quatro variantes por prompt e preserve a identidade do item e da variante.",
+        "inputs": [
+          {
+            "id": "p60-vibes-prompts",
+            "label": "Prompts",
+            "shape": {
+              "kind": "content",
+              "family": "text",
+              "cardinality": "many",
+              "representation": "inline"
+            },
+            "binding": {
+              "kind": "runtime"
+            },
+            "portKey": "prompts"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "p60-vibes-images",
+            "label": "Imagens",
+            "key": "images",
+            "shape": {
+              "kind": "content",
+              "family": "image",
+              "cardinality": "many",
+              "representation": "artifact",
+              "formats": {
+                "mimeTypes": [
+                  "image/png",
+                  "image/jpeg",
+                  "image/webp"
+                ]
+              }
+            },
+            "required": true,
+            "presentation": {
+              "renderer": "image-gallery"
+            },
+            "portKey": "images"
+          }
+        ],
+        "parameters": [],
+        "order": 0,
+        "plugin": {
+          "pluginId": "local.contentflow.vibes-browser-studio",
+          "pluginVersion": "1.0.1",
+          "capabilityId": "generate-images-in-browser",
+          "configuration": {},
+          "connectionRequired": false
+        }
+      },
+      {
+        "id": "p60-vibes-validate",
+        "type": "VALIDAR",
+        "operator": "Humano",
+        "name": "Selecionar imagens do Vibes",
+        "instructions": "Selecione as variantes aprovadas para a edição sem trocar a associação com o prompt.",
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "p60-vibes-selected",
+            "label": "Selecionadas",
+            "key": "selected_value",
+            "shape": {
+              "kind": "content",
+              "family": "image",
+              "cardinality": "many",
+              "representation": "artifact",
+              "formats": {
+                "mimeTypes": [
+                  "image/png",
+                  "image/jpeg",
+                  "image/webp"
+                ]
+              }
+            },
+            "required": true,
+            "optionsSourceBlockId": "p60-vibes-generate",
+            "optionsSourceKey": "images"
+          }
+        ],
+        "validation": {
+          "targetBlockId": "p60-vibes-generate",
+          "targetOutputKey": "images",
+          "mode": "select_many",
+          "onReject": "pause",
+          "maxAttempts": 2
+        },
+        "parameters": [],
+        "order": 1
+      }
+    ],
+    "contractVersion": 3
+  }
+}

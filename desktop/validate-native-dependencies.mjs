@@ -1,26 +1,31 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import macosPlatform from "./macos-platform.cjs";
 
+const { getKeyringPackageInfo } = macosPlatform;
 const require = createRequire(import.meta.url);
-const nativePackages = {
-  "darwin-arm64": ["@napi-rs/keyring-darwin-arm64", "keyring.darwin-arm64.node"],
-  "darwin-x64": ["@napi-rs/keyring-darwin-x64", "keyring.darwin-x64.node"],
-  "win32-x64": ["@napi-rs/keyring-win32-x64-msvc", "keyring.win32-x64-msvc.node"],
-};
-const currentTarget = `${process.platform}-${process.arch}`;
-const nativeTarget = nativePackages[currentTarget];
-if (!nativeTarget) {
-  throw new Error(`Plataforma nativa ainda não suportada pela distribuição: ${currentTarget}.`);
-}
-const [nativePackage, bindingName] = nativeTarget;
-const packageJsonPath = require.resolve(`${nativePackage}/package.json`);
-const bindingPath = path.join(path.dirname(packageJsonPath), bindingName);
 
-if (!existsSync(bindingPath)) {
+const targetPlatform = process.env.TARGET_PLATFORM || process.platform;
+const targetArch = process.env.TARGET_ARCH || process.arch;
+
+const { packageName, bindingFile, label } = getKeyringPackageInfo(targetPlatform, targetArch);
+
+let packageJsonPath;
+try {
+  packageJsonPath = require.resolve(`${packageName}/package.json`);
+} catch {
   throw new Error(
-    `Dependência nativa obrigatória ausente: ${nativePackage}. A release seria incapaz de iniciar a API local.`,
+    `Dependência nativa obrigatória ausente: ${packageName}. A release ${label} seria incapaz de iniciar a API local.`,
   );
 }
 
-console.log(`Dependência nativa ${currentTarget} validada: ${bindingPath}`);
+const bindingPath = path.join(path.dirname(packageJsonPath), bindingFile);
+
+if (!existsSync(bindingPath)) {
+  throw new Error(
+    `Dependência nativa obrigatória ausente: ${packageName}. A release ${label} seria incapaz de iniciar a API local.`,
+  );
+}
+
+console.log(`Dependência nativa ${label} validada: ${bindingPath}`);

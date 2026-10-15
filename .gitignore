@@ -44,7 +44,7 @@ plugins/distributable/
 ecosystem/plugins/reference/*/windows-enterprise-install/artifacts/
 ecosystem/plugins/reference/*.zip
 
-# Desktop build intermediates (distributable artifacts are published in releases)
+# Desktop build intermediates (the distributable V0 lives in compiled/)
 desktop-dist/
 desktop-runtime/
 release/
@@ -59,11 +59,23 @@ release/
 .idea
 .DS_Store
 *.suo
+*.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Local candidate test staging directories
-download_origin_055/
-staging_real/
-test_e2e_update/
+# Planejamento arquitetural local (deliberacoes privadas, nao publicar)
+planejamento/
+
+# Local development traces (metadata, never distribution artifacts)
+.dev-monitor/
+
+# Local diagnostic captures and one-off inspection/update scripts
+/preview-home*.png
+/scripts/*.tmp.ts
+
+# Private scratch scripts, method backups and local validation logs
+.tmp/
+
+# Local provider scenarios containing user-supplied scripts
+/test-fixtures/vertical/

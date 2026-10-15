@@ -10,10 +10,36 @@ const manifest = JSON.parse(
 );
 const handlerSource = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
 
+function outputContractFor(capabilityId, validation, fields) {
+  const selected =
+    fields ??
+    (capabilityId === "search-web-in-browser"
+      ? [
+          { key: "result", type: "textarea" },
+          { key: "sources", type: "list" },
+        ]
+      : capabilityId === "validate-content-in-browser"
+        ? validation?.mode === "select_one"
+          ? [
+              { key: "selected_value", type: "text" },
+              { key: "feedback", type: "textarea" },
+            ]
+          : validation?.mode === "select_many"
+            ? [
+                { key: "selected_values", type: "list" },
+                { key: "feedback", type: "textarea" },
+              ]
+            : [
+                { key: "decision", type: "approval" },
+                { key: "feedback", type: "textarea" },
+              ]
+        : [{ key: "result", type: "textarea" }]);
+  return selected.map((field) => ({ ...field, portKey: field.portKey ?? field.key }));
+}
+
 test("manifesto prepara perfis antes da execução", () => {
-  assert.equal(manifest.version, "1.1.5");
+  assert.equal(manifest.version, "2.0.1");
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
-  assert.equal(manifest.supportsConversationContinuation, true);
   assert.equal(manifest.settingsSchema.properties.allowExistingChromeProfile.default, false);
 });
 
@@ -59,8 +85,11 @@ function request(overrides = {}) {
       ...overrides.context,
     },
     validation: overrides.validation,
-    batch: overrides.batch,
-    outputContract: overrides.outputContract,
+    outputContract: outputContractFor(
+      overrides.capabilityId ?? "generate-text-in-browser",
+      overrides.validation,
+      overrides.outputContract,
+    ),
   };
 }
 
@@ -75,7 +104,7 @@ test("não repete no contexto uma entrada já interpolada na instrução", () =>
 });
 
 test("manifesto declara as seis capabilities do Claude Browser Studio", () => {
-  assert.equal(manifest.apiVersion, "1");
+  assert.equal(manifest.apiVersion, "2");
   assert.equal(manifest.id, "local.contentflow.claude-browser-text");
   const capability = manifest.capabilities.find((item) => item.id === "generate-text-in-browser");
   assert.ok(capability);
@@ -93,15 +122,11 @@ test("manifesto declara as seis capabilities do Claude Browser Studio", () => {
     capability.outputPorts.map((item) => item.key),
     ["result", "parts", "document"],
   );
-  assert.deepEqual(capability.execution.itemOrchestration, {
-    inputPort: "outline",
-    outputPort: "parts",
-    combinedOutputPort: "result",
-    mode: "sequential",
+  assert.deepEqual(capability.inputPorts.find((item) => item.key === "sections").shape, {
+    kind: "control",
+    control: "number",
+    cardinality: "one",
   });
-  assert.deepEqual(capability.inputPorts.find((item) => item.key === "sections").acceptedTypes, [
-    "number",
-  ]);
   assert.deepEqual(
     manifest.capabilities.map((item) => item.id),
     [
@@ -272,38 +297,6 @@ test("divide outline em múltiplos envios na mesma conversa", () => {
   assert.match(parts[11], /Ponto 12/);
 });
 
-test("orienta cada item orquestrado sem reiniciar a narração", () => {
-  const middle = __test.buildParts(
-    request({
-      inputs: {
-        content: "Contexto geral",
-        outline: { block_number: 2, titulo_bloco: "Virada", target_characters: 1500 },
-      },
-      instructionContextInputs: {
-        content: "Tema, título, dossiê e estratégia",
-        outline: [
-          { block_number: 1, titulo_bloco: "Abertura" },
-          { block_number: 2, titulo_bloco: "Virada" },
-          { block_number: 3, titulo_bloco: "Fecho" },
-        ],
-      },
-      batch: {
-        itemId: "item-2",
-        index: 1,
-        total: 3,
-        completedItems: ["Primeiro bloco já escrito."],
-      },
-    }),
-  )[0];
-  assert.match(middle, /Tema, título, dossiê e estratégia/);
-  assert.match(middle, /Continue a mesma narração, sem reiniciar o gancho/);
-  assert.match(middle, /bloco narrativo 2\/3/);
-  assert.match(middle, /"block_number": 2/);
-  assert.match(middle, /"target_characters": 1500/);
-  assert.match(middle, /BLOCOS JÁ CONCLUÍDOS/);
-  assert.match(middle, /Primeiro bloco já escrito/);
-});
-
 test("distribui a meta conforme o saldo e valida a tolerância", () => {
   const plan = __test.targetCharacterPlan(
     request({
@@ -347,8 +340,8 @@ test("preserva cada resposta quando a saída parts é conectada", () => {
     [{ text: "Parte A" }, { text: "Parte B" }],
     {
       outputContract: [
-        { key: "result", type: "textarea" },
-        { key: "parts", type: "list" },
+        { key: "result", portKey: "result", type: "textarea" },
+        { key: "parts", portKey: "parts", type: "list" },
       ],
     },
   );
@@ -373,13 +366,13 @@ test("Buscar respeita as chaves e tipos do outputContract do bloco", () => {
     ["https://example.com/a"],
     {
       outputContract: [
-        { key: "items_found", label: "Itens encontrados", type: "list" },
-        { key: "sources", label: "Fontes consultadas", type: "list" },
+        { key: "items_found", portKey: "result", label: "Itens encontrados", type: "list" },
+        { key: "sources", portKey: "sources", label: "Fontes consultadas", type: "list" },
       ],
     },
   );
   assert.deepEqual(values, {
-    items_found: ["Tendência A", "Tendência B"],
+    result: ["Tendência A", "Tendência B"],
     sources: ["https://example.com/a"],
   });
 });

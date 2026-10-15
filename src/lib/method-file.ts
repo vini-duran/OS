@@ -2,14 +2,17 @@ import { z } from "zod";
 import type {
   ActionBlock,
   ChannelLibraryItem,
+  ProfileExecutionPolicy,
   ProcessMethod,
   StoredFile,
   StrategicCollection,
   ThumbnailLayout,
   UniversalProcess,
 } from "@/lib/domain";
-import { normalizeFieldPresentation } from "@/lib/presentation";
 import { instructionCollectionKey, instructionVariables } from "@/lib/instruction-template";
+import { parseProcessMethodV3, processMethodV3Schema } from "@/lib/method-contract-v3";
+import { valueShapeSchema } from "@/lib/value-shape-schema";
+import { sanitizePortableConfiguration, type PortableProfileSetupResolver } from "@/lib/profile-project-selection";
 
 const universalProcessSchema = z.enum([
   "theme",
@@ -22,201 +25,10 @@ const universalProcessSchema = z.enum([
   "publishing",
 ]);
 
-const parameterSchema = z.object({
-  id: z.string(),
-  label: z.string().max(200),
-  key: z.string().max(200),
-  type: z.enum(["text", "number", "select", "boolean", "textarea"]),
-  value: z.union([z.string(), z.number(), z.boolean()]),
-  placeholder: z.string().max(500).optional(),
-  options: z.array(z.string().max(500)).max(100).optional(),
-});
-
-const recordFieldSchema = z.object({
-  id: z.string(),
-  label: z.string().max(200),
-  key: z.string().max(200),
-  type: z.enum([
-    "text",
-    "textarea",
-    "number",
-    "boolean",
-    "select",
-    "datetime",
-    "url",
-    "file",
-    "image",
-    "audio",
-    "video",
-  ]),
-  required: z.boolean(),
-  options: z.array(z.string().max(500)).max(100).optional(),
-});
-
-const presentationSchema = z.object({
-  renderer: z.enum([
-    "auto",
-    "text-short",
-    "text-long",
-    "list",
-    "tags",
-    "table",
-    "cards",
-    "file-list",
-    "image-gallery",
-    "audio-player",
-    "video-player",
-    "decision",
-  ]),
-  itemType: z.enum(["text", "record", "file", "image", "audio", "video"]).optional(),
-  acceptedMimeTypes: z.array(z.string().max(200)).max(50).optional(),
-});
-
-const inputSchema = z
-  .object({
-    id: z.string(),
-    label: z.string().max(200),
-    type: z
-      .enum([
-        "text",
-        "number",
-        "select",
-        "boolean",
-        "textarea",
-        "multiselect",
-        "list",
-        "records",
-        "datetime",
-        "url",
-        "file",
-        "image",
-        "audio",
-        "video",
-        "files",
-        "approval",
-        "thumbnail_layout",
-      ])
-      .default("text"),
-    source: z.enum([
-      "project",
-      "previous_process",
-      "previous_block",
-      "channel_history",
-      "channel_library",
-      "static",
-    ]),
-    sourceKey: z.string().max(200).optional(),
-    sourceProcessType: z
-      .enum([
-        "theme",
-        "title",
-        "thumbnail",
-        "script",
-        "narration",
-        "assets",
-        "editing",
-        "publishing",
-      ])
-      .optional(),
-    blockId: z.string().optional(),
-    collection: z.string().max(200).optional(),
-    staticValue: z.string().max(10_000).optional(),
-    historyLimit: z.number().int().min(1).max(100).optional(),
-    historyEligibility: z.enum(["completed", "published"]).optional(),
-    recordFields: z.array(recordFieldSchema).max(100).optional(),
-    presentation: presentationSchema.optional(),
-    portKey: z.string().min(1).max(100).optional(),
-  })
-  .transform((input) => ({
-    ...input,
-    presentation: normalizeFieldPresentation(input.type, input.presentation),
-  }));
-
-const outputSchema = z
-  .object({
-    id: z.string(),
-    label: z.string().max(200),
-    key: z.string().max(200),
-    type: z.enum([
-      "text",
-      "number",
-      "select",
-      "boolean",
-      "textarea",
-      "multiselect",
-      "list",
-      "records",
-      "datetime",
-      "url",
-      "file",
-      "image",
-      "audio",
-      "video",
-      "files",
-      "approval",
-      "thumbnail_layout",
-    ]),
-    required: z.boolean(),
-    placeholder: z.string().max(500).optional(),
-    helpText: z.string().max(2_000).optional(),
-    options: z.array(z.string().max(500)).max(100).optional(),
-    optionsSourceBlockId: z.string().optional(),
-    optionsSourceKey: z.string().max(200).optional(),
-    recordFields: z.array(recordFieldSchema).max(100).optional(),
-    presentation: presentationSchema.optional(),
-    portKey: z.string().min(1).max(100).optional(),
-  })
-  .transform((output) => ({
-    ...output,
-    presentation: normalizeFieldPresentation(output.type, output.presentation),
-  }));
-
-const validationSchema = z.object({
-  targetBlockId: z.string().optional(),
-  targetOutputKey: z.string().max(200).optional(),
-  mode: z.enum(["approval", "select_one", "select_many"]),
-  onReject: z.enum(["retry_target", "pause"]),
-  maxAttempts: z.number().int().min(1).max(20),
-  retryMode: z.enum(["full", "conversation_feedback"]).optional(),
-});
-
-const sharedPluginBindingSchema = z.object({
-  pluginId: z.string().min(1).max(160),
-  pluginVersion: z.string().max(80).optional(),
-  capabilityId: z.string().min(1).max(100),
-  configuration: z.record(z.union([z.string(), z.number(), z.boolean()])),
-  connectionRequired: z.boolean().optional(),
-  conversation: z
-    .discriminatedUnion("mode", [
-      z.object({ mode: z.literal("new") }),
-      z.object({
-        mode: z.literal("reuse"),
-        sourceProcessType: universalProcessSchema,
-        sourceBlockId: z.string().min(1),
-      }),
-    ])
-    .optional(),
-});
-
-const actionBlockSchema = z.object({
-  id: z.string(),
-  type: z.enum(["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"]),
-  operator: z.enum(["IA", "Humano", "Código"]),
-  collectionId: z.string().optional(),
-  name: z.string().max(200).optional(),
-  instructions: z.string().max(20_000).optional(),
-  inputs: z.array(inputSchema).max(100).optional(),
-  outputs: z.array(outputSchema).max(100).optional(),
-  validation: validationSchema.optional(),
-  plugin: sharedPluginBindingSchema.optional(),
-  parameters: z.array(parameterSchema).max(100),
-  order: z.number().int().nonnegative(),
-});
-
 const collectionRequirementFieldSchema = z.object({
   label: z.string().max(200),
   key: z.string().max(200),
-  type: z.enum(["text", "textarea", "number", "image", "url", "thumbnail_layout"]),
+  shape: valueShapeSchema,
   required: z.boolean(),
 });
 
@@ -251,16 +63,11 @@ const portableImageSchema = z
     "Capa inválida.",
   );
 
-const portableMethodSchema = z.object({
-  name: z.string().max(200).optional(),
-  imageUrl: portableImageSchema.optional(),
-  processType: universalProcessSchema,
-  blocks: z.array(actionBlockSchema).min(1).max(200),
-});
+const portableMethodSchema = processMethodV3Schema;
 
 const sharedMethodSchema = z.object({
   format: z.literal("contentflow-method"),
-  version: z.literal(1),
+  version: z.literal(3),
   name: z.string().max(200),
   exportedAt: z.string(),
   requirements: z.array(methodRequirementSchema).max(300).optional(),
@@ -270,7 +77,7 @@ const sharedMethodSchema = z.object({
 const sharedMethodPackSchema = z
   .object({
     format: z.literal("contentflow-method-pack"),
-    version: z.literal(1),
+    version: z.literal(3),
     name: z.string().min(1).max(200),
     channelName: z.string().min(1).max(200),
     channelImageUrl: portableImageSchema.optional(),
@@ -317,29 +124,44 @@ const portableThumbnailLayoutSchema = z.object({
     .max(200),
 });
 
-const portableLibraryValueSchema = z.union([
+const portableLibraryAtomicValueSchema = z.union([
   z.string().max(2_000_000),
   z.number(),
+  z.boolean(),
+  z.null(),
   portableStoredFileSchema,
   portableThumbnailLayoutSchema,
 ]);
 
-const portableLibraryItemV2Schema = z.object({
+const portableLibraryRecordSchema = z.record(
+  z.union([z.string(), z.number(), z.boolean(), z.null(), portableStoredFileSchema]),
+);
+
+const portableLibraryValueSchema = z.union([
+  portableLibraryAtomicValueSchema,
+  z.array(z.string()),
+  z.array(portableStoredFileSchema),
+  portableLibraryRecordSchema,
+  z.array(portableLibraryRecordSchema),
+]);
+
+const portableLibraryItemSchema = z.object({
   key: z.string().min(1).max(200),
   collectionKey: z.string().min(1).max(160),
   values: z.record(portableLibraryValueSchema),
   createdAt: z.string().optional(),
 });
 
-const portableCollectionV2Schema = z.object({
+const portableCollectionSchema = z.object({
   key: z.string().min(1).max(160),
   name: z.string().min(1).max(200),
+  usage: z.enum(["fixed", "consumable"]).optional(),
   fields: z
     .array(
       z.object({
         key: z.string().min(1).max(160),
         label: z.string().max(200),
-        type: z.enum(["text", "textarea", "number", "image", "url", "thumbnail_layout"]),
+        shape: valueShapeSchema,
         required: z.boolean(),
       }),
     )
@@ -354,26 +176,26 @@ const portableCollectionV2Schema = z.object({
     .max(200),
 });
 
-const portableMethodEntryV2Schema = z.object({
+const portableMethodEntrySchema = z.object({
   role: portableMethodRoleSchema,
   method: portableMethodSchema,
   requirements: z.array(methodRequirementSchema).max(300),
 });
 
-const sharedMethodBundleV2Schema = z
+const portableMethodBundleSchema = z
   .object({
     format: z.enum(["contentflow-method", "contentflow-method-pack"]),
-    version: z.literal(2),
+    version: z.literal(3),
     name: z.string().min(1).max(200),
     channelName: z.string().min(1).max(200).optional(),
     channelImageUrl: portableImageSchema.optional(),
     exportedAt: z.string(),
     primaryProcessType: universalProcessSchema.optional(),
     processOrder: z.array(universalProcessSchema).length(8),
-    methods: z.array(portableMethodEntryV2Schema).min(1).max(8),
-    collections: z.array(portableCollectionV2Schema).max(100),
+    methods: z.array(portableMethodEntrySchema).min(1).max(8),
+    collections: z.array(portableCollectionSchema).max(100),
     itemsIncluded: z.boolean(),
-    items: z.array(portableLibraryItemV2Schema).max(500).optional(),
+    items: z.array(portableLibraryItemSchema).max(500).optional(),
   })
   .superRefine((bundle, context) => {
     const order = bundle.processOrder;
@@ -399,11 +221,11 @@ export type SharedMethodFile = Omit<z.infer<typeof sharedMethodSchema>, "method"
 export type SharedMethodPackFile = Omit<z.infer<typeof sharedMethodPackSchema>, "methods"> & {
   methods: ProcessMethod[];
 };
-export type SharedMethodImport = SharedMethodFile | SharedMethodPackFile | SharedMethodBundleV2;
+export type SharedMethodImport = SharedMethodFile | SharedMethodPackFile | PortableMethodBundle;
 export type PortableMethodRole = z.infer<typeof portableMethodRoleSchema>;
-export type PortableCollectionV2 = z.infer<typeof portableCollectionV2Schema>;
-export type PortableLibraryItemV2 = z.infer<typeof portableLibraryItemV2Schema>;
-export type SharedMethodBundleV2 = Omit<z.infer<typeof sharedMethodBundleV2Schema>, "methods"> & {
+export type PortableCollection = z.infer<typeof portableCollectionSchema>;
+export type PortableLibraryItem = z.infer<typeof portableLibraryItemSchema>;
+export type PortableMethodBundle = Omit<z.infer<typeof portableMethodBundleSchema>, "methods"> & {
   methods: Array<{
     role: PortableMethodRole;
     method: ProcessMethod;
@@ -411,8 +233,8 @@ export type SharedMethodBundleV2 = Omit<z.infer<typeof sharedMethodBundleV2Schem
   }>;
 };
 
-export function parsePortableLibraryItems(input: unknown): PortableLibraryItemV2[] {
-  return z.array(portableLibraryItemV2Schema).max(500).parse(input);
+export function parsePortableLibraryItems(input: unknown): PortableLibraryItem[] {
+  return z.array(portableLibraryItemSchema).max(500).parse(input);
 }
 
 export type PortableTransferPlan = {
@@ -427,9 +249,9 @@ export type PortableTransferPlan = {
     method: ProcessMethod;
     requirements: MethodRequirement[];
   }>;
-  collections: PortableCollectionV2[];
+  collections: PortableCollection[];
   itemsIncluded: boolean;
-  items: PortableLibraryItemV2[];
+  items: PortableLibraryItem[];
 };
 
 export function collectMethodRequirements(
@@ -449,10 +271,10 @@ export function collectMethodRequirements(
         kind: "collection",
         name: collection.name,
         blockName: block.name ?? block.type,
-        fields: collection.fields.map(({ id, label, type, required }) => ({
+        fields: collection.fields.map(({ id, label, shape, required }) => ({
           label,
           key: id,
-          type,
+          shape,
           required,
         })),
       });
@@ -464,40 +286,26 @@ export function collectMethodRequirements(
         name: collection?.name ?? "Coleção estratégica não identificada",
         blockName: block.name ?? block.type,
         fields:
-          collection?.fields.map(({ id, label, type, required }) => ({
+          collection?.fields.map(({ id, label, shape, required }) => ({
             label,
             key: id,
-            type,
+            shape,
             required,
           })) ?? [],
       });
     }
     for (const input of block.inputs ?? []) {
-      if (input.source === "previous_process" && input.sourceProcessType) {
+      const binding = input.binding;
+      const sourceKind = binding?.kind;
+      const sourceProcessType =
+        binding?.kind === "previous_process" ? binding.processType : undefined;
+      const sourceKey = binding?.kind === "previous_process" ? binding.outputKey : undefined;
+      if (sourceKind === "previous_process" && sourceProcessType) {
         requirements.push({
           kind: "previous_process",
-          processType: input.sourceProcessType,
-          sourceKey: input.sourceKey,
+          processType: sourceProcessType,
+          sourceKey,
           blockName: block.name ?? block.type,
-        });
-      }
-      if (input.source === "channel_library") {
-        requirements.push({
-          kind: "collection",
-          name: input.collection?.trim() || "Coleção estratégica não identificada",
-          blockName: block.name ?? block.type,
-          fields: (input.recordFields ?? []).flatMap((field) =>
-            ["text", "textarea", "number", "image", "url"].includes(field.type)
-              ? [
-                  {
-                    label: field.label,
-                    key: field.key,
-                    type: field.type as "text" | "textarea" | "number" | "image" | "url",
-                    required: field.required,
-                  },
-                ]
-              : [],
-          ),
         });
       }
     }
@@ -546,11 +354,14 @@ function buildPortableBlockIds(methods: ProcessMethod[]) {
   return result;
 }
 
-function createPortableMethodV2(
+function createPortableImportedMethod(
   method: ProcessMethod,
   blockIds: Map<string, string>,
   collectionKeys: Map<string, string>,
-  options: { preserveLocalConnections?: boolean } = {},
+  options: {
+    preserveLocalConnections?: boolean;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
+  } = {},
 ) {
   const copied = structuredClone(method);
   return {
@@ -563,6 +374,13 @@ function createPortableMethodV2(
         blockId && blockId !== "__process_output__"
           ? (blockIds.get(`${processType}:${blockId}`) ?? blockId)
           : blockId;
+      const portableConfiguration = options.preserveLocalConnections
+        ? structuredClone(block.plugin?.configuration ?? {})
+        : sanitizePortableConfiguration(
+            structuredClone(block.plugin?.configuration ?? {}),
+            options.profileSetupForPlugin?.(block.plugin?.pluginId ?? ""),
+            Boolean(options.profileSetupForPlugin),
+          );
       return {
         ...block,
         id: blockKey,
@@ -572,9 +390,12 @@ function createPortableMethodV2(
               pluginId: block.plugin.pluginId,
               pluginVersion: block.plugin.pluginVersion,
               capabilityId: block.plugin.capabilityId,
-              configuration: structuredClone(block.plugin.configuration),
+              configuration: portableConfiguration,
               connectionId: options.preserveLocalConnections
                 ? block.plugin.connectionId
+                : undefined,
+              profileExecution: options.preserveLocalConnections
+                ? structuredClone(block.plugin.profileExecution)
                 : undefined,
               connectionRequired:
                 block.plugin.connectionRequired ?? Boolean(block.plugin.connectionId),
@@ -598,25 +419,64 @@ function createPortableMethodV2(
         inputs: block.inputs?.map((input, inputIndex) => ({
           ...input,
           id: `${blockKey}:input:${inputIndex + 1}`,
-          blockId: mapBlockReference(input.blockId, input.sourceProcessType ?? method.processType),
-          recordFields: input.recordFields?.map((field, fieldIndex) => ({
-            ...field,
-            id: `${blockKey}:input:${inputIndex + 1}:field:${fieldIndex + 1}`,
-          })),
+          shape:
+            input.shape.kind === "record"
+              ? {
+                  ...input.shape,
+                  fields:
+                    block.plugin && input.portKey
+                      ? input.shape.fields.map((field) => ({ ...field }))
+                      : input.shape.fields.map((field, fieldIndex) => ({
+                          ...field,
+                          id: `${blockKey}:input:${inputIndex + 1}:field:${fieldIndex + 1}`,
+                        })),
+                }
+              : input.shape,
+          binding:
+            input.binding?.kind === "previous_block"
+              ? {
+                  ...input.binding,
+                  blockId: mapBlockReference(input.binding.blockId) ?? input.binding.blockId,
+                }
+              : input.binding?.kind === "previous_process"
+                ? {
+                    ...input.binding,
+                    blockId:
+                      mapBlockReference(input.binding.blockId, input.binding.processType) ??
+                      input.binding.blockId,
+                  }
+                : input.binding?.kind === "channel_history"
+                  ? {
+                      ...input.binding,
+                      blockId:
+                        mapBlockReference(input.binding.blockId, input.binding.processType) ??
+                        input.binding.blockId,
+                    }
+                  : input.binding,
         })),
         outputs: block.outputs?.map((output, outputIndex) => ({
           ...output,
           id: `${blockKey}:output:${outputIndex + 1}`,
           optionsSourceBlockId: mapBlockReference(output.optionsSourceBlockId),
-          recordFields: output.recordFields?.map((field, fieldIndex) => ({
-            ...field,
-            id: `${blockKey}:output:${outputIndex + 1}:field:${fieldIndex + 1}`,
-          })),
+          shape:
+            output.shape.kind === "record"
+              ? {
+                  ...output.shape,
+                  fields:
+                    block.plugin && output.portKey
+                      ? output.shape.fields.map((field) => ({ ...field }))
+                      : output.shape.fields.map((field, fieldIndex) => ({
+                          ...field,
+                          id: `${blockKey}:output:${outputIndex + 1}:field:${fieldIndex + 1}`,
+                        })),
+                }
+              : output.shape,
         })),
         validation: block.validation
           ? {
               ...block.validation,
-              targetBlockId: mapBlockReference(block.validation.targetBlockId),
+              targetBlockId:
+                mapBlockReference(block.validation.targetBlockId) ?? block.validation.targetBlockId,
             }
           : undefined,
       };
@@ -641,13 +501,17 @@ export function planPortableMethodTransfer(input: {
   items?: ChannelLibraryItem[];
   includeItems?: boolean;
   preserveLocalConnections?: boolean;
+  profileSetupForPlugin?: PortableProfileSetupResolver;
   processOrder: UniversalProcess[];
   primaryProcessTypes?: UniversalProcess[];
   includeAllMethods?: boolean;
 }): PortableTransferPlan {
   const collections = input.collections ?? [];
   const sourceItems = input.items ?? [];
-  const byProcess = new Map(input.sourceMethods.map((method) => [method.processType, method]));
+  const adaptedSourceMethods = input.sourceMethods
+    .filter((method) => method.blocks.length > 0)
+    .map((method) => parseProcessMethodV3(method));
+  const byProcess = new Map(adaptedSourceMethods.map((method) => [method.processType, method]));
   const primary = new Set(input.primaryProcessTypes ?? []);
   const included = new Set<UniversalProcess>();
 
@@ -729,8 +593,9 @@ export function planPortableMethodTransfer(input: {
       : primary.has(method.processType)
         ? ("primary" as const)
         : ("dependency" as const),
-    method: createPortableMethodV2(method, blockIds, collectionKeys, {
+    method: createPortableImportedMethod(method, blockIds, collectionKeys, {
       preserveLocalConnections: input.preserveLocalConnections,
+      profileSetupForPlugin: input.profileSetupForPlugin,
     }),
     requirements: portableRequirements(method),
   }));
@@ -754,19 +619,20 @@ export function planPortableMethodTransfer(input: {
     return {
       key,
       name: collection.name,
+      usage: collection.usage ?? "fixed",
       fields: collection.fields.map((field, index) => ({
         key:
           portableCollectionFields.get(`${collection.id}:${field.id}`) ??
           `field:${portableSlug(field.label, "value")}:${index + 1}`,
         label: field.label,
-        type: field.type,
+        shape: field.shape,
         required: field.required,
       })),
       referencedBy,
     };
   });
 
-  const portableItems: PortableLibraryItemV2[] = input.includeItems
+  const portableItems: PortableLibraryItem[] = input.includeItems
     ? sourceItems.flatMap((item, itemIndex) => {
         const collection = selectedCollections.find(
           (candidate) => candidate.id === item.collectionId,
@@ -808,34 +674,117 @@ export function planPortableMethodTransfer(input: {
   };
 }
 
-export function serializePortableMethodTransfer(plan: PortableTransferPlan) {
-  const file = sharedMethodBundleV2Schema.parse({
+export function sanitizePortableTransferPlan(
+  plan: PortableTransferPlan,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+): PortableTransferPlan {
+  // Canonical portable sanitizer for share/package paths built outside
+  // planPortableMethodTransfer (e.g. transfer-preview confirm). Reuses the
+  // canonical stripper; never duplicates key lists. Drops physical/catalog
+  // IDs (profileExecution) and every managed raw URL before transmission.
+  // Internal/local clones use preserveLocalConnections and bypass this.
+  const sanitizeMethod = (method: ProcessMethod): ProcessMethod => ({
+    ...structuredClone(method),
+    blocks: method.blocks.map((block) => ({
+      ...structuredClone(block),
+      plugin: block.plugin
+        ? {
+            pluginId: block.plugin.pluginId,
+            pluginVersion: block.plugin.pluginVersion,
+            capabilityId: block.plugin.capabilityId,
+            configuration: sanitizePortableConfiguration(
+              structuredClone(block.plugin.configuration ?? {}),
+              profileSetupForPlugin?.(block.plugin.pluginId),
+              Boolean(profileSetupForPlugin),
+            ),
+            connectionRequired:
+              block.plugin.connectionRequired ?? Boolean(block.plugin.connectionId),
+            conversation: block.plugin.conversation,
+          }
+        : undefined,
+    })),
+  });
+  return {
     ...plan,
-    version: 2,
+    methods: plan.methods.map((entry) => ({ ...entry, method: sanitizeMethod(entry.method) })),
+  };
+}
+
+export function serializePortableMethodTransfer(
+  plan: PortableTransferPlan,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
+  // Even resolver-free legacy exports must drop physical/catalog IDs. With no
+  // metadata, the sanitizer preserves configuration rather than guessing keys.
+  const sanitized = sanitizePortableTransferPlan(plan, profileSetupForPlugin);
+  const file = portableMethodBundleSchema.parse({
+    ...sanitized,
+    version: 3,
     exportedAt: new Date().toISOString(),
   });
   return JSON.stringify(file, null, 2);
 }
 
-function parseMethodBundleV2(parsed: unknown): SharedMethodBundleV2 {
-  const result = sharedMethodBundleV2Schema.safeParse(parsed);
+function parsePortableMethodBundle(parsed: unknown): PortableMethodBundle {
+  const result = portableMethodBundleSchema.safeParse(parsed);
   if (!result.success) {
     throw new Error("Este não é um pacote portátil válido do ContentFlow.");
   }
   return {
     ...result.data,
     items: result.data.items ?? [],
-    methods: result.data.methods.map((entry) => ({
-      ...entry,
-      method: {
+    methods: result.data.methods.map((entry) => {
+      const method = parseProcessMethodV3({
         ...entry.method,
         name: entry.method.name?.trim() || `Método de ${entry.method.processType}`,
-      },
-    })),
-  } as SharedMethodBundleV2;
+      });
+      return { ...entry, method };
+    }),
+  } as PortableMethodBundle;
 }
 
-function createPortableMethod(method: ProcessMethod) {
+function isPortableMethodBundle(parsed: unknown) {
+  if (!parsed || typeof parsed !== "object") return false;
+  const methods = (parsed as { methods?: unknown }).methods;
+  return (
+    (parsed as { version?: unknown }).version === 3 &&
+    Array.isArray(methods) &&
+    methods.length > 0 &&
+    methods.every((entry) => Boolean(entry && typeof entry === "object" && "method" in entry))
+  );
+}
+
+function canonicalMethodForExport(
+  method: ProcessMethod,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
+  return parseProcessMethodV3({
+    ...structuredClone(method),
+    blocks: method.blocks.map((block) => ({
+      ...structuredClone(block),
+      plugin: block.plugin
+          ? {
+              pluginId: block.plugin.pluginId,
+              pluginVersion: block.plugin.pluginVersion,
+              capabilityId: block.plugin.capabilityId,
+              configuration: sanitizePortableConfiguration(
+                structuredClone(block.plugin.configuration),
+                profileSetupForPlugin?.(block.plugin.pluginId),
+                Boolean(profileSetupForPlugin),
+              ),
+              connectionId: block.plugin.connectionId,
+              connectionRequired: block.plugin.connectionRequired,
+              conversation: block.plugin.conversation,
+            }
+        : undefined,
+    })),
+  });
+}
+
+function createPortableMethod(
+  method: ProcessMethod,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
+) {
   return {
     ...structuredClone(method),
     blocks: method.blocks.map((block) => ({
@@ -846,7 +795,11 @@ function createPortableMethod(method: ProcessMethod) {
             pluginId: block.plugin.pluginId,
             pluginVersion: block.plugin.pluginVersion,
             capabilityId: block.plugin.capabilityId,
-            configuration: structuredClone(block.plugin.configuration),
+            configuration: sanitizePortableConfiguration(
+              structuredClone(block.plugin.configuration),
+              profileSetupForPlugin?.(block.plugin.pluginId),
+              Boolean(profileSetupForPlugin),
+            ),
             connectionRequired:
               block.plugin.connectionRequired ?? Boolean(block.plugin.connectionId),
             conversation: block.plugin.conversation,
@@ -860,11 +813,15 @@ export function serializeMethodFile(
   name: string,
   method: ProcessMethod,
   collections: StrategicCollection[] = [],
+  profileSetupForPlugin?: PortableProfileSetupResolver,
 ) {
-  const portableMethod = createPortableMethod({ ...method, name: method.name || name });
+  const portableMethod = createPortableMethod(
+    canonicalMethodForExport({ ...method, name: method.name || name }, profileSetupForPlugin),
+    profileSetupForPlugin,
+  );
   const file = sharedMethodSchema.parse({
     format: "contentflow-method",
-    version: 1,
+    version: 3,
     name,
     exportedAt: new Date().toISOString(),
     requirements: collectMethodRequirements(method, collections),
@@ -879,6 +836,7 @@ export function serializeMethodPackFile(
   methods: ProcessMethod[],
   collections: StrategicCollection[] = [],
   channelImageUrl?: string,
+  profileSetupForPlugin?: PortableProfileSetupResolver,
 ) {
   const included = methods.filter((method) => method.blocks.length > 0);
   const requirements = Object.fromEntries(
@@ -886,12 +844,17 @@ export function serializeMethodPackFile(
   );
   const file = sharedMethodPackSchema.parse({
     format: "contentflow-method-pack",
-    version: 1,
+    version: 3,
     name,
     channelName,
     channelImageUrl,
     exportedAt: new Date().toISOString(),
-    methods: included.map(createPortableMethod),
+    methods: included.map((method) =>
+      createPortableMethod(
+        canonicalMethodForExport(method, profileSetupForPlugin),
+        profileSetupForPlugin,
+      ),
+    ),
     requirements,
   });
   return JSON.stringify(file, null, 2);
@@ -905,8 +868,8 @@ export function parseMethodFile(contents: string): SharedMethodFile {
     throw new Error("O arquivo selecionado não contém um JSON válido.");
   }
 
-  if ((parsed as { version?: unknown })?.version === 2) {
-    const bundle = parseMethodBundleV2(parsed);
+  if (isPortableMethodBundle(parsed)) {
+    const bundle = parsePortableMethodBundle(parsed);
     if (bundle.format !== "contentflow-method" || !bundle.primaryProcessType) {
       throw new Error("Este não é um arquivo de método válido do ContentFlow.");
     }
@@ -916,7 +879,7 @@ export function parseMethodFile(contents: string): SharedMethodFile {
     if (!primary) throw new Error("O Método principal não foi encontrado no pacote.");
     return {
       format: "contentflow-method",
-      version: 1,
+      version: 3,
       name: bundle.name,
       exportedAt: bundle.exportedAt,
       requirements: primary.requirements,
@@ -932,10 +895,10 @@ export function parseMethodFile(contents: string): SharedMethodFile {
     ...result.data,
     requirements:
       result.data.requirements ?? collectMethodRequirements(result.data.method as ProcessMethod),
-    method: {
+    method: parseProcessMethodV3({
       ...result.data.method,
       name: result.data.method.name?.trim() || result.data.name,
-    },
+    }),
   } as SharedMethodFile;
 }
 
@@ -946,8 +909,8 @@ export function parseMethodImportFile(contents: string): SharedMethodImport {
   } catch {
     throw new Error("O arquivo selecionado não contém um JSON válido.");
   }
-  if ((parsed as { version?: unknown })?.version === 2) {
-    return parseMethodBundleV2(parsed);
+  if (isPortableMethodBundle(parsed)) {
+    return parsePortableMethodBundle(parsed);
   }
   if ((parsed as { format?: unknown })?.format === "contentflow-method") {
     return parseMethodFile(contents);
@@ -959,10 +922,12 @@ export function parseMethodImportFile(contents: string): SharedMethodImport {
   return {
     ...result.data,
     requirements: result.data.requirements ?? {},
-    methods: result.data.methods.map((method) => ({
-      ...method,
-      name: method.name?.trim() || `Método de ${method.processType}`,
-    })),
+    methods: result.data.methods.map((method) =>
+      parseProcessMethodV3({
+        ...method,
+        name: method.name?.trim() || `Método de ${method.processType}`,
+      }),
+    ),
   } as SharedMethodPackFile;
 }
 
@@ -970,7 +935,14 @@ export function copyImportedBlocks(
   processType: UniversalProcess,
   sourceBlocks: ActionBlock[],
   createId: (prefix: string) => string,
-  options: { preserveLocalConnections?: boolean } = {},
+  options: {
+    preserveLocalConnections?: boolean;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
+    remapLocalProfileExecution?: (
+      pluginId: string,
+      policy: ProfileExecutionPolicy,
+    ) => ProfileExecutionPolicy | undefined;
+  } = {},
 ) {
   const copied = structuredClone(sourceBlocks);
   const blockIds = new Map(
@@ -987,6 +959,11 @@ function copyBlocksWithIds(
   options: {
     preserveLocalConnections?: boolean;
     collectionIds?: ReadonlyMap<string, string>;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
+    remapLocalProfileExecution?: (
+      pluginId: string,
+      policy: ProfileExecutionPolicy,
+    ) => ProfileExecutionPolicy | undefined;
   },
 ) {
   return copied.map((block, order) => ({
@@ -997,7 +974,21 @@ function copyBlocksWithIds(
     plugin: block.plugin
       ? {
           ...block.plugin,
+          configuration: options.preserveLocalConnections
+            ? { ...block.plugin.configuration }
+            : sanitizePortableConfiguration(
+                { ...block.plugin.configuration },
+                options.profileSetupForPlugin?.(block.plugin.pluginId),
+                Boolean(options.profileSetupForPlugin),
+              ),
           connectionId: options.preserveLocalConnections ? block.plugin.connectionId : undefined,
+          profileExecution:
+            block.plugin.profileExecution && options.remapLocalProfileExecution
+              ? options.remapLocalProfileExecution(
+                  block.plugin.pluginId,
+                  block.plugin.profileExecution,
+                )
+              : undefined,
           conversation:
             block.plugin.conversation?.mode === "reuse"
               ? {
@@ -1016,22 +1007,60 @@ function copyBlocksWithIds(
     inputs: block.inputs?.map((input) => ({
       ...input,
       id: createId(`${processType}-input`),
-      recordFields: input.recordFields?.map((field) => ({
-        ...field,
-        id: createId(`${processType}-record-field`),
-      })),
-      blockId:
-        input.blockId && input.blockId !== "__process_output__"
-          ? (blockIds.get(input.blockId) ?? input.blockId)
-          : input.blockId,
+      shape:
+        input.shape.kind === "record"
+          ? {
+              ...input.shape,
+              fields:
+                block.plugin && input.portKey
+                  ? input.shape.fields.map((field) => ({ ...field }))
+                  : input.shape.fields.map((field) => ({
+                      ...field,
+                      id: createId(`${processType}-record-field`),
+                    })),
+            }
+          : input.shape,
+      binding:
+        input.binding?.kind === "previous_block"
+          ? {
+              ...input.binding,
+              blockId: blockIds.get(input.binding.blockId) ?? input.binding.blockId,
+            }
+          : input.binding?.kind === "previous_process"
+            ? {
+                ...input.binding,
+                blockId: input.binding.blockId
+                  ? input.binding.blockId === "__process_output__"
+                    ? input.binding.blockId
+                    : (blockIds.get(input.binding.blockId) ?? input.binding.blockId)
+                  : undefined,
+              }
+            : input.binding?.kind === "channel_history"
+              ? {
+                  ...input.binding,
+                  blockId:
+                    input.binding.blockId === "__process_output__"
+                      ? input.binding.blockId
+                      : (blockIds.get(input.binding.blockId) ?? input.binding.blockId),
+                }
+              : input.binding,
     })),
     outputs: block.outputs?.map((output) => ({
       ...output,
       id: createId(`${processType}-output`),
-      recordFields: output.recordFields?.map((field) => ({
-        ...field,
-        id: createId(`${processType}-record-field`),
-      })),
+      shape:
+        output.shape.kind === "record"
+          ? {
+              ...output.shape,
+              fields:
+                block.plugin && output.portKey
+                  ? output.shape.fields.map((field) => ({ ...field }))
+                  : output.shape.fields.map((field) => ({
+                      ...field,
+                      id: createId(`${processType}-record-field`),
+                    })),
+            }
+          : output.shape,
       optionsSourceBlockId: output.optionsSourceBlockId
         ? (blockIds.get(output.optionsSourceBlockId) ?? output.optionsSourceBlockId)
         : undefined,
@@ -1039,9 +1068,8 @@ function copyBlocksWithIds(
     validation: block.validation
       ? {
           ...block.validation,
-          targetBlockId: block.validation.targetBlockId
-            ? (blockIds.get(block.validation.targetBlockId) ?? block.validation.targetBlockId)
-            : undefined,
+          targetBlockId:
+            blockIds.get(block.validation.targetBlockId) ?? block.validation.targetBlockId,
         }
       : undefined,
   }));
@@ -1053,6 +1081,11 @@ export function copyImportedMethods(
   options: {
     preserveLocalConnections?: boolean;
     collectionIds?: ReadonlyMap<string, string>;
+    profileSetupForPlugin?: PortableProfileSetupResolver;
+    remapLocalProfileExecution?: (
+      pluginId: string,
+      policy: ProfileExecutionPolicy,
+    ) => ProfileExecutionPolicy | undefined;
   } = {},
 ) {
   const copied = structuredClone(sourceMethods);
@@ -1063,6 +1096,7 @@ export function copyImportedMethods(
     }
   }
   return copied.map((method) => ({
+    contractVersion: 3 as const,
     name: method.name,
     imageUrl: method.imageUrl,
     processType: method.processType,

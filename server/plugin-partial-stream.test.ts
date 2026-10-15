@@ -1,13 +1,43 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { PluginExecutionRequest, PluginManifest } from "../src/lib/plugin-contract";
-import { executeRegisteredPlugin, type RegisteredPlugin } from "./plugin-runner";
+import {
+  executeRegisteredPlugin,
+  storedArtifactsDeclaredByUpdate,
+  type RegisteredPlugin,
+} from "./plugin-runner";
+
+test("limits a work-item update to the artifacts declared by that update", () => {
+  const first = {
+    id: "first",
+    name: "first.png",
+    mimeType: "image/png",
+    size: 10,
+    url: "/api/files/first.png",
+  };
+  const second = {
+    id: "second",
+    name: "second.png",
+    mimeType: "image/png",
+    size: 20,
+    url: "/api/files/second.png",
+  };
+
+  assert.deepEqual(
+    storedArtifactsDeclaredByUpdate(
+      [first, second],
+      [{ ...second, source: { kind: "path", path: "second.png" } }],
+    ),
+    [second],
+  );
+  assert.deepEqual(storedArtifactsDeclaredByUpdate([first, second], undefined), []);
+});
 
 test("imports and forwards partial plugin snapshots before the final response", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-")));
   const entrypoint = path.join(root, "handler.mjs");
   await writeFile(
     entrypoint,
@@ -16,7 +46,7 @@ test("imports and forwards partial plugin snapshots before the final response", 
       await writeFile(services.getOutputPath("partial.txt"), "arquivo parcial", "utf8");
       const file = { id: "partial-file", name: "partial.txt", mimeType: "text/plain", size: 15, url: "artifact://partial-file" };
       const artifact = { ...file, source: { kind: "path", path: "partial.txt" } };
-      await services.publishPartial({ values: { result: "primeira", files: [file] }, artifacts: [artifact], progress: 0.5, message: "1/2" });
+      await services.publishPartial({ values: { result: "primeira", files: [file] }, artifacts: [artifact], itemUpdates: [{ key: "slot-1", outputPort: "files", state: "completed", value: file }], progress: 0.5, message: "1/2" });
       await services.publishPartial({ values: { result: "segunda" }, progress: 0.9, message: "2/2" });
       return { status: "success", values: { result: "final" } };
     }`,
@@ -24,6 +54,7 @@ test("imports and forwards partial plugin snapshots before the final response", 
   );
   const manifest = {
     id: "partial-stream-test",
+    apiVersion: "2",
     version: "1.0.0",
     permissions: ["filesystem:write"],
     capabilities: [],
@@ -39,6 +70,7 @@ test("imports and forwards partial plugin snapshots before the final response", 
   };
   const updates: string[] = [];
   let importedPartialUrl = "";
+  let importedItemUrl = "";
   try {
     const response = await executeRegisteredPlugin(
       plugin,
@@ -75,13 +107,107 @@ test("imports and forwards partial plugin snapshots before the final response", 
               importedPartialUrl = file.url;
             }
           }
+          const itemValue = update.itemUpdates?.[0]?.value;
+          if (
+            itemValue &&
+            typeof itemValue === "object" &&
+            !Array.isArray(itemValue) &&
+            "url" in itemValue &&
+            typeof itemValue.url === "string"
+          ) {
+            importedItemUrl = itemValue.url;
+          }
         },
       },
     );
     assert.deepEqual(updates, ["primeira", "segunda"]);
     assert.match(importedPartialUrl, /^\/api\/files\//);
+    assert.match(importedItemUrl, /^\/api\/files\//);
     assert.equal(response.status, "success");
     assert.equal(response.status === "success" ? response.values.result : undefined, "final");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a rejected partial callback fails the plugin execution without becoming an unhandled rejection", async () => {
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "contentflow-partial-stream-rejection-")),
+  );
+  const entrypoint = path.join(root, "handler.mjs");
+  await writeFile(
+    entrypoint,
+    `export async function execute(_request, services) {
+      await services.publishPartial({
+        values: {},
+        itemUpdates: [{ key: "prompt:1", outputPort: "result", state: "completed", value: "primeiro" }],
+      });
+      await services.publishPartial({
+        values: {},
+        itemUpdates: [{ key: "prompt:1", outputPort: "result", state: "completed", value: "segundo" }],
+      });
+      return { status: "success", values: { result: "final" } };
+    }`,
+    "utf8",
+  );
+  const manifest = {
+    id: "partial-stream-rejection-test",
+    apiVersion: "2",
+    version: "1.0.0",
+    permissions: [],
+    capabilities: [],
+  } as unknown as PluginManifest;
+  const plugin: RegisteredPlugin = {
+    id: manifest.id,
+    source: "local",
+    directory: root,
+    absoluteDirectory: root,
+    entrypoint,
+    manifest,
+    executable: true,
+  };
+  let calls = 0;
+  try {
+    await assert.rejects(
+      executeRegisteredPlugin(
+        plugin,
+        {
+          pluginId: plugin.id,
+          capabilityId: "test",
+          executionId: "execution",
+          blockId: "block",
+          attempt: 1,
+          traceId: "trace",
+          invocation: { mode: "start" },
+          inputs: {},
+          configuration: {},
+          settings: {},
+          inputContract: [],
+          outputContract: [
+            { key: "result", portKey: "result", label: "Resultado", type: "text", required: true },
+          ],
+          context: {
+            project: { id: "project", title: "Project" },
+            processType: "assets",
+            blockType: "CRIAR",
+            operator: "IA",
+          },
+        } as unknown as PluginExecutionRequest,
+        10_000,
+        {},
+        {
+          workspaceDirectory: path.join(root, "workspace"),
+          artifactDirectory: path.join(root, "artifacts"),
+          onPartial: async () => {
+            calls += 1;
+            if (calls === 2)
+              throw new Error("O item incremental prompt:1 mudou depois de concluído.");
+          },
+        },
+      ),
+      /prompt:1 mudou depois de concluído/,
+    );
+    assert.equal(calls, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

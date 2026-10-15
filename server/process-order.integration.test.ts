@@ -55,6 +55,7 @@ function fixtureChannel(order: UniversalProcess[]): Channel {
   const methods = createEmptyMethods();
   for (const processType of PROCESS_ORDER) {
     methods[processType] = {
+      contractVersion: 3,
       name: `Congelado ${processType}`,
       processType,
       blocks: [
@@ -65,7 +66,7 @@ function fixtureChannel(order: UniversalProcess[]): Channel {
           order: 0,
           name: `Executar ${processType}`,
           inputs: [],
-          outputs: [],
+          outputs: createProcessOutputFields(processType),
           parameters: [],
         },
       ],
@@ -98,25 +99,26 @@ function outputValue(processType: UniversalProcess) {
     name: `${processType}.bin`,
     size: 12,
     mimeType:
-      processType === "narration"
+      field.shape.kind === "content" && field.shape.family === "audio"
         ? "audio/mpeg"
-        : processType === "thumbnail"
+        : field.shape.kind === "content" && field.shape.family === "image"
           ? "image/png"
           : "video/mp4",
     url: "/api/files/synthetic",
   };
-  const value = ["image", "audio", "video"].includes(field.type)
-    ? file
-    : field.type === "files"
+  const value =
+    field.shape.cardinality === "many"
       ? [file]
-      : processType === "publishing"
-        ? "https://example.com/video"
-        : `final ${processType}`;
+      : field.shape.kind === "content" && ["image", "audio", "video"].includes(field.shape.family)
+        ? file
+        : processType === "publishing"
+          ? "https://example.com/video"
+          : `final ${processType}`;
   return { [field.key]: value };
 }
 
 test(
-  "two end-to-end orders finish eight stages and keep the first method revision",
+  "two end-to-end orders finish eight stages and keep their order while adopting live Methods",
   { timeout: 90_000 },
   async () => {
     const port = await availablePort();
@@ -184,7 +186,10 @@ test(
             JSON.stringify(state?.orchestrator),
           );
           const execution = state!.executions.find((item) => item.processType === processType)!;
-          assert.equal(execution.methodSnapshot.name, `Congelado ${processType}`);
+          assert.equal(
+            execution.methodSnapshot.name,
+            index === 1 ? "Alterado após iniciar" : `Congelado ${processType}`,
+          );
           const human = await api<{
             result: { ok: boolean; completedProcess?: boolean; missing?: string[] };
           }>(base, "/api/commands", "POST", {
@@ -286,7 +291,7 @@ test(
 );
 
 test(
-  "batch V4 keeps custom order, frozen methods and persisted plan across restart",
+  "batch V4 keeps custom process order and persisted plan while adopting live Methods across restart",
   { timeout: 90_000 },
   async () => {
     const port = await availablePort();
@@ -387,7 +392,12 @@ test(
         const execution = state.executions.find(
           (item) => item.projectId === event.projectId && item.processType === event.processType,
         )!;
-        assert.equal(execution.methodSnapshot.name, `Congelado ${event.processType}`);
+        assert.equal(
+          execution.methodSnapshot.name,
+          event.processType === "script"
+            ? "Método alterado depois do lote"
+            : `Congelado ${event.processType}`,
+        );
 
         const human = await api<{
           result: { ok: boolean; completedProcess?: boolean; missing?: string[] };

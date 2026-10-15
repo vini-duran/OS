@@ -1,18 +1,32 @@
+import "./json-text-items.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   CHATGPT_SEND_BUTTON_SELECTORS,
   __test,
+  assertGeneratedImageCapture,
   attachmentsAreReady,
+  batchOperationKey,
   composerUploadState,
+  collectAssistantResponseNodes,
   collectGeneratedImages,
+  countUserTurns,
+  conversationForInvocation,
+  imageActionBaselineHashes,
+  imageConversationCorrelation,
+  imageItemUpdate,
+  imageRegenerationFeedback,
+  materializeGeneratedImage,
   promptPageState,
+  publishGeneratedImagePartial,
+  sniffImageMimeType,
   waitForAttachmentsReady,
   waitAndClickSend,
   execute,
+  partsForConversation,
   validateConversationUrl,
 } from "./handler.mjs";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
@@ -21,6 +35,55 @@ const manifest = JSON.parse(
   await readFile(new URL("./contentflow.plugin.json", import.meta.url), "utf8"),
 );
 const handlerSource = await readFile(new URL("./handler.mjs", import.meta.url), "utf8");
+const p30Baseline = JSON.parse(
+  await readFile(new URL("./fixtures/p30-non-visual-capabilities.json", import.meta.url), "utf8"),
+);
+const p31ImageDom = JSON.parse(
+  await readFile(new URL("./fixtures/p31-image-dom.json", import.meta.url), "utf8"),
+);
+const p32SequentialPrompts = JSON.parse(
+  await readFile(new URL("./fixtures/p32-sequential-image-prompts.json", import.meta.url), "utf8"),
+);
+const p33ImageRegeneration = JSON.parse(
+  await readFile(new URL("./fixtures/p33-image-regeneration.json", import.meta.url), "utf8"),
+);
+
+const P30_NON_VISUAL_CAPABILITY_IDS = [
+  "generate-text-in-browser",
+  "search-web-in-browser",
+  "deep-research-in-browser",
+  "choose-library-item-in-browser",
+  "validate-content-in-browser",
+  "analyze-images-in-browser",
+  "analyze-documents-in-browser",
+];
+
+function outputContractFor(capabilityId, validation, fields) {
+  const selected =
+    fields ??
+    (capabilityId === "search-web-in-browser" || capabilityId === "deep-research-in-browser"
+      ? [
+          { key: "result", type: "textarea" },
+          { key: "sources", type: "list" },
+        ]
+      : capabilityId === "validate-content-in-browser"
+        ? validation?.mode === "select_one"
+          ? [
+              { key: "selected_value", type: "text" },
+              { key: "feedback", type: "textarea" },
+            ]
+          : validation?.mode === "select_many"
+            ? [
+                { key: "selected_values", type: "list" },
+                { key: "feedback", type: "textarea" },
+              ]
+            : [
+                { key: "decision", type: "approval" },
+                { key: "feedback", type: "textarea" },
+              ]
+        : [{ key: "result", type: "textarea" }]);
+  return selected.map((field) => ({ ...field, portKey: field.portKey ?? field.key }));
+}
 
 test("aceita somente referências de conversa do ChatGPT", () => {
   assert.equal(
@@ -44,6 +107,10 @@ function request(overrides = {}) {
       ...overrides.configuration,
     },
     settings: { diagnosticMockResponse: "TESTE OK", ...overrides.settings },
+    executionId: overrides.executionId ?? "execution-test",
+    blockId: overrides.blockId ?? "block-test",
+    attempt: overrides.attempt ?? 1,
+    invocation: overrides.invocation ?? { mode: "start" },
     inputs: { content: "Tema principal", ...overrides.inputs },
     instructionContextInputs: overrides.instructionContextInputs,
     context: {
@@ -54,9 +121,253 @@ function request(overrides = {}) {
       ...overrides.context,
     },
     validation: overrides.validation,
-    outputContract: overrides.outputContract,
+    retryFeedback: overrides.retryFeedback,
+    outputContract: outputContractFor(
+      overrides.capabilityId ?? "generate-text-in-browser",
+      overrides.validation,
+      overrides.outputContract,
+    ),
+    conversation: overrides.conversation,
+    batch: overrides.batch,
+    itemAction: overrides.itemAction,
   };
 }
+
+function p30Request(fixture) {
+  return request({
+    capabilityId: fixture.id,
+    resolvedInstruction: fixture.resolvedInstruction,
+    inputs: fixture.inputs,
+    context: fixture.selectedCollection
+      ? { selectedCollection: fixture.selectedCollection }
+      : undefined,
+    validation: fixture.validation,
+    outputContract: fixture.outputContract,
+    settings: { diagnosticMockResponse: fixture.mockResponse },
+    conversation: { mode: "new" },
+  });
+}
+
+function p30Prompt(fixture, value) {
+  if (fixture.promptBuilder === "text") return __test.buildParts(value)[0];
+  if (fixture.promptBuilder === "search") return __test.buildSearchPrompt(value, false);
+  if (fixture.promptBuilder === "deep-research") return __test.buildSearchPrompt(value, true);
+  if (fixture.promptBuilder === "choose") return __test.buildChoosePrompt(value);
+  if (fixture.promptBuilder === "validate") return __test.buildValidationPrompt(value);
+  if (fixture.promptBuilder === "analyze-images") return __test.buildAnalysisPrompt(value, true);
+  if (fixture.promptBuilder === "analyze-documents")
+    return __test.buildAnalysisPrompt(value, false);
+  throw new Error(`Construtor P30 desconhecido: ${fixture.promptBuilder}`);
+}
+
+test("P30 congela as sete capabilities não visuais por fixture", async (t) => {
+  assert.equal(p30Baseline.schemaVersion, 1);
+  assert.deepEqual(
+    p30Baseline.capabilities.map((fixture) => fixture.id),
+    P30_NON_VISUAL_CAPABILITY_IDS,
+  );
+
+  for (const fixture of p30Baseline.capabilities) {
+    await t.test(fixture.id, async () => {
+      const capability = manifest.capabilities.find((item) => item.id === fixture.id);
+      assert.ok(capability, `Capability ausente no manifesto: ${fixture.id}`);
+      assert.equal(capability.instructionUsage, "required");
+
+      const visualConfigurationKeys = Object.keys(
+        capability.blockConfigSchema?.properties ?? {},
+      ).filter(
+        (key) =>
+          key !== "textItemReferenceInputs" &&
+          /image|aspect|resolution|variant|reference/i.test(key),
+      );
+      assert.deepEqual(visualConfigurationKeys, []);
+
+      const value = p30Request(fixture);
+      const prompt = p30Prompt(fixture, value);
+      for (const expected of fixture.expectedPromptIncludes)
+        assert.match(prompt, new RegExp(expected));
+
+      if (fixture.attachmentPort) {
+        assert.deepEqual(
+          __test.collectStoredFiles(value.inputs[fixture.attachmentPort]).map((file) => file.id),
+          fixture.expectedAttachmentIds,
+        );
+      }
+
+      const response = await execute(value, { signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, "success");
+      assert.deepEqual(response.values, fixture.expectedValues);
+
+      if (fixture.capturedSources) {
+        assert.deepEqual(
+          __test.searchResponseValues(fixture.mockResponse, fixture.capturedSources, {
+            outputContract: [
+              { key: "result", portKey: "result", type: "textarea" },
+              { key: "sources", portKey: "sources", type: "list" },
+            ],
+          }),
+          { result: fixture.mockResponse, sources: fixture.capturedSources },
+        );
+      }
+    });
+  }
+});
+
+test("P30 congela aprovação, escolha única e escolha múltipla", () => {
+  for (const fixture of p30Baseline.validationDecisions) {
+    assert.deepEqual(
+      __test.parseValidationValues(
+        fixture.response,
+        request({
+          capabilityId: "validate-content-in-browser",
+          validation: { mode: fixture.mode },
+          inputs: { content: fixture.content },
+        }),
+      ),
+      fixture.expected,
+    );
+  }
+});
+
+test("instrui registros tipados a usar somente IDs canônicos das entradas", () => {
+  const value = request({
+    inputs: { context_1: "Cena A\n\nCena B" },
+    outputContract: [
+      {
+        key: "characters",
+        portKey: "records",
+        shape: {
+          kind: "record",
+          cardinality: "many",
+          fields: [
+            {
+              key: "name",
+              required: true,
+              shape: { kind: "content", family: "text", cardinality: "one" },
+            },
+            {
+              key: "scene_ids",
+              required: true,
+              referencesInputId: "all-scenes",
+              shape: { kind: "control", control: "identifier", cardinality: "many" },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  value.inputDeliveries = [
+    {
+      inputId: "all-scenes",
+      portKey: "context_1",
+      itemIds: ["scene-1", "scene-2"],
+      items: [
+        { id: "scene-1", value: "Cena A" },
+        { id: "scene-2", value: "Cena B" },
+      ],
+    },
+  ];
+  const prompt = __test.buildParts(value)[0];
+  assert.match(prompt, /referencesInputId/);
+  assert.match(prompt, /scene-1/);
+  assert.match(prompt, /somente IDs exatos/);
+  assert.match(prompt, /Não traduza as chaves/);
+  assert.match(prompt, /\[\{"name":"valor","scene_ids":\["ID_EXATO_DO_ITEM_DE_ORIGEM"\]\}\]/);
+});
+
+test("P30 congela conversa nova, continuidade e fallback", async () => {
+  const fixture = p30Baseline.conversation;
+  const originalParts = ["Solicitação original"];
+
+  assert.deepEqual(partsForConversation(originalParts, { mode: "new" }, false), originalParts);
+  assert.deepEqual(
+    partsForConversation(
+      originalParts,
+      {
+        mode: "reuse",
+        continuationMessage: fixture.continuationMessage,
+        fallbackContext: fixture.fallbackContext,
+      },
+      true,
+    ),
+    [fixture.continuationMessage],
+  );
+  assert.deepEqual(
+    partsForConversation(
+      originalParts,
+      {
+        mode: "reuse",
+        continuationMessage: fixture.continuationMessage,
+        fallbackContext: fixture.fallbackContext,
+      },
+      false,
+    ),
+    [`${fixture.fallbackContext}\n\nNOVA SOLICITAÇÃO:\n${fixture.continuationMessage}`],
+  );
+
+  assert.deepEqual(
+    attachmentsAreReady({ attachmentPresent: true, busy: false, sendEnabled: true, error: false }, [
+      fixture.primaryAttachment,
+    ]),
+    true,
+  );
+  assert.deepEqual(
+    __test.attachmentsForConversation(
+      [fixture.primaryAttachment],
+      [fixture.fallbackAttachment],
+      false,
+      fixture.continuationMessage,
+    ),
+    [fixture.primaryAttachment, fixture.fallbackAttachment],
+  );
+  assert.deepEqual(
+    __test.attachmentsForConversation(
+      [fixture.primaryAttachment],
+      [fixture.fallbackAttachment],
+      true,
+      fixture.continuationMessage,
+    ),
+    [],
+  );
+
+  const navigations = [];
+  const client = {
+    async send(method, params = {}) {
+      if (method === "Page.navigate") {
+        navigations.push(params.url);
+        return {};
+      }
+      if (method === "Runtime.evaluate") {
+        if (String(params.expression).includes("location.href"))
+          return { result: { value: fixture.id } };
+        return {
+          result: {
+            value: {
+              host: "chatgpt.com",
+              readyState: "complete",
+              prompt: true,
+              login: false,
+              captcha: false,
+              bodyHint: "",
+            },
+          },
+        };
+      }
+      throw new Error(`Comando inesperado: ${method}`);
+    },
+  };
+
+  assert.equal(
+    await __test.prepareConversation(
+      client,
+      "p30-session",
+      { mode: "reuse", id: fixture.id },
+      1000,
+    ),
+    true,
+  );
+  assert.deepEqual(navigations, [fixture.id]);
+});
 
 test("não repete no contexto uma entrada já interpolada na instrução", () => {
   assert.equal(
@@ -70,8 +381,8 @@ test("não repete no contexto uma entrada já interpolada na instrução", () =>
 
 test("manifesto declara oito capabilities modulares", () => {
   assert.equal(manifest.id, "local.contentflow.chatgpt-browser-studio");
-  assert.equal(manifest.version, "1.0.14");
-  assert.equal(manifest.supportsConversationContinuation, undefined);
+  assert.equal(manifest.version, "2.0.2");
+  assert.equal(manifest.supportsConversationContinuation, true);
   assert.equal(manifest.profileSetup.configurationKey, "accountProfile");
   assert.equal(manifest.settingsSchema.properties.allowExistingChromeProfile.default, false);
   const generation = manifest.capabilities.find((item) => item.id === "generate-text-in-browser");
@@ -80,32 +391,41 @@ test("manifesto declara oito capabilities modulares", () => {
     "fallbackAccountProfiles",
     "accountProfile",
     "startMinimized",
+    "textItemFormat",
+    "textItemFields",
+    "textItemReferenceInputs",
   ]);
-  assert.deepEqual(generation.outputPorts.find((port) => port.key === "result").producedTypes, [
-    "text",
-    "textarea",
-    "number",
-  ]);
+  assert.deepEqual(generation.outputPorts.find((port) => port.key === "result").shape, {
+    kind: "content",
+    family: "text",
+    cardinality: "one",
+    representation: "inline",
+  });
+  assert.deepEqual(generation.execution.itemOrchestration, {
+    inputPort: "content",
+    outputPort: "parts",
+    combinedOutputPort: "result",
+    separator: "\n\n",
+    mode: "sequential",
+    strategies: ["per_item"],
+    preferredStrategy: "per_item",
+  });
   const imageGeneration = manifest.capabilities.find(
     (item) => item.id === "generate-image-in-browser",
   );
-  assert.deepEqual(imageGeneration.inputPorts.find((port) => port.key === "prompt").acceptedTypes, [
-    "text",
-    "textarea",
-    "number",
-    "boolean",
-    "list",
-    "records",
-    "select",
-    "multiselect",
-    "datetime",
-    "url",
-    "thumbnail_layout",
-  ]);
-  assert.deepEqual(
-    imageGeneration.outputPorts.find((port) => port.key === "images").producedTypes,
-    ["files"],
-  );
+  assert.deepEqual(imageGeneration.inputPorts.find((port) => port.key === "prompt").shape, {
+    kind: "content",
+    family: "text",
+    cardinality: "one",
+    representation: "inline",
+  });
+  assert.deepEqual(imageGeneration.outputPorts.find((port) => port.key === "images").shape, {
+    kind: "content",
+    family: "image",
+    cardinality: "many",
+    representation: "artifact",
+    formats: { mimeTypes: ["image/*"] },
+  });
   assert.deepEqual(
     manifest.capabilities.map((item) => item.id),
     [
@@ -128,6 +448,336 @@ test("manifesto declara oito capabilities modulares", () => {
   assert.deepEqual(manifest.secretKeys ?? [], []);
 });
 
+test("P31 localiza e antecipa o prompt da capability de imagem", () => {
+  const imageGeneration = manifest.capabilities.find(
+    (item) => item.id === "generate-image-in-browser",
+  );
+  assert.equal(
+    imageGeneration.promptPreview.template,
+    "INSTRUÇÕES DO BLOCO:\n{{BLOCK_INSTRUCTIONS}}\n\nCONTEXTO DAS ENTRADAS:\n{{CONTEXT_INPUTS}}",
+  );
+  assert.equal(imageGeneration.name, "Gerar imagens");
+  assert.equal(manifest.localizations.en.capabilities[imageGeneration.id].name, "Generate images");
+  assert.equal(manifest.localizations.es.capabilities[imageGeneration.id].name, "Generar imágenes");
+  assert.equal(
+    manifest.localizations.en.capabilities[imageGeneration.id].outputPorts.images.label,
+    "Generated images",
+  );
+  assert.equal(
+    manifest.localizations.es.capabilities[imageGeneration.id].outputPorts.images.label,
+    "Imágenes generadas",
+  );
+});
+
+test("P32 declara prompt → images sequencial somente na capability de imagem alterada", () => {
+  const imageCapability = manifest.capabilities.find(
+    (capability) => capability.id === "generate-image-in-browser",
+  );
+  assert.equal(imageCapability.execution.maxConcurrency, 1);
+  assert.deepEqual(imageCapability.execution.itemOrchestration, {
+    inputPort: "prompts",
+    outputPort: "images",
+    mode: "sequential",
+  });
+  assert.ok(
+    P30_NON_VISUAL_CAPABILITY_IDS.every((id) =>
+      manifest.capabilities.some((capability) => capability.id === id),
+    ),
+  );
+});
+
+test("P32 isola os três prompts por batch.itemId e nunca reutiliza conversa", async () => {
+  assert.equal(p32SequentialPrompts.schemaVersion, 1);
+  assert.equal(p32SequentialPrompts.items.length, 3);
+  const seenOperationKeys = new Set();
+  const seenPrompts = [];
+
+  for (const [index, item] of p32SequentialPrompts.items.entries()) {
+    const value = request({
+      capabilityId: "generate-image-in-browser",
+      resolvedInstruction: "Gere a imagem solicitada.",
+      inputs: { prompt: item.prompt },
+      conversation: {
+        mode: "reuse",
+        id: "https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc",
+      },
+      batch: { itemId: item.itemId, index, total: p32SequentialPrompts.items.length },
+    });
+    const prompt = __test.buildImagePrompt(value);
+    seenPrompts.push(value.inputs.prompt);
+    assert.match(prompt, new RegExp(item.prompt));
+    assert.deepEqual(conversationForInvocation(value, value.capabilityId), { mode: "new" });
+    const operationKey = batchOperationKey(value, 0, 0);
+    assert.match(operationKey, new RegExp(`^${item.itemId}:`));
+    assert.equal(seenOperationKeys.has(operationKey), false);
+    seenOperationKeys.add(operationKey);
+  }
+
+  assert.deepEqual(
+    seenPrompts,
+    p32SequentialPrompts.items.map((item) => item.prompt),
+  );
+  assert.deepEqual(
+    conversationForInvocation(
+      request({ conversation: { mode: "reuse", id: "https://chatgpt.com/c/example" } }),
+      "generate-text-in-browser",
+    ),
+    { mode: "reuse", id: "https://chatgpt.com/c/example" },
+  );
+});
+
+test("P32 usa batch.itemId na identidade do artifact e preserva variantes por prompt", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "contentflow-chatgpt-p32-"));
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  try {
+    const artifacts = [];
+    for (const [index, item] of p32SequentialPrompts.items.entries()) {
+      const value = request({
+        capabilityId: "generate-image-in-browser",
+        inputs: { prompt: item.prompt },
+        batch: { itemId: item.itemId, index, total: p32SequentialPrompts.items.length },
+      });
+      value.executionId = "execution-p32";
+      value.blockId = "block-p32";
+      value.attempt = 1;
+      const materialized = await materializeGeneratedImage(
+        {
+          src: `https://chatgpt.com/backend-api/estuary/content?id=${item.variants[0]}`,
+          base64: pngBytes.toString("base64"),
+          mimeType: "image/png",
+        },
+        { getOutputPath: (name) => path.join(directory, name) },
+        value,
+      );
+      artifacts.push(materialized.file.id);
+      assert.equal(imageItemUpdate(value, materialized.file, 0).input, item.prompt);
+    }
+    assert.equal(new Set(artifacts).size, p32SequentialPrompts.items.length);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P32 cancela antes de iniciar o próximo item", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const response = await execute(
+    request({
+      capabilityId: "generate-image-in-browser",
+      settings: { diagnosticMockResponse: "" },
+      inputs: { prompt: p32SequentialPrompts.items[2].prompt },
+      batch: { itemId: p32SequentialPrompts.items[2].itemId, index: 2, total: 3 },
+    }),
+    { signal: controller.signal },
+  );
+  assert.deepEqual(response, {
+    status: "error",
+    code: "CANCELLED",
+    message: "Execução cancelada.",
+    retryable: false,
+    bridgeDiagnostics: [],
+  });
+});
+
+test("P33 declara ações locais e regeneração com labels em três idiomas", () => {
+  const capability = manifest.capabilities.find((item) => item.id === "generate-image-in-browser");
+  assert.deepEqual(capability.itemActions, [
+    { action: "regenerate", label: "Regenerar" },
+    { action: "replace", label: "Substituir" },
+    { action: "select", label: "Selecionar" },
+    { action: "download", label: "Baixar" },
+  ]);
+  assert.equal(
+    manifest.localizations.en.capabilities[capability.id].itemActions.regenerate.label,
+    "Regenerate",
+  );
+  assert.equal(
+    manifest.localizations.es.capabilities[capability.id].itemActions.download.label,
+    "Descargar",
+  );
+  assert.equal(capability.execution.itemOrchestration.outputPort, "images");
+});
+
+test("P33 reutiliza somente a conversa da mesma conexão e perfil", () => {
+  assert.equal(p33ImageRegeneration.schemaVersion, 1);
+  const previous = {
+    id: p33ImageRegeneration.item.previousArtifactId,
+    name: "city-b.png",
+    mimeType: "image/png",
+    size: 68,
+    url: `/api/files/${p33ImageRegeneration.item.previousArtifactId}`,
+  };
+  const initial = request({
+    capabilityId: "generate-image-in-browser",
+    configuration: { accountProfile: p33ImageRegeneration.profile },
+    settings: {
+      diagnosticMockResponse: "",
+      connectionId: p33ImageRegeneration.connectionId,
+    },
+  });
+  const key = imageConversationCorrelation(initial, p33ImageRegeneration.conversationId);
+  const action = request({
+    capabilityId: "generate-image-in-browser",
+    configuration: { accountProfile: p33ImageRegeneration.profile },
+    settings: {
+      diagnosticMockResponse: "",
+      connectionId: p33ImageRegeneration.connectionId,
+    },
+    invocation: {
+      mode: "item_action",
+      action: "regenerate",
+      itemId: p33ImageRegeneration.item.id,
+      outputPort: "images",
+    },
+    batch: p33ImageRegeneration.batch,
+    retryFeedback: { feedback: p33ImageRegeneration.item.feedback },
+    itemAction: {
+      key,
+      variantKey: p33ImageRegeneration.item.variantKey,
+      input: p33ImageRegeneration.item.input,
+      output: previous,
+      attempt: p33ImageRegeneration.item.attempt,
+    },
+  });
+
+  const continued = conversationForInvocation(action, action.capabilityId);
+  assert.deepEqual(continued, {
+    mode: "reuse",
+    id: p33ImageRegeneration.conversationId,
+    continuationMessage: p33ImageRegeneration.item.feedback,
+    fallbackAttachments: [previous],
+  });
+  assert.deepEqual(partsForConversation(["prompt completo"], continued, true), [
+    p33ImageRegeneration.item.feedback,
+  ]);
+  assert.equal(imageRegenerationFeedback(action), p33ImageRegeneration.item.feedback);
+  assert.match(__test.buildImagePrompt(action), /aumente o contraste do céu/i);
+
+  const changedConnection = structuredClone(action);
+  changedConnection.settings.connectionId = "connection-images-other";
+  assert.deepEqual(conversationForInvocation(changedConnection, changedConnection.capabilityId), {
+    mode: "new",
+    continuationMessage: p33ImageRegeneration.item.feedback,
+    fallbackAttachments: [previous],
+  });
+  const changedProfile = structuredClone(action);
+  changedProfile.configuration.accountProfile = "fallback-images";
+  assert.equal(conversationForInvocation(changedProfile, changedProfile.capabilityId).mode, "new");
+  const wrongPort = structuredClone(action);
+  wrongPort.invocation.outputPort = "image";
+  assert.throws(() => conversationForInvocation(wrongPort, wrongPort.capabilityId), /porta images/);
+});
+
+test("P33 anexa a imagem reprovada somente ao abrir conversa nova", () => {
+  const previous = { path: "C:/staging/previous.png", name: "previous.png", size: 68 };
+  assert.deepEqual(
+    __test.attachmentsForConversation([], [previous], true, "Aumente o contraste."),
+    [],
+  );
+  assert.deepEqual(
+    __test.attachmentsForConversation([], [previous], false, "Aumente o contraste."),
+    [previous],
+  );
+});
+
+test("P33 rejeita ausência de mudança real e materializa somente a nova tentativa", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "contentflow-chatgpt-p33-"));
+  const previousPath = path.join(directory, "previous.png");
+  const previousBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x01,
+  ]);
+  const regeneratedBytes = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x02,
+  ]);
+  const previous = {
+    id: p33ImageRegeneration.item.previousArtifactId,
+    name: "previous.png",
+    mimeType: "image/png",
+    size: previousBytes.length,
+    url: `/api/files/${p33ImageRegeneration.item.previousArtifactId}`,
+  };
+  const action = request({
+    capabilityId: "generate-image-in-browser",
+    attempt: p33ImageRegeneration.item.attempt,
+    invocation: {
+      mode: "item_action",
+      action: "regenerate",
+      itemId: p33ImageRegeneration.item.id,
+      outputPort: "images",
+    },
+    batch: p33ImageRegeneration.batch,
+    itemAction: {
+      key: "generation",
+      variantKey: p33ImageRegeneration.item.variantKey,
+      input: p33ImageRegeneration.item.input,
+      output: previous,
+      attempt: p33ImageRegeneration.item.attempt,
+    },
+  });
+  const services = {
+    resolveInputFile: async () => previousPath,
+    getOutputPath: (name) => path.join(directory, name),
+  };
+  try {
+    await writeFile(previousPath, previousBytes);
+    const baseline = await imageActionBaselineHashes(action, services);
+    const unchanged = await materializeGeneratedImage(
+      {
+        src: "https://chatgpt.com/backend-api/estuary/content?id=unchanged",
+        base64: previousBytes.toString("base64"),
+        mimeType: "image/png",
+      },
+      services,
+      action,
+      { excludedContentHashes: baseline },
+    );
+    assert.equal(unchanged.excluded, true);
+    assert.deepEqual(await readdir(directory), ["previous.png"]);
+    assert.throws(
+      () => assertGeneratedImageCapture(0, true),
+      (error) =>
+        error.code === "OUTPUT_VALIDATION_FAILED" && /sem mudança real/i.test(error.message),
+    );
+
+    const regenerated = await materializeGeneratedImage(
+      {
+        src: "https://chatgpt.com/backend-api/estuary/content?id=regenerated",
+        base64: regeneratedBytes.toString("base64"),
+        mimeType: "image/png",
+      },
+      services,
+      action,
+      { excludedContentHashes: baseline },
+    );
+    assert.equal(regenerated.excluded, undefined);
+    assert.notEqual(regenerated.file.id, previous.id);
+    assert.equal((await readdir(directory)).length, 2);
+
+    const history = [
+      {
+        attempt: 1,
+        output: previous.id,
+      },
+      {
+        attempt: p33ImageRegeneration.item.attempt,
+        output: regenerated.file.id,
+        feedback: p33ImageRegeneration.item.feedback,
+      },
+    ];
+    const neighbor = structuredClone(p33ImageRegeneration.neighbor);
+    assert.deepEqual(
+      history.map((entry) => entry.attempt),
+      [1, 2],
+    );
+    assert.deepEqual(neighbor, p33ImageRegeneration.neighbor);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("modela as fases observáveis da resposta", () => {
   assert.equal(
     __test.responsePhase({ hasNewResponse: false, generating: false, stablePolls: 0 }),
@@ -144,6 +794,46 @@ test("modela as fases observáveis da resposta", () => {
   assert.equal(
     __test.responsePhase({ hasNewResponse: true, generating: false, stablePolls: 2 }),
     "completed",
+  );
+});
+
+test("confirma envio por novo turno mesmo quando o compositor ainda conserva o texto", () => {
+  const baseline = { baselineUserTurnCount: 3, baselineAssistantTurnCount: 3 };
+  assert.equal(
+    __test.promptSubmissionConfirmed(
+      {
+        promptText: "prompt ainda visível",
+        generating: false,
+        userTurnCount: 4,
+        assistantTurnCount: 3,
+      },
+      baseline,
+    ),
+    true,
+  );
+  assert.equal(
+    __test.promptSubmissionConfirmed(
+      {
+        promptText: "prompt ainda visível",
+        generating: false,
+        userTurnCount: 3,
+        assistantTurnCount: 4,
+      },
+      baseline,
+    ),
+    true,
+  );
+  assert.equal(
+    __test.promptSubmissionConfirmed(
+      {
+        promptText: "prompt ainda visível",
+        generating: false,
+        userTurnCount: 3,
+        assistantTurnCount: 3,
+      },
+      baseline,
+    ),
+    false,
   );
 });
 
@@ -175,6 +865,7 @@ test("não renavega uma aba nova do ChatGPT antes de usar o compositor", async (
           result: {
             value: {
               host: "chatgpt.com",
+              readyState: "complete",
               prompt: true,
               login: false,
               captcha: false,
@@ -221,6 +912,7 @@ test("reconhece a raiz do ChatGPT como conversa nova sem Page.navigate redundant
           result: {
             value: {
               host: "chatgpt.com",
+              readyState: "complete",
               prompt: true,
               login: false,
               captcha: false,
@@ -297,6 +989,36 @@ test("não confunde texto do conteúdo com controles reais de login", () => {
   assert.equal(promptPageState(doc).login, true);
 });
 
+test("captura respostas e turnos na marcação atual e nas marcações anteriores do ChatGPT", () => {
+  const currentResponse = { id: "current-response" };
+  const legacyResponse = { id: "legacy-response" };
+  const currentUserTurn = { id: "current-user" };
+  const selectors = new Map([
+    [
+      '[data-chatgpt-selection-message-id] [data-markdown-text-style="assistant-message"]',
+      [currentResponse],
+    ],
+    ['[data-message-author-role="assistant"] .markdown', [legacyResponse]],
+    ['[data-user-message-bubble="true"]', [currentUserTurn]],
+  ]);
+  const doc = {
+    querySelectorAll(selector) {
+      return selectors.get(selector) ?? [];
+    },
+  };
+
+  assert.deepEqual(collectAssistantResponseNodes(doc), [currentResponse]);
+  assert.equal(countUserTurns(doc), 1);
+
+  selectors.set(
+    '[data-chatgpt-selection-message-id] [data-markdown-text-style="assistant-message"]',
+    [],
+  );
+  selectors.set('[data-message-author-role="user"]', [currentUserTurn]);
+  assert.deepEqual(collectAssistantResponseNodes(doc), [legacyResponse]);
+  assert.equal(countUserTurns(doc), 1);
+});
+
 test("isola contas por alias e porta", () => {
   assert.equal(__test.normalizeAccountProfile("canal-a"), "canal-a");
   assert.throws(() => __test.normalizeAccountProfile("../x"), /Perfil ChatGPT/);
@@ -351,12 +1073,38 @@ test("reconecta o service worker da Browser Bridge quando a sessão CDP desapare
         if (expression.includes("contentFlowBridge?.identity"))
           return {
             result: {
-              value: { bridgeId: "com.contentflow.browser-bridge", protocolVersion: 2 },
+              value: {
+                bridgeId: "com.contentflow.browser-bridge",
+                protocolVersion: 2,
+                protocol: { min: 2, max: 2 },
+                capabilities: [
+                  "idempotent-replay.v1",
+                  "lifecycle-events.v1",
+                  "snapshot.v1",
+                  "condition-observer.v1",
+                  "reload.v1",
+                ],
+                bridgeVersion: "0.5.0",
+              },
             },
           };
         if (expression.includes("contentFlowBridge.connect")) {
           connectCount += 1;
-          return { result: { value: { ok: true } } };
+          return {
+            result: {
+              value: {
+                ok: true,
+                protocolVersion: 2,
+                capabilities: [
+                  "idempotent-replay.v1",
+                  "lifecycle-events.v1",
+                  "snapshot.v1",
+                  "condition-observer.v1",
+                  "reload.v1",
+                ],
+              },
+            },
+          };
         }
         if (expression.includes("bridge.dispatch")) {
           if (!lostOnce) {
@@ -543,11 +1291,63 @@ test("ignora partes personalizadas", () => {
   );
 });
 
-test("preserva respostas individuais quando parts está conectada", () => {
-  const values = __test.generationResponseValues("A\n\nB", [{ text: "A" }, { text: "B" }], {
-    outputContract: [{ key: "parts" }],
+test("trata lista em content como um único contexto agregado", () => {
+  const parts = __test.buildParts(
+    request({
+      inputs: { content: ["Cena A", "Cena B", "Cena C"] },
+    }),
+  );
+  assert.equal(parts.length, 1);
+  assert.match(parts[0], /Cena A/);
+  assert.match(parts[0], /Cena B/);
+  assert.match(parts[0], /Cena C/);
+});
+
+test("exige JSON para saída canônica text/many", () => {
+  const outputContract = [
+    {
+      key: "parts",
+      portKey: "parts",
+      shape: {
+        kind: "content",
+        family: "text",
+        cardinality: "many",
+        representation: "inline",
+      },
+    },
+  ];
+  const values = __test.generationResponseValues('["A","B"]', [{ text: '["A","B"]' }], {
+    outputContract,
   });
-  assert.deepEqual(values, { result: "A\n\nB", parts: ["A", "B"] });
+  assert.deepEqual(values, { parts: ["A", "B"] });
+  assert.deepEqual(
+    __test.generationResponseValues('Aqui está o JSON:\n["A","B"]\n', [], { outputContract }),
+    { parts: ["A", "B"] },
+  );
+  assert.deepEqual(__test.generationResponseValues("Prompt A\nPrompt B", [], { outputContract }), {
+    parts: ["Prompt A", "Prompt B"],
+  });
+  assert.throws(
+    () =>
+      __test.generationResponseValues("Provide, Provide Missing Image Prompt", [], {
+        outputContract,
+      }),
+    /array JSON válido/,
+  );
+});
+
+test("normaliza JSONL de registros sem relaxar o contrato estruturado", () => {
+  const values = __test.generationResponseValues(
+    '{"name":"Ana","visual_prompt":"Ana em plano médio","scene_ids":["scene-1"]}\n{"name":"Beto","visual_prompt":"Beto em close","scene_ids":["scene-2"]}',
+    [],
+    {
+      outputContract: [
+        { key: "characters", portKey: "records", shape: { kind: "record", cardinality: "many" } },
+      ],
+    },
+  );
+  assert.equal(values.records.length, 2);
+  assert.equal(values.records[1].name, "Beto");
 });
 
 test("respeita saída list em geração de texto", () => {
@@ -555,8 +1355,8 @@ test("respeita saída list em geração de texto", () => {
     __test.generationResponseValues(
       "Primeiro prompt\n\nSegundo prompt\n\nTerceiro prompt",
       [{ text: "Primeiro prompt\n\nSegundo prompt\n\nTerceiro prompt" }],
-      { outputContract: [{ key: "visual_prompts", type: "list" }] },
-    ).visual_prompts,
+      { outputContract: [{ key: "visual_prompts", portKey: "result", type: "list" }] },
+    ).result,
     ["Primeiro prompt", "Segundo prompt", "Terceiro prompt"],
   );
 });
@@ -566,7 +1366,7 @@ test("converte uma resposta numérica estrita para uma entrega number", () => {
     __test.generationResponseValues("7", [{ text: "7" }], {
       outputContract: [{ key: "sections", type: "number", portKey: "result" }],
     }),
-    { result: 7, sections: 7 },
+    { result: 7 },
   );
   assert.throws(
     () =>
@@ -603,11 +1403,11 @@ test("respeita o outputContract de Buscar", () => {
   assert.deepEqual(
     __test.searchResponseValues("- A\n- B", ["https://example.com"], {
       outputContract: [
-        { key: "items_found", type: "list" },
-        { key: "sources", type: "list" },
+        { key: "items_found", portKey: "result", type: "list" },
+        { key: "sources", portKey: "sources", type: "list" },
       ],
     }),
-    { items_found: ["A", "B"], sources: ["https://example.com"] },
+    { result: ["A", "B"], sources: ["https://example.com"] },
   );
 });
 
@@ -788,6 +1588,56 @@ test("observa apenas miniaturas carregadas e controles do compositor", () => {
   images.length = 0;
   send.disabled = false;
   assert.equal(composerUploadState(doc).attachmentPresent, true);
+});
+
+test("P34 reconhece o botao atual do compositor pelo id ou aria-label", () => {
+  const element = (extra = {}) => ({
+    getClientRects: () => [1],
+    getAttribute: () => null,
+    matches: () => false,
+    ...extra,
+  });
+  const send = element({
+    id: "composer-submit-button",
+    disabled: false,
+  });
+  const prompt = element({
+    innerText: "Prompt pronto para envio",
+    textContent: "Prompt pronto para envio",
+    contains: () => false,
+  });
+  const composer = {
+    querySelector: (selector) =>
+      selector.includes("prompt-textarea")
+        ? prompt
+        : selector.includes("send-button")
+          ? send
+          : null,
+    querySelectorAll: () => [],
+  };
+  prompt.closest = () => composer;
+  const doc = {
+    body: {},
+    defaultView: {
+      getComputedStyle: () => ({
+        display: "block",
+        visibility: "visible",
+        pointerEvents: "auto",
+        filter: "none",
+        animationName: "none",
+        animationPlayState: "paused",
+      }),
+    },
+    querySelector: (selector) => (selector.includes("prompt-textarea") ? prompt : null),
+  };
+  const state = composerUploadState(doc);
+  assert.equal(state.hasPrompt, true);
+  assert.equal(state.sendEnabled, true);
+  assert.equal(state.busy, false);
+
+  send.id = "";
+  send.getAttribute = (key) => (key === "aria-label" ? "Enviar" : null);
+  assert.equal(composerUploadState(doc).sendEnabled, true);
 });
 
 test("não confunde preview decodificado com upload concluído ou botão de voz com enviar", () => {
@@ -971,7 +1821,8 @@ function pageImage(role, id, overrides = {}) {
     naturalWidth: 1536,
     naturalHeight: 1024,
     closest(selector) {
-      if (selector.startsWith("form,")) return role === "user" || role === "composer" ? {} : null;
+      if (selector.startsWith("form,"))
+        return role === "user" || role === "composer" || overrides.avatar === true ? {} : null;
       if (selector === "[data-message-author-role], [data-turn]")
         return role === "assistant" ? { getAttribute: () => "assistant" } : null;
       return null;
@@ -1013,6 +1864,116 @@ test("preserva todas as imagens do assistente e exclui referências e histórico
   );
 });
 
+test("P31 aceita somente imagens novas do assistente no DOM simulado", () => {
+  assert.equal(p31ImageDom.schemaVersion, 1);
+  const toImage = (entry) => pageImage(entry.owner, entry.id, entry);
+  const before = collectGeneratedImages({
+    querySelectorAll: () => p31ImageDom.before.map(toImage),
+  });
+  const after = collectGeneratedImages({
+    querySelectorAll: () => p31ImageDom.after.map(toImage),
+  });
+  const accepted = __test
+    .generatedImagesAfterBaseline(
+      after,
+      before.map((image) => image.src),
+    )
+    .map((image) => new URL(image.src).searchParams.get("id"));
+  assert.deepEqual(accepted, p31ImageDom.acceptedIds);
+  for (const rejectedId of p31ImageDom.rejectedIds) assert.ok(!accepted.includes(rejectedId));
+});
+
+test("P31 valida assinatura e MIME antes de materializar uma imagem", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "contentflow-chatgpt-p31-"));
+  try {
+    const pngBytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    assert.equal(sniffImageMimeType(pngBytes), "image/png");
+    assert.equal(sniffImageMimeType(Buffer.from("not-an-image-payload", "utf8")), undefined);
+    const services = { getOutputPath: (name) => path.join(directory, name) };
+    const value = request({
+      capabilityId: "generate-image-in-browser",
+      inputs: { prompt: "Crie duas opções." },
+    });
+    value.executionId = "execution-p31";
+    value.blockId = "block-p31";
+    value.attempt = 1;
+    const accepted = await materializeGeneratedImage(
+      {
+        src: "https://chatgpt.com/backend-api/estuary/content?id=generated-a",
+        base64: pngBytes.toString("base64"),
+        mimeType: "application/octet-stream",
+      },
+      services,
+      value,
+    );
+    assert.equal(accepted.file.mimeType, "image/png");
+    assert.equal(accepted.file.size, pngBytes.length);
+    assert.deepEqual(await readFile(path.join(directory, accepted.file.name)), pngBytes);
+    assert.equal(
+      await materializeGeneratedImage(
+        {
+          src: "https://chatgpt.com/backend-api/estuary/content?id=wrong-mime",
+          base64: pngBytes.toString("base64"),
+          mimeType: "image/jpeg",
+        },
+        services,
+        value,
+      ),
+      undefined,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("P31 publica cada variante incremental e mantém singular e plural", async () => {
+  const files = [0, 1].map((index) => ({
+    id: `artifact-${index}`,
+    name: `artifact-${index}.png`,
+    mimeType: "image/png",
+    size: 12,
+    url: `artifact://artifact-${index}`,
+  }));
+  const entries = files.map((file) => ({
+    file,
+    artifact: {
+      ...file,
+      source: { kind: "path", path: file.name },
+    },
+  }));
+  const partials = [];
+  const value = request({
+    capabilityId: "generate-image-in-browser",
+    inputs: { prompt: "Crie duas opções." },
+  });
+  for (let index = 0; index < entries.length; index += 1) {
+    await publishGeneratedImagePartial(
+      { publishPartial: async (partial) => partials.push(partial) },
+      value,
+      entries.slice(0, index + 1),
+      files[index],
+      index,
+    );
+  }
+  assert.deepEqual(
+    partials.map((partial) => partial.values.images.length),
+    [1, 2],
+  );
+  assert.equal(partials[1].values.image, files[0]);
+  assert.deepEqual(partials[1].values.images, files);
+  assert.deepEqual(
+    partials.map((partial) => partial.itemUpdates[0]),
+    files.map((file, index) => imageItemUpdate(value, file, index)),
+  );
+  assert.deepEqual(
+    partials.map((partial) => partial.itemUpdates[0].variantKey),
+    ["image:0", "image:1"],
+  );
+  assert.ok(partials.every((partial) => partial.itemUpdates[0].outputPort === "images"));
+});
+
 test("aceita imagem fora do texto mas dentro de um turno comprovadamente do assistente", () => {
   const img = pageImage("unknown", "tool-output", {
     closest(selector) {
@@ -1032,6 +1993,36 @@ test("aceita imagem fora do texto mas dentro de um turno comprovadamente do assi
     },
   });
   assert.equal(collectGeneratedImages({ querySelectorAll: () => [turnImage] }).length, 1);
+});
+
+test("P34 captura a galeria atual de Images sem confundi-la com anexo do usuário", () => {
+  const generated = pageImage("unknown", "current-images-gallery", {
+    src: "blob:https://chatgpt.com/generated-p34",
+    alt: "Imagem 1 gerada",
+    naturalWidth: 1254,
+    naturalHeight: 1254,
+    closest(selector) {
+      if (selector.startsWith("form,")) return null;
+      if (selector === '[data-testid="generated-image-preview"]') return {};
+      if (selector === '[data-testid="generated-image-gallery"]') return {};
+      return null;
+    },
+  });
+  const uploadedReference = pageImage("user", "reference-in-prompt", {
+    src: "blob:https://chatgpt.com/reference-p34",
+    alt: "Imagem 1 gerada",
+  });
+  assert.deepEqual(
+    collectGeneratedImages({ querySelectorAll: () => [uploadedReference, generated] }),
+    [
+      {
+        src: generated.src,
+        width: 1254,
+        height: 1254,
+        alt: "Imagem 1 gerada",
+      },
+    ],
+  );
 });
 
 test("identifica queda de CDP sem confundir erro HTTP", () => {
@@ -1088,15 +2079,109 @@ test("aceita apenas sinais fortes associados a uma nova resposta concluída", ()
   );
 });
 
+test("não aceita mensagens operacionais de interrupção do ChatGPT como conteúdo final", () => {
+  assert.deepEqual(
+    __test.classifyProviderResponseFailure("Conexão interrompida. Aguardando a resposta completa"),
+    {
+      code: "UPSTREAM_UNAVAILABLE",
+      message: "A resposta do ChatGPT foi interrompida antes de ser concluída.",
+      retryable: true,
+    },
+  );
+  assert.equal(
+    __test.classifyProviderResponseFailure("Uma cena mostra uma rodoviária vazia ao amanhecer."),
+    undefined,
+  );
+});
+
 test("envia pelo seletor atual e pelo seletor legado do compositor", () => {
   assert.deepEqual(CHATGPT_SEND_BUTTON_SELECTORS, [
     'button[data-testid="send-button"]:not(:disabled):not([aria-disabled="true"])',
     'button#composer-submit-button:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="Enviar" i]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="Send" i]:not(:disabled):not([aria-disabled="true"])',
   ]);
 });
 
 test("limpa markdown de saída", () => {
   assert.equal(__test.cleanGeneratedText("# Título\n\nTexto"), "Título\n\nTexto");
+});
+
+test("mapeia saída textual many pela portKey canônica do outputContract", () => {
+  const value = request({
+    outputContract: [
+      {
+        key: "prompts",
+        portKey: "parts",
+        shape: {
+          kind: "content",
+          family: "text",
+          cardinality: "many",
+          representation: "inline",
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    __test.generationResponseValues(
+      '["Cena 1 em plano geral","Cena 2 em close"]',
+      [{ text: '["Cena 1 em plano geral","Cena 2 em close"]' }],
+      value,
+    ),
+    { parts: ["Cena 1 em plano geral", "Cena 2 em close"] },
+  );
+});
+
+test("não publica aliases genéricos fora do outputContract", async () => {
+  const value = request({
+    outputContract: [
+      {
+        key: "prompts",
+        portKey: "parts",
+        shape: {
+          kind: "content",
+          family: "text",
+          cardinality: "many",
+          representation: "inline",
+        },
+      },
+    ],
+  });
+  const mapped = __test.generationResponseValues(
+    '["Cena 1","Cena 2"]',
+    [{ text: '["Cena 1","Cena 2"]' }],
+    value,
+  );
+
+  assert.deepEqual(Object.keys(mapped), ["parts"]);
+  assert.equal("result" in mapped, false);
+});
+
+test("respeita cardinalidade atômica da porta parts durante per_item", () => {
+  const value = request({
+    outputContract: [
+      {
+        key: "parts",
+        portKey: "parts",
+        shape: {
+          kind: "content",
+          family: "text",
+          cardinality: "one",
+          representation: "inline",
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    __test.generationResponseValues(
+      "Personagem consistente",
+      [{ text: "Personagem consistente" }],
+      value,
+    ),
+    { parts: "Personagem consistente" },
+  );
 });
 
 test("rotas simuladas não abrem navegador", async () => {

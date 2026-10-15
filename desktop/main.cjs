@@ -9,13 +9,32 @@ const {
 } = require("electron");
 const { createServer, request: httpRequest } = require("node:http");
 const { spawn } = require("node:child_process");
-const { existsSync, mkdirSync, statSync } = require("node:fs");
+const { existsSync, statSync } = require("node:fs");
 const { readFile } = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { configureDesktopUpdater } = require("./updater.cjs");
-const { assertWritableDataOutsideApp } = require("./desktop-paths.cjs");
+const {
+  applyDataIsolation,
+  getEffectiveMacOSAppDataDir,
+  resolveNodeExecutable,
+  selectDataCandidateByIndex,
+  shouldUsePersistedDataSelection,
+} = require("./macos-platform.cjs");
 const { resolveDataLocation } = require("./data-selection.cjs");
+const {
+  createDiagnostics,
+  exportDiagnostics,
+  createApiDiagnosticReader,
+} = require("./diagnostics.cjs");
+const { safeError, safeConsoleError } = require("./diagnostic-contract.cjs");
+
+app.setName("ContentFlow");
+app.setAppUserModelId("com.contentflow.app");
+applyDataIsolation(app);
+
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) app.quit();
 
 let mainWindow;
 let webServer;
@@ -23,6 +42,9 @@ let apiProcess;
 let appOrigin;
 let notificationIcon;
 let quitting = false;
+let diagnostics;
+let exportingDiagnostics = false;
+let diagnosticsClosed = false;
 const staticAssetCache = new Map();
 const notifiedHumanTasks = new Set();
 const HUMAN_TASKS_UPDATE_CHANNEL = "contentflow:human-tasks-update";
@@ -30,132 +52,46 @@ const HUMAN_TASKS_NAVIGATE_CHANNEL = "contentflow:human-tasks-navigate";
 const HUMAN_TASK_ROUTE =
   /^\/project\/[^/]+\/(theme|title|thumbnail|script|narration|assets|edit|publish)$/;
 
-app.setName("ContentFlow");
-app.setAppUserModelId("com.contentflow.app");
-
-function findUserDataSwitch(argv) {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg.startsWith("--user-data-dir=")) {
-      return arg.slice("--user-data-dir=".length);
-    }
-    if (arg === "--user-data-dir" && i + 1 < argv.length) {
-      return argv[i + 1];
-    }
-  }
-  return null;
-}
-
-// appData precisa ser definido antes do runtime. A seleção que pode abrir um
-// diálogo, porém, só ocorre depois de app.whenReady(): chamar dialog antes
-// disso falha justamente no cenário em que existem dois bancos a preservar.
-let customAppData = process.env.CONTENTFLOW_APPDATA_DIR
-  ? path.resolve(process.env.CONTENTFLOW_APPDATA_DIR)
-  : null;
-if (!customAppData) {
-  const explicitUserData =
-    findUserDataSwitch(process.argv) || process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR;
-  if (explicitUserData) customAppData = path.dirname(path.resolve(explicitUserData));
-}
-if (customAppData) {
-  if (!existsSync(customAppData)) mkdirSync(customAppData, { recursive: true });
-  app.setPath("appData", customAppData);
-}
-
-let userCancelledSelection = false;
-
-function configureDataLocation() {
-  const selected = resolveDataLocation({
-    appDataDir: customAppData || app.getPath("appData"),
-    appRoot: app.getAppPath(),
-    env: process.env,
-    promptCallback: (candidates) => {
-      if (process.env.CONTENTFLOW_NON_INTERACTIVE) {
-        return null;
-      }
-      const options = candidates.map((candidate) => candidate.label);
-      options.push("Cancelar e Sair");
-      const choice =
-        process.env.CONTENTFLOW_TEST_PROMPT_CHOICE !== undefined
-          ? process.env.CONTENTFLOW_TEST_PROMPT_CHOICE === "cancel"
-            ? options.length - 1
-            : Number(process.env.CONTENTFLOW_TEST_PROMPT_CHOICE)
-          : dialog.showMessageBoxSync({
-              type: "warning",
-              title: "ContentFlow — Seleção de Diretório de Dados",
-              message: "Foram encontrados bancos de dados em mais de um local.",
-              detail:
-                "Para proteger seu cofre e produções existentes, escolha qual banco utilizar:\n\n" +
-                candidates
-                  .map(
-                    (candidate, index) =>
-                      `${index + 1}. ${candidate.label}\n   ${candidate.dataDir}`,
-                  )
-                  .join("\n\n"),
-              buttons: options,
-              defaultId: 0,
-              cancelId: options.length - 1,
-              noLink: true,
-            });
-      if (choice < 0 || choice >= candidates.length) {
-        userCancelledSelection = true;
-        return null;
-      }
-      return candidates[choice];
-    },
-  });
-  assertWritableDataOutsideApp(app.getAppPath(), selected.userData);
-  if (!existsSync(selected.userData)) {
-    mkdirSync(selected.userData, { recursive: true });
-  }
-  app.setPath("userData", selected.userData);
-  process.env.CONTENTFLOW_ELECTRON_USER_DATA_DIR = selected.userData;
-  process.env.CONTENTFLOW_DESKTOP_DATA_DIR = selected.dataDir;
-  return selected;
-}
-
 app.on("second-instance", () => {
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.focus();
 });
+
+app
+  .whenReady()
+  .then(startDesktop)
+  .catch((error) => {
+    diagnostics?.record({ area: "desktop", code: "APP_START_FAILED", ...safeError(error) });
+    dialog.showErrorBox(
+      "O ContentFlow não conseguiu iniciar",
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    app.quit();
+  });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (diagnostics && !diagnosticsClosed) {
+    event.preventDefault();
+    if (!quitting) {
+      quitting = true;
+      diagnostics.record({ area: "desktop", code: "APP_STOPPED" });
+      void diagnostics.close().finally(() => {
+        diagnosticsClosed = true;
+        app.quit();
+      });
+    }
+    return;
+  }
   quitting = true;
   webServer?.close();
   webServer?.closeAllConnections?.();
   apiProcess?.kill();
 });
-
-app
-  .whenReady()
-  .then(() => {
-    configureDataLocation();
-    const singleInstance = app.requestSingleInstanceLock();
-    if (!singleInstance) {
-      app.exit(0);
-      return;
-    }
-    return startDesktop();
-  })
-  .catch((error) => {
-    if (userCancelledSelection) {
-      app.exit(0);
-      return;
-    }
-    console.error("ContentFlow — Inicialização Suspensa:", error);
-    if (!process.env.CONTENTFLOW_NON_INTERACTIVE && process.env.NODE_ENV !== "test") {
-      dialog.showErrorBox(
-        "ContentFlow — Inicialização Suspensa",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    app.exit(1);
-  });
 
 async function startDesktop() {
   const appRoot = app.getAppPath();
@@ -163,11 +99,13 @@ async function startDesktop() {
   const runtimeRoot = app.isPackaged
     ? path.join(resourcesRoot, "runtime")
     : path.join(appRoot, "desktop-runtime");
-  const runtimeNodeName = process.platform === "win32" ? "node.exe" : "node";
-  const dataRoot = path.resolve(
-    process.env.CONTENTFLOW_DESKTOP_DATA_DIR ?? path.join(app.getPath("userData"), "data"),
-  );
-  assertWritableDataOutsideApp(appRoot, dataRoot);
+  const dataSelection = resolveDesktopDataSelection(app);
+  if (!dataSelection) return;
+  const dataRoot = dataSelection.dataDir;
+  const logDirectory = path.join(app.getPath("userData"), "logs");
+  diagnostics = createDiagnostics(logDirectory);
+  diagnostics.record({ area: "desktop", code: "APP_STARTED", version: app.getVersion() });
+  configureSupportDiagnostics(logDirectory);
   const apiPort = await reservePort();
 
   process.env.CONTENTFLOW_API_PORT = String(apiPort);
@@ -179,27 +117,34 @@ async function startDesktop() {
   process.env.CONTENTFLOW_PLUGIN_WORKER_DIR = app.isPackaged
     ? path.join(runtimeRoot, "workers")
     : path.join(appRoot, "server");
-  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = path.join(runtimeRoot, runtimeNodeName);
+  process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE = resolveNodeExecutable(runtimeRoot);
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR = "26";
   process.env.NODE_ENV = "production";
+  process.env.CONTENTFLOW_SUPPORT_DIAGNOSTICS = "1";
 
   const apiEntry = path.join(appRoot, "desktop-dist", "api.mjs");
-  const apiEnvironment = createApiEnvironment();
   apiProcess = spawn(process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE, [apiEntry], {
-    env: apiEnvironment,
+    env: process.env,
     windowsHide: true,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  apiProcess.stdout.on(
+    "data",
+    createApiDiagnosticReader((event) => diagnostics.record(event)),
+  );
   let apiError = "";
   let apiLaunchError;
   let apiReady = false;
   apiProcess.stderr.on("data", (chunk) => {
+    diagnostics.record({ area: "api", code: "API_ERROR" });
     apiError = `${apiError}${chunk.toString("utf8")}`.slice(-12_000);
   });
   apiProcess.once("error", (error) => {
+    diagnostics.record({ area: "api", code: "API_ERROR", ...safeError(error) });
     apiLaunchError = error;
   });
   apiProcess.once("exit", (code) => {
+    diagnostics.record({ area: "api", code: "API_EXITED", exitCode: code });
     if (!quitting && apiReady) {
       dialog.showErrorBox(
         "A API local foi encerrada",
@@ -237,6 +182,20 @@ async function startDesktop() {
     },
   });
   appOrigin = `http://127.0.0.1:${webPort}`;
+  mainWindow.webContents.on("render-process-gone", (_event, details) =>
+    diagnostics.record({ area: "interface", code: "UI_CRASHED", exitCode: details.exitCode }),
+  );
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode) =>
+    diagnostics.record({ area: "interface", code: "UI_LOAD_FAILED", status: Math.abs(errorCode) }),
+  );
+  mainWindow.webContents.on("console-message", (details) => {
+    if (details.level === "error")
+      diagnostics.record({
+        area: "interface",
+        line: details.lineNumber,
+        ...safeConsoleError(details),
+      });
+  });
   configureHumanTaskNotifications();
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
@@ -247,10 +206,54 @@ async function startDesktop() {
     event.preventDefault();
     if (url.startsWith("https://") || url.startsWith("http://")) void shell.openExternal(url);
   });
-  configureDesktopUpdater({ app, ipcMain, shell, getWindow: () => mainWindow });
+  configureDesktopUpdater({
+    app,
+    ipcMain,
+    shell,
+    getWindow: () => mainWindow,
+    supportLog: (event) => diagnostics.record(event),
+  });
   mainWindow.once("ready-to-show", () => mainWindow?.show());
   await mainWindow.loadURL(`${appOrigin}/dashboard`);
   if (!mainWindow.isVisible()) mainWindow.show();
+}
+
+function configureSupportDiagnostics(logDirectory) {
+  const authorized = (event) =>
+    mainWindow &&
+    event.sender === mainWindow.webContents &&
+    event.senderFrame === mainWindow.webContents.mainFrame;
+  ipcMain.on("contentflow:diagnostics:record", (event, input) => {
+    if (!authorized(event) || !["UI_ERROR", "UI_REJECTION"].includes(input?.code)) return;
+    diagnostics.record({ ...input, area: "interface" });
+  });
+  ipcMain.handle("contentflow:diagnostics:open", async (event) => {
+    if (!authorized(event)) return { status: "error" };
+    try {
+      await diagnostics.prepare();
+      const error = await shell.openPath(logDirectory);
+      return { status: error ? "error" : "opened" };
+    } catch {
+      return { status: "error" };
+    }
+  });
+  ipcMain.handle("contentflow:diagnostics:export", async (event) => {
+    if (!authorized(event) || exportingDiagnostics) return { status: "error" };
+    exportingDiagnostics = true;
+    try {
+      const selection = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: `ContentFlow-diagnostic-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`,
+        filters: [{ name: "ZIP", extensions: ["zip"] }],
+      });
+      if (selection.canceled || !selection.filePath) return { status: "cancelled" };
+      await exportDiagnostics(selection.filePath, await diagnostics.read(), app.getVersion());
+      return { status: "exported" };
+    } catch {
+      return { status: "error" };
+    } finally {
+      exportingDiagnostics = false;
+    }
+  });
 }
 
 function configureHumanTaskNotifications() {
@@ -401,40 +404,57 @@ function notifyHumanTask(task, preferences) {
   notification.show();
 }
 
-function createApiEnvironment() {
-  const inheritedKeys = [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "SystemRoot",
-    "WINDIR",
-    "ComSpec",
-    "PATHEXT",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "USERPROFILE",
-    "ProgramData",
-  ];
-  const environment = Object.fromEntries(
-    inheritedKeys
-      .filter((key) => typeof process.env[key] === "string")
-      .map((key) => [key, process.env[key]]),
-  );
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith("CONTENTFLOW_") && typeof value === "string") {
-      environment[key] = value;
-    }
+function resolveDesktopDataSelection(targetApp) {
+  if (!shouldUsePersistedDataSelection(process.platform)) {
+    return {
+      userData: targetApp.getPath("userData"),
+      dataDir: path.join(targetApp.getPath("userData"), "data"),
+    };
   }
-  environment.NODE_ENV = "production";
-  return environment;
+  const env = process.env;
+  const appDataDir = getEffectiveMacOSAppDataDir(targetApp, env);
+  let userCancelled = false;
+  const promptCallback = (candidates) => {
+    const labels = candidates.map((candidate) => candidate.label);
+    const chosenIndex = dialog.showMessageBoxSync({
+      type: "question",
+      buttons: [...labels, "Cancelar"],
+      defaultId: 0,
+      cancelId: labels.length,
+      title: "ContentFlow — Escolher dados",
+      message:
+        "Foram encontrados bancos de dados distintos em múltiplos caminhos. Escolha qual preservar.",
+      detail: candidates
+        .map((candidate) => `- ${candidate.label}: ${candidate.dataDir}`)
+        .join("\n"),
+    });
+    if (chosenIndex === null || chosenIndex === undefined || chosenIndex >= candidates.length) {
+      userCancelled = true;
+      return null;
+    }
+    return selectDataCandidateByIndex(candidates, chosenIndex);
+  };
+  let selected = null;
+  try {
+    selected = resolveDataLocation({
+      appDataDir,
+      appRoot: app.getAppPath(),
+      env,
+      promptCallback,
+    });
+  } catch (error) {
+    if (userCancelled) {
+      targetApp.quit();
+      return null;
+    }
+    throw error;
+  }
+  if (!selected) {
+    targetApp.quit();
+    return null;
+  }
+  targetApp.setPath("userData", selected.userData);
+  return selected;
 }
 
 async function startWebServer(appRoot, apiPort) {

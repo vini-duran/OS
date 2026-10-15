@@ -1,6 +1,6 @@
 # Microsoft Edge TTS
 
-Plugin independente Plugin API v1 para gerar narração MP3 no processo universal **Narração** usando o serviço online de leitura do Microsoft Edge.
+Plugin independente Plugin API v2 para gerar narração MP3 no processo universal **Narração** usando o serviço online de leitura do Microsoft Edge.
 
 O pacote inclui Python 3.12.10 para Windows x64 e `edge-tts` 7.2.8 com dependências fixadas. Nada é instalado em runtime e o computador não precisa ter Python. O texto é enviado para `speech.platform.bing.com`; não há API key nem consumo de créditos da ElevenLabs.
 
@@ -27,3 +27,8 @@ npm run plugin:kit -- check ./ecosystem/plugins/reference/edge-tts
 ```
 
 Versão do ContentFlow testada: 0.4.1. Consulte `THIRD_PARTY_NOTICES.md` para versões, licenças, fontes e hashes do runtime.
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

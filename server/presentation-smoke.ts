@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { ImageGallery } from "../src/components/image-gallery";
-import { PRESENTATION_RENDERER_IDS } from "../src/lib/domain";
+import { PRESENTATION_RENDERER_IDS, type ValueShape } from "../src/lib/domain";
 import { parseMethodFile, serializeMethodFile } from "../src/lib/method-file";
 import {
   getCompatiblePresentationRenderers,
@@ -11,13 +8,16 @@ import {
   normalizeFieldPresentation,
   resolvePresentationRenderer,
 } from "../src/lib/presentation";
+import { validateRuntimeValueAgainstShape } from "../src/lib/runtime-value-validation";
 
-const legacyMethod = {
+const canonicalMethod = {
   format: "contentflow-method",
-  version: 1,
-  name: "Método legado",
+  version: 3,
+  name: "Método canônico",
   exportedAt: "2026-08-10T00:00:00.000Z",
   method: {
+    contractVersion: 3,
+    name: "Método canônico",
     processType: "assets",
     blocks: [
       {
@@ -25,13 +25,30 @@ const legacyMethod = {
         type: "CRIAR",
         operator: "Humano",
         name: "Produzir assets",
-        inputs: [{ id: "input-1", label: "Referências", type: "files", source: "previous_block" }],
+        inputs: [
+          {
+            id: "input-1",
+            label: "Referências",
+            shape: {
+              kind: "content",
+              family: "image",
+              cardinality: "many",
+              representation: "artifact",
+            },
+            binding: { kind: "runtime" },
+          },
+        ],
         outputs: [
           {
             id: "output-1",
             label: "Assets",
             key: "assets",
-            type: "files",
+            shape: {
+              kind: "content",
+              family: "image",
+              cardinality: "many",
+              representation: "artifact",
+            },
             required: true,
           },
         ],
@@ -42,51 +59,71 @@ const legacyMethod = {
   },
 };
 
-const parsedLegacy = parseMethodFile(JSON.stringify(legacyMethod));
-assert.equal(parsedLegacy.method.blocks[0].inputs?.[0].presentation?.renderer, "auto");
-assert.equal(parsedLegacy.method.blocks[0].outputs?.[0].presentation?.renderer, "auto");
+const parsedCanonical = parseMethodFile(JSON.stringify(canonicalMethod));
+assert.equal(parsedCanonical.method.blocks[0].inputs?.[0].presentation, undefined);
+assert.equal(parsedCanonical.method.blocks[0].outputs?.[0].presentation, undefined);
 
-const gallery = normalizeFieldPresentation("files", {
+const imageMany = {
+  kind: "content",
+  family: "image",
+  cardinality: "many",
+  representation: "artifact",
+} as const;
+const textOne = {
+  kind: "content",
+  family: "text",
+  cardinality: "one",
+  representation: "inline",
+} as const;
+const records: ValueShape = { kind: "record", cardinality: "many", fields: [] };
+const gallery = normalizeFieldPresentation(imageMany, {
   renderer: "image-gallery",
-  itemType: "image",
-  acceptedMimeTypes: [" IMAGE/PNG ", "image/*", "image/*", "invalid"],
 });
 assert.deepEqual(gallery, {
   renderer: "image-gallery",
-  itemType: "image",
-  acceptedMimeTypes: ["image/png", "image/*"],
 });
-assert.equal(resolvePresentationRenderer("files", gallery), "image-gallery");
-assert.equal(resolvePresentationRenderer("text", gallery), "text-short");
+assert.equal(resolvePresentationRenderer(imageMany, gallery), "image-gallery");
+assert.equal(resolvePresentationRenderer(textOne, gallery), "text-short");
 assert.equal(
-  resolvePresentationRenderer("files", { renderer: "auto" }, [
+  resolvePresentationRenderer(imageMany, { renderer: "auto" }, [
     { id: "image", name: "image.png", mimeType: "image/png", size: 1, url: "local" },
   ]),
   "image-gallery",
 );
-assert.deepEqual(getCompatiblePresentationRenderers("records"), ["auto", "table", "cards"]);
+assert.deepEqual(getCompatiblePresentationRenderers(records), ["auto", "table", "cards"]);
 assert.equal(new Set(PRESENTATION_RENDERER_IDS).size, PRESENTATION_RENDERER_IDS.length);
+const invalidMaterial = [
+  {
+    id: "audio",
+    name: "audio.mp3",
+    mimeType: "audio/mpeg",
+    size: 1,
+    url: "/api/files/audio.mp3",
+  },
+];
 assert.equal(
-  getPresentationRestrictionIssue(gallery, [
-    { id: "audio", name: "audio.mp3", mimeType: "audio/mpeg", size: 1, url: "local" },
-  ]),
-  "deve conter apenas arquivos image",
+  validateRuntimeValueAgainstShape(imageMany, invalidMaterial)[0]?.code,
+  "CONTENT_FAMILY_MISMATCH",
 );
+assert.equal(getPresentationRestrictionIssue(imageMany, gallery, invalidMaterial), undefined);
 
-const exported = serializeMethodFile("Método normalizado", parsedLegacy.method);
+const exported = serializeMethodFile("Método normalizado", parsedCanonical.method);
 const reparsed = parseMethodFile(exported);
-assert.equal(reparsed.method.blocks[0].outputs?.[0].presentation?.renderer, "auto");
+assert.equal(reparsed.method.blocks[0].outputs?.[0].presentation, undefined);
 
 const processRunnerSource = readFileSync(
   new URL("../src/components/process-runner.tsx", import.meta.url),
   "utf8",
 );
-const executionResultsSource = processRunnerSource.slice(
-  processRunnerSource.indexOf("function ExecutionResults"),
+const methodExecutionSource = processRunnerSource.slice(
+  processRunnerSource.indexOf("function MethodExecution"),
   processRunnerSource.indexOf("function ResultValue"),
 );
-assert.match(executionResultsSource, /item\.status === "cancelled"/);
-assert.match(executionResultsSource, /open=\{blockExecution\.status !== "completed"\}/);
+assert.equal(processRunnerSource.match(/Execução do método/g)?.length, 1);
+assert.doesNotMatch(processRunnerSource, /Resultados produzidos/);
+assert.match(methodExecutionSource, /execution\.blocks\.map\(\(blockExecution, index\)/);
+assert.match(methodExecutionSource, /completedBlocks\}\/\{execution\.blocks\.length/);
+assert.match(methodExecutionSource, /<details[\s\S]*<summary/);
 assert.match(processRunnerSource, /w-full max-w-6xl border-t/);
 
 const rendererSource = readFileSync(
@@ -97,37 +134,6 @@ const imageGallerySource = rendererSource.slice(
   rendererSource.indexOf("function ImageGalleryRenderer"),
   rendererSource.indexOf("function AudioRenderer"),
 );
-// O layout de 4 colunas em grid do autor original foi rejeitado em favor da galeria/zoom/teclado do fork.
-assert.doesNotMatch(imageGallerySource, /lg:grid-cols-4/);
-assert.match(imageGallerySource, /<ImageGallery\s+images=\{images\}\s+compact=\{compact\}\s*\/>/);
-
-// Contrato real do fork: galeria integrada, modal de zoom, trilho horizontal e navegação por teclado
-const testImages = [
-  { id: "img-1", name: "imagem-1.png", mimeType: "image/png", size: 100, url: "/img-1.png" },
-  { id: "img-2", name: "imagem-2.png", mimeType: "image/png", size: 200, url: "/img-2.png" },
-];
-const galleryMarkup = renderToStaticMarkup(
-  createElement(ImageGallery, {
-    images: testImages,
-    compact: false,
-  }),
-);
-assert.match(galleryMarkup, /Ampliar imagem 1/);
-assert.match(galleryMarkup, /overflow-x-auto/);
-
-const gallerySource = readFileSync(
-  new URL("../src/components/image-gallery.tsx", import.meta.url),
-  "utf8",
-);
-assert.match(gallerySource, /export function ImageGallery/);
-assert.match(gallerySource, /ArrowLeft/);
-assert.match(gallerySource, /ArrowRight/);
-assert.match(gallerySource, /Esc para fechar/);
-
-const galleryTestSource = readFileSync(
-  new URL("../src/components/image-gallery.test.tsx", import.meta.url),
-  "utf8",
-);
-assert.match(galleryTestSource, /all 30 images have previews in one horizontal rail/);
+assert.match(imageGallerySource, /<ImageGallery images=\{images\} compact=\{compact\} \/>/);
 
 console.log("Presentation contract smoke test passed.");

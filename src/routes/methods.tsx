@@ -17,9 +17,9 @@ import {
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
+import { EcosystemCatalog } from "@/components/ecosystem-catalog";
 import { AppShell } from "@/components/app-shell";
 import { ChannelAvatar } from "@/components/channel-avatar";
-import { useFocusSearchShortcut } from "@/lib/search-shortcut";
 import { MethodAgentCta } from "@/components/method-agent-cta";
 import { TopBar } from "@/components/top-bar";
 import { Badge } from "@/components/ui/badge";
@@ -50,18 +50,22 @@ import {
   type StrategicCollection,
   type UniversalProcess,
 } from "@/lib/domain";
+import { IncompatibleDataNotice } from "@/components/user-data-upgrade-panel";
+import { channelNeedsUpgrade, methodNeedsUpgrade } from "@/lib/user-data-upgrade";
 import { useAppPreferences } from "@/lib/app-preferences";
 import { effectiveProcessOrder, resolveProcessOrderForMethods } from "@/lib/process-order";
 import { pluginRequirementReadiness } from "@/lib/method-transfer-readiness";
 import {
   parseMethodImportFile,
   planPortableMethodTransfer,
+  sanitizePortableTransferPlan,
   serializePortableMethodTransfer,
   type MethodRequirement,
-  type PortableCollectionV2,
-  type PortableLibraryItemV2,
+  type PortableCollection,
+  type PortableLibraryItem,
   type PortableMethodRole,
 } from "@/lib/method-file";
+import type { PluginProfileSetup } from "@/lib/plugin-contract";
 import {
   applyMethodTransfer,
   setChannelMethods,
@@ -87,7 +91,11 @@ type ReadinessPlugin = {
   id: string;
   enabled: boolean;
   executable: boolean;
-  manifest: { name: string; capabilities: Array<{ id: string }> };
+  manifest: {
+    name: string;
+    capabilities: Array<{ id: string }>;
+    profileSetup?: PluginProfileSetup;
+  };
 };
 
 type TransferDraft = {
@@ -98,10 +106,10 @@ type TransferDraft = {
   methods: ProcessMethod[];
   requirements: Partial<Record<UniversalProcess, MethodRequirement[]>>;
   roles?: Partial<Record<UniversalProcess, PortableMethodRole>>;
-  portableCollections?: PortableCollectionV2[];
+  portableCollections?: PortableCollection[];
   processOrder?: UniversalProcess[];
   itemsIncluded?: boolean;
-  items?: PortableLibraryItemV2[];
+  items?: PortableLibraryItem[];
   sourceChannelId?: string;
   isPack: boolean;
 };
@@ -118,8 +126,6 @@ function MethodsLibraryPage() {
   const libraryItems = useLibraryItems();
   const { methodsLibraryView: view, setMethodsLibraryView } = useAppPreferences();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  useFocusSearchShortcut(searchInputRef);
   const [query, setQuery] = useState("");
   const [processFilter, setProcessFilter] = useState<UniversalProcess | "all">("all");
   const [transfer, setTransfer] = useState<TransferDraft>();
@@ -179,8 +185,10 @@ function MethodsLibraryPage() {
     () =>
       channels.flatMap<MethodEntry>((channel) =>
         effectiveProcessOrder(channel).flatMap((processType) => {
-          const method = channel.methods[processType];
-          return method.blocks.length ? [{ channel, processType, method }] : [];
+          const method = channel.methods?.[processType];
+          return method && !channelNeedsUpgrade(channel) && method.blocks.length
+            ? [{ channel, processType, method }]
+            : [];
         }),
       ),
     [channels],
@@ -203,6 +211,7 @@ function MethodsLibraryPage() {
   const filteredChannels = channels.filter((channel) => {
     const methods = methodsOf(channel);
     return (
+      !channelNeedsUpgrade(channel) &&
       methods.length > 0 &&
       (!normalizedQuery ||
         channel.name.toLocaleLowerCase("pt-BR").includes(normalizedQuery) ||
@@ -222,6 +231,13 @@ function MethodsLibraryPage() {
     isPack: boolean,
     mode: "share" | "reuse" = "reuse",
   ) {
+    // Portable share/reuse preview source: reuse the canonical method-file
+    // sanitizer with real plugin metadata. Share strips IDs + managed raw
+    // URLs before preview/transmission; local reuse preserves its own clone.
+    const profileSetupForPlugin = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const plan = planPortableMethodTransfer({
       name,
       channelName: channel.name,
@@ -235,6 +251,7 @@ function MethodsLibraryPage() {
         : [methods[0].processType],
       includeAllMethods: isPack,
       preserveLocalConnections: mode === "reuse",
+      ...(mode === "share" ? { profileSetupForPlugin } : {}),
     });
     const plannedMethods = plan.methods.map((entry) => entry.method);
     const requirements = Object.fromEntries(
@@ -287,48 +304,54 @@ function MethodsLibraryPage() {
         contents = await file.text();
       }
       const imported = parseMethodImportFile(contents);
-      const isV2 = imported.version === 2;
-      const methods = isV2
-        ? imported.methods.map((entry) => entry.method)
-        : imported.format === "contentflow-method"
-          ? [imported.method]
-          : imported.methods;
-      const channelName = isV2
-        ? (imported.channelName ?? imported.name)
-        : imported.format === "contentflow-method"
-          ? imported.name
-          : imported.channelName;
-      const requirements = isV2
-        ? Object.fromEntries(
-            imported.methods.map((entry) => [entry.method.processType, entry.requirements]),
-          )
-        : imported.format === "contentflow-method"
-          ? { [imported.method.processType]: imported.requirements ?? [] }
-          : (imported.requirements ?? {});
+      let methods: ProcessMethod[];
+      let channelName: string;
+      let channelImageUrl: string | undefined;
+      let requirements: Partial<Record<UniversalProcess, MethodRequirement[]>>;
+      let roles: Partial<Record<UniversalProcess, PortableMethodRole>>;
+      let portableCollections: PortableCollection[] | undefined;
+      let processOrder: UniversalProcess[] | undefined;
+      let itemsIncluded = false;
+      let items: PortableLibraryItem[] | undefined;
+
+      if ("method" in imported) {
+        methods = [imported.method];
+        channelName = imported.name;
+        requirements = { [imported.method.processType]: imported.requirements ?? [] };
+        roles = { [imported.method.processType]: "primary" };
+      } else if ("collections" in imported) {
+        methods = imported.methods.map((entry) => entry.method);
+        channelName = imported.channelName ?? imported.name;
+        channelImageUrl = imported.channelImageUrl;
+        requirements = Object.fromEntries(
+          imported.methods.map((entry) => [entry.method.processType, entry.requirements]),
+        );
+        roles = Object.fromEntries(
+          imported.methods.map((entry) => [entry.method.processType, entry.role]),
+        );
+        portableCollections = imported.collections;
+        processOrder = imported.processOrder;
+        itemsIncluded = imported.itemsIncluded;
+        items = imported.items;
+      } else {
+        methods = imported.methods;
+        channelName = imported.channelName;
+        channelImageUrl = imported.channelImageUrl;
+        requirements = imported.requirements ?? {};
+        roles = Object.fromEntries(methods.map((method) => [method.processType, "set"]));
+      }
       setTransfer({
         mode: "import",
         name: imported.name,
         channelName,
-        channelImageUrl:
-          imported.format === "contentflow-method-pack" || isV2
-            ? imported.channelImageUrl
-            : undefined,
+        channelImageUrl,
         methods,
         requirements,
-        roles: isV2
-          ? Object.fromEntries(
-              imported.methods.map((entry) => [entry.method.processType, entry.role]),
-            )
-          : Object.fromEntries(
-              methods.map((method) => [
-                method.processType,
-                imported.format === "contentflow-method" ? "primary" : "set",
-              ]),
-            ),
-        portableCollections: isV2 ? imported.collections : undefined,
-        processOrder: isV2 ? imported.processOrder : undefined,
-        itemsIncluded: isV2 ? imported.itemsIncluded : false,
-        items: isV2 ? imported.items : [],
+        roles,
+        portableCollections,
+        processOrder,
+        itemsIncluded,
+        items,
         isPack: imported.format === "contentflow-method-pack",
       });
       setNewChannelName(channelName);
@@ -368,6 +391,10 @@ function MethodsLibraryPage() {
       : transfer.methods
           .filter((method) => transfer.roles?.[method.processType] === "primary")
           .map((method) => method.processType);
+    const profileSetupForPlugin = (pluginId: string) => {
+      const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+      return found ? (found.manifest.profileSetup ?? null) : undefined;
+    };
     const plan = planPortableMethodTransfer({
       name: transfer.name,
       channelName: channel.name,
@@ -380,6 +407,7 @@ function MethodsLibraryPage() {
       processOrder: effectiveProcessOrder(channel),
       primaryProcessTypes,
       includeAllMethods: transfer.isPack,
+      ...(transfer.mode === "share" ? { profileSetupForPlugin } : {}),
     });
     setTransfer((current) =>
       current
@@ -400,7 +428,11 @@ function MethodsLibraryPage() {
         const primaryProcessType = transfer.methods.find(
           (method) => transfer.roles?.[method.processType] === "primary",
         )?.processType;
-        const plan = {
+        const profileSetupForPlugin = (pluginId: string) => {
+          const found = readinessPlugins.find((plugin) => plugin.id === pluginId);
+          return found ? (found.manifest.profileSetup ?? null) : undefined;
+        };
+        const rawPlan = {
           format: transfer.isPack
             ? ("contentflow-method-pack" as const)
             : ("contentflow-method" as const),
@@ -420,8 +452,12 @@ function MethodsLibraryPage() {
           itemsIncluded: transfer.itemsIncluded === true,
           items: transfer.items ?? [],
         };
+        // Re-sanitize at transmission time with current metadata: physical /
+        // catalog IDs and every managed raw URL are absent before export even
+        // if the preview was built before plugins finished loading.
+        const plan = sanitizePortableTransferPlan(rawPlan, profileSetupForPlugin);
         await downloadMethodPackage(
-          serializePortableMethodTransfer(plan),
+          serializePortableMethodTransfer(plan, profileSetupForPlugin),
           transfer.isPack
             ? `metodos-${slug(transfer.channelName)}.contentflow-method-pack.zip`
             : `${slug(transfer.name)}.contentflow-method.zip`,
@@ -525,6 +561,27 @@ function MethodsLibraryPage() {
       />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <MethodAgentCta className="mb-5" />
+        <EcosystemCatalog
+          kind="methods"
+          onSelect={async (id) => {
+            const response = await fetch(`/api/methods/catalog/${encodeURIComponent(id)}/preview`);
+            if (!response.ok) throw new Error("catalog");
+            const result = (await response.json()) as { manifest: string };
+            await importFile(
+              new File([result.manifest], "catalog.contentflow-method.json", {
+                type: "application/json",
+              }),
+            );
+          }}
+        />
+        {channels.filter(channelNeedsUpgrade).map((channel) => (
+          <div key={channel.id}>
+            <h2 data-i18n-ignore className="font-semibold">
+              {channel.name}
+            </h2>
+            <IncompatibleDataNotice value={channel.methods} />
+          </div>
+        ))}
         <section className="grid divide-y divide-border border-y border-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <Stat label="Métodos salvos" value={entries.length} />
           <Stat
@@ -542,12 +599,10 @@ function MethodsLibraryPage() {
             <div className="relative min-w-0 flex-1">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                ref={searchInputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Buscar por nome, Canal, processo ou ação..."
                 className="pl-9"
-                aria-keyshortcuts="Meta+F Control+F"
               />
             </div>
             {view === "methods" && (
@@ -1024,7 +1079,7 @@ function DependencyWarnings({
                 <ul className="mt-1 list-inside list-disc text-muted-foreground">
                   {requirement.fields.map((field) => (
                     <li key={field.key}>
-                      {field.label} — {field.type}
+                      {field.label} — {field.shape.kind}
                       {field.required ? " (obrigatório)" : " (opcional)"}
                     </li>
                   ))}
@@ -1239,8 +1294,8 @@ function Stat({ label, value, suffix }: { label: string; value: number; suffix?:
 }
 function methodsOf(channel: Channel) {
   return effectiveProcessOrder(channel)
-    .map((process) => channel.methods[process])
-    .filter((method) => method.blocks.length);
+    .map((process) => channel.methods?.[process])
+    .filter((method) => method && !methodNeedsUpgrade(method) && method.blocks.length);
 }
 function slug(value: string) {
   return value

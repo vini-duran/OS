@@ -1,29 +1,20 @@
 # Claude Browser Studio
 
-Versão **1.1.1** para ContentFlow Plugin API v1 (com salvaguardas locais de sincronização e turnos preservadas).
+Versão **1.1.1** para ContentFlow Plugin API v2.
 
 Plugin independente para ContentFlow que converte a lógica operacional de `gerar_roteiros.py` e `extrair_cookies_chrome.py` em seis capabilities pela interface web do Claude: texto/roteiros, pesquisa, escolha, validação, visão e análise de documentos.
 
 Ele não usa a API oficial da Anthropic. O plugin abre um Google Chrome real com perfil persistente dedicado, inicia uma conversa nova e lê as respostas visíveis do Claude. Uma execução simples faz um envio; uma execução com outline ou quantidade de blocos faz vários envios na mesma conversa e concatena os trechos na ordem. Cookies e tokens permanecem sob controle do Chrome e nunca são exportados para TXT, manifesto, logs, outputs ou artifacts.
 
-## Histórico de salvaguardas locais
-
-- Reconhece streaming e status do editor Claude para evitar cliques prematuros.
-- `response-guard.mjs` valida estabilidade das respostas antes da entrega.
-- Suporta tanto o modo sequencial com meta de caracteres da v1.1.1 quanto a orquestração por bloco narrativo (`batchOutlineInstruction`).
-
 ## Contrato simplificado
 
-O plugin usa a instrução resolvida do bloco como único prompt editável. As entradas conectadas são acrescentadas automaticamente como contexto. No Método, ele expõe o perfil principal e os perfis de fallback. Configurações antigas de templates, modos, partes e retries continuam aceitas silenciosamente para não quebrar Métodos salvos, mas são ignoradas.
+O plugin usa a instrução resolvida do bloco como único prompt editável. As entradas conectadas são acrescentadas automaticamente como contexto. No Método, ele expõe apenas o perfil da conta. Configurações antigas de templates, modos, partes, retries e fallback continuam aceitas silenciosamente para não quebrar Métodos salvos, mas são ignoradas.
 
 ## Mudança de segurança na autenticação
 
 O antigo extrator Selenium gravava cookies de sessão e o gerador chamava endpoints internos de `claude.ai`. O plugin substitui somente essa fronteira: usa a interface real e um perfil Chrome dedicado, no mesmo padrão operacional do plugin Google Flow Browser Images.
 
-Não há rotação indiscriminada de contas. Cobrança, reautenticação, verificação e
-CAPTCHA pausam a operação para intervenção manual. Um limite de uso explícito
-pausa para reconciliação, inclusive antes do envio. O plugin
-não tenta contornar controles do provedor.
+Não há rotação automática de contas. Limite de uso, cobrança, reautenticação, verificação e CAPTCHA pausam a operação para intervenção manual. O plugin não tenta contornar controles do provedor.
 
 ## Instalação
 
@@ -59,7 +50,7 @@ A espera de respostas combina `MutationObserver` com polling de segurança e tim
 ### Criar — `generate-text-in-browser`
 
 - Entrada opcional `content`: briefing, tema, regras, referências e outros valores universais serializáveis.
-- Entrada opcional `outline`: `records` ou `list`; cada item dispara uma mensagem e produz uma resposta na mesma conversa (com suporte a orquestração atômica por item pelo núcleo).
+- Entrada opcional `outline`: `records` ou `list`; cada item dispara uma mensagem e produz uma resposta na mesma conversa.
 - Entrada opcional `sections`: quando não há outline, gera essa quantidade de blocos consecutivos.
 - Entrada opcional `target`: meta total de tamanho; o plugin distribui o saldo entre as etapas, pode pedir complementos e valida a faixa configurada antes de concluir.
 - Entrada opcional `attachments`: imagens ou documentos usados como referência na primeira mensagem.
@@ -108,11 +99,11 @@ O plugin deriva perfis separados em:
 
 Antes da primeira execução com um alias, use **Salvar perfil** no bloco do Método e faça login manualmente na conta Claude daquele canal. Nas execuções seguintes, o Método escolhe a conta pelo alias configurado, sem ler ou exportar cookies. Um perfil não preparado é recusado antes de qualquer prompt ser preenchido.
 
-O ContentFlow v0.3 ainda envia `settings: {}` para plugins comunitários, portanto a página de Plugins não mantém hoje uma lista dinâmica de contas. A escolha por `accountProfile` no bloco é a solução compatível com a API v1 atual e fica naturalmente no nível do Método/canal. `settingsSchema` permanece preparado para um futuro suporte do núcleo a settings persistentes.
+O ContentFlow v0.3 ainda envia `settings: {}` para plugins comunitários, portanto a página de Plugins não mantém hoje uma lista dinâmica de contas. A escolha por `accountProfile` no bloco é a solução compatível com a API v2 atual e fica naturalmente no nível do Método/canal. `settingsSchema` permanece preparado para um futuro suporte do núcleo a settings persistentes.
 
 ## Execução
 
-Por padrão, `generationMode: auto` realiza um único envio quando não há sequência. Se `outline` tiver itens ou `sections` for maior que 1, cada etapa vira uma mensagem na mesma conversa. Quando acionado com orquestração atômica de itens (`itemOrchestration`), o núcleo faz uma chamada por item, em ordem, anexando contexto fixo e persistindo `parts` parcialmente após cada resposta. `single` força um envio e `sequence` força a sequência. O resultado final é a concatenação ordenada das respostas; `parts` preserva os trechos individualmente.
+Por padrão, `generationMode: auto` realiza um único envio quando não há sequência. Se `outline` tiver itens ou `sections` for maior que 1, cada etapa vira uma mensagem na mesma conversa. `single` força um envio e `sequence` força a sequência. O resultado final é a concatenação ordenada das respostas; `parts` preserva os trechos individualmente.
 
 Quando `target` é informado, cada etapa recebe uma meta proporcional ao saldo restante. Se o acumulado ficar abaixo da tolerância, o plugin pode enviar até duas mensagens de complemento por padrão. Resultado fora da faixa aceita retorna `OUTPUT_VALIDATION_FAILED` e não é entregue como roteiro concluído.
 
@@ -158,3 +149,8 @@ Em 20/08/2026, o fluxo real foi validado na interface web do Claude. A versão 1
 - O plugin mapeia, mas não automatiza billing, mudança de plano, conectores, plugins de terceiros, compartilhamento, microfone ou captura da tela. Esses recursos ampliariam dados e permissões sem necessidade para os blocos do ContentFlow.
 - O plugin não depende do artifact interno do Claude, que pode variar com a interface. Quando o Método pede a saída `document`, ele grava o texto final validado como `.md` e o entrega pelo contrato seguro de artifacts do ContentFlow.
 - Os scripts Python originais não são alterados nem apagados.
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

@@ -42,7 +42,7 @@ test("distingue uma Bridge existente de um vínculo antigo quebrado", async () =
 });
 
 test("copia a Bridge para uma pasta estável de dados", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "contentflow-bridge-stage-"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "contentflow-bridge-stage-")));
   try {
     const source = path.join(root, "app", "ecosystem", "browser-bridge");
     const data = path.join(root, "data");
@@ -61,7 +61,7 @@ test("copia a Bridge para uma pasta estável de dados", async () => {
       );
     }
     const destination = stageBrowserBridge(path.join(root, "app"), data);
-    assert.equal(destination, await realpath(path.join(data, "browser-bridge")));
+    assert.equal(destination, path.join(data, "browser-bridge"));
     assert.equal(browserBridgeProfileState(data, "default"), "unknown");
   } finally {
     await rm(root, { recursive: true, force: true });

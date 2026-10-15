@@ -20,18 +20,22 @@ export function ImageGallery({
   const trigger = useRef<HTMLButtonElement | null>(null);
   const index = images.findIndex((image) => image.id === previewId);
   const preview = images[index];
+
   function move(direction: -1 | 1) {
     if (index < 0 || images.length < 2) return;
     setPreviewId(images[(index + direction + images.length) % images.length].id);
   }
+
   function scroll(direction: -1 | 1) {
     rail.current?.scrollBy({
       left: direction * rail.current.clientWidth * 0.8,
       behavior: "smooth",
     });
   }
+
   const control =
     "grid size-9 shrink-0 place-items-center rounded-md border border-border bg-card hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
+
   return (
     <div className="min-w-0 max-w-full space-y-2" data-image-gallery>
       {images.length > 1 && (

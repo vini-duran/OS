@@ -1,18 +1,10 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
-import {
-  providerNotices,
-  providerError,
-  preSendProviderError,
-  canRetryTurn,
-  failedTurn,
-  cleanupPolicy,
-} from "./response-guard.mjs";
+import { createBridgeDiagnostics } from "./bridge-diagnostics.mjs";
 
 const PLUGIN_ID = "local.contentflow.claude-browser-text";
 const CLAUDE_HOST = "claude.ai";
@@ -232,29 +224,6 @@ function plainTextInstruction(enabled) {
     : "";
 }
 
-function batchOutlineInstruction(request) {
-  const batch = request?.batch;
-  const block = request?.inputs?.outline;
-  if (!batch || !block || Array.isArray(block) || typeof block !== "object") return "";
-  const number = batch.index + 1;
-  const position = `${number}/${batch.total}`;
-  const instruction =
-    number === 1
-      ? `Escreva somente o primeiro bloco narrativo (${position}). Comece a cumprir a promessa imediatamente e não antecipe os demais blocos.`
-      : number === batch.total
-        ? `Continue a mesma narração e escreva somente o último bloco narrativo (${position}). Encerre apenas este último bloco conforme o plano.`
-        : `Continue a mesma narração, sem reiniciar o gancho, e escreva somente o bloco narrativo ${position}. Não encerre o vídeo.`;
-  const completed = Array.isArray(batch.completedItems)
-    ? batch.completedItems.filter((item) => typeof item === "string" && item.trim())
-    : [];
-  const completedContext = completed.length
-    ? `\n\nBLOCOS JÁ CONCLUÍDOS — preserve a continuidade e não os reescreva:\n${completed
-        .map((item, index) => `[BLOCO ${index + 1}]\n${item}`)
-        .join("\n\n")}`
-    : "";
-  return `${instruction}${completedContext}\n\nITEM ATUAL DA OUTLINE:\n${serialize(block)}`;
-}
-
 function parseOptionalPositiveInteger(value, label) {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
@@ -301,14 +270,6 @@ function sequenceItems(request) {
 }
 
 function buildParts(request) {
-  if (request?.batch && request?.inputs?.outline) {
-    return [
-      buildInstructionPrompt(request, [
-        batchOutlineInstruction(request),
-        plainTextInstruction(true),
-      ]),
-    ];
-  }
   const base = buildInstructionPrompt(request, [plainTextInstruction(true)]);
   const configuredMode = String(request?.configuration?.generationMode ?? "auto");
   const items = sequenceItems(request);
@@ -679,27 +640,27 @@ function recordFromSearch(field, text, sources) {
 
 function searchResponseValues(text, sources, request) {
   const fields = Array.isArray(request?.outputContract) ? request.outputContract : [];
-  if (!fields.length) return { result: text, sources };
   const values = {};
   for (const field of fields) {
     const isSource = /source|fonte|url|link/i.test(`${field.key} ${field.label}`);
     if (isSource) {
-      values[field.key] = field.type === "url" ? (sources[0] ?? "https://claude.ai") : sources;
+      values[field.portKey] = field.type === "url" ? (sources[0] ?? "https://claude.ai") : sources;
     } else if (field.type === "list" || field.type === "multiselect") {
-      values[field.key] = textAsList(text);
+      values[field.portKey] = textAsList(text);
     } else if (field.type === "records") {
-      values[field.key] = [recordFromSearch(field, text, sources)];
+      values[field.portKey] = [recordFromSearch(field, text, sources)];
     } else {
-      values[field.key] = text;
+      values[field.portKey] = text;
     }
   }
   return values;
 }
 
 function generationResponseValues(result, responses, request) {
-  const values = { result };
-  if ((request?.outputContract ?? []).some((field) => field?.key === "parts")) {
-    values.parts = responses.map((response) => response.text);
+  const values = {};
+  for (const field of request?.outputContract ?? []) {
+    values[field.portKey] =
+      field?.key === "parts" ? responses.map((response) => response.text) : result;
   }
   return values;
 }
@@ -820,212 +781,34 @@ function dedupeStrings(values) {
   ];
 }
 
-async function captureProcess(executable, args, timeoutMs = 4000) {
-  return await new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(executable, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        shell: false,
-      });
-    } catch {
-      resolve({ ok: false, stdout: "" });
-      return;
-    }
-    let stdout = "";
-    let settled = false;
-    const finish = (ok) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok, stdout });
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* best effort */
-      }
-      finish(false);
-    }, timeoutMs);
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.once("error", () => finish(false));
-    child.once("close", (code) => finish(code === 0));
-  });
-}
-
-function parseRegistryDefaultValue(output) {
-  for (const line of String(output ?? "").split(/\r?\n/)) {
-    const match = line.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i);
-    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, "");
-  }
-  return "";
-}
-
-async function chromeCandidates() {
-  if (platform() === "win32") {
-    const standardCandidates = [
-      process.env.PROGRAMFILES &&
-        join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] &&
-        join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA &&
-        join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    ].filter(Boolean);
-    const existing = standardCandidates.filter((p) => existsSync(p));
-    if (existing.length) return dedupeStrings(existing);
-
-    const found = [];
-    for (const key of [
-      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-      "HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-    ]) {
-      const result = await captureProcess("reg.exe", ["query", key, "/ve"]);
-      if (result.ok) found.push(parseRegistryDefaultValue(result.stdout));
-    }
-    const where = await captureProcess("where.exe", ["chrome.exe"]);
-    if (where.ok) found.push(...where.stdout.split(/\r?\n/));
-    return dedupeStrings(found);
-  }
-  if (platform() === "darwin")
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
-  const found = [];
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const result = await captureProcess("which", [name]);
-    if (result.ok) found.push(...result.stdout.split(/\r?\n/));
-  }
-  return dedupeStrings(found);
-}
-
-async function resolveChromeExecutables(settings) {
-  const explicit = settings?.chromeExecutable?.trim?.();
-  if (explicit) return [explicit];
-  const candidates = await chromeCandidates();
-  if (candidates.length) return candidates;
-  throw codedError(
-    "INVALID_CONFIGURATION",
-    "Google Chrome não foi localizado. Configure chromeExecutable.",
-  );
-}
-
-async function fetchBrowserVersion(port, timeoutMs = 1500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    const value = await response.json();
-    return typeof value?.webSocketDebuggerUrl === "string" ? value : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function launchOrReuseChrome({
-  executables,
-  profilePath,
-  port,
-  startMinimized,
-  keepBrowserOpen,
-  signal,
-}) {
-  const existing = await fetchBrowserVersion(port);
-  if (existing) return { version: existing, child: null, startedByPlugin: false };
-  const args = [
-    `--remote-debugging-port=${port}`,
-    "--remote-debugging-address=127.0.0.1",
-    `--user-data-dir=${profilePath}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    CLAUDE_NEW_URL,
-  ];
-  if (startMinimized) {
-    // O job opera pela Bridge, sem foco. Preserve a execução da página quando
-    // a janela dedicada estiver minimizada para que a UI e os heartbeats não
-    // sejam estrangulados pelo agendador de segundo plano do Chrome.
-    args.unshift(
-      "--start-minimized",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--disable-features=CalculateNativeWinOcclusion",
+function requireCoreBrowserSession(coreSession) {
+  if (
+    !coreSession ||
+    !Number.isInteger(coreSession.port) ||
+    typeof coreSession.webSocketDebuggerUrl !== "string" ||
+    !coreSession.webSocketDebuggerUrl
+  ) {
+    throw codedError(
+      "INVALID_CONFIGURATION",
+      "O ContentFlow não forneceu a sessão de navegador reservada para este perfil.",
     );
   }
-  const failures = [];
-  for (const executable of executables) {
-    let child;
-    try {
-      child = spawn(executable, args, {
-        detached: Boolean(keepBrowserOpen),
-        stdio: "ignore",
-        windowsHide: false,
-        shell: false,
-      });
-    } catch (error) {
-      failures.push(`${executable}: ${error?.message ?? error}`);
-      continue;
-    }
-    if (keepBrowserOpen) child.unref();
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-      const version = await fetchBrowserVersion(port);
-      if (version) return { version, child, startedByPlugin: true };
-      await sleep(350, signal);
-    }
-    failures.push(`${executable}: a porta CDP não respondeu.`);
-    try {
-      child.kill();
-    } catch {
-      /* best effort */
-    }
-  }
-  throw codedError(
-    "PERMISSION_DENIED",
-    `Não consegui iniciar o Chrome dedicado. ${failures.slice(0, 3).join(" | ")}`,
-  );
+  return coreSession;
 }
 
-async function waitForChildExit(child, timeoutMs = 5000) {
-  if (!child || child.exitCode !== null) return true;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (exited) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("exit", onExit);
-      resolve(exited);
-    };
-    const onExit = () => finish(true);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    timer.unref?.();
-    child.once("exit", onExit);
-  });
+async function launchOrReuseChrome({ coreSession }) {
+  const session = requireCoreBrowserSession(coreSession);
+  return {
+    version: { webSocketDebuggerUrl: session.webSocketDebuggerUrl },
+    child: null,
+    reused: true,
+    startedByCore: true,
+    startedByPlugin: false,
+  };
 }
 
-async function closeBrowserGracefully(client, child) {
-  try {
-    await client?.send("Browser.close");
-  } catch {}
-  const exited = await waitForChildExit(child);
+async function closeBrowserGracefully(client) {
   client?.close();
-  if (!exited && child?.exitCode === null) {
-    try {
-      child.kill();
-    } catch {}
-  }
 }
 
 class CdpClient {
@@ -1164,7 +947,18 @@ function normalizeEditorText(value) {
 async function attachClaudePage(client, signal, activate = false, forceNew = false) {
   const { targetInfos = [] } = await client.send("Target.getTargets");
   let target = forceNew
-    ? undefined
+    ? targetInfos.find(
+        (item) =>
+          item.type === "page" &&
+          (() => {
+            try {
+              const url = new URL(item.url);
+              return url.hostname === CLAUDE_HOST && url.hash === "#contentflow-ready-claude";
+            } catch {
+              return false;
+            }
+          })(),
+      )
     : targetInfos.find((item) => item.type === "page" && String(item.url).includes(CLAUDE_HOST));
   let createdTarget = false;
   if (!target) {
@@ -1269,7 +1063,7 @@ function cfVisible(el) {
   return r.width > 8 && r.height > 8 && r.bottom > 0 && r.right > 0;
 }
 function cfText(el) {
-  return [el?.innerText, el?.textContent, el?.getAttribute?.('aria-label'), el?.getAttribute?.('title'), el?.getAttribute?.('placeholder'), el?.getAttribute?.('data-testid'), el?.getAttribute?.('data-test-id')]
+  return [el?.innerText, el?.textContent, el?.getAttribute?.('aria-label'), el?.getAttribute?.('placeholder'), el?.getAttribute?.('data-testid')]
     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
 }
 function cfPrompt() {
@@ -1313,17 +1107,9 @@ function cfResponseState() {
   })).filter(entry => entry.text);
   const texts = entries.map(entry => entry.text);
   const stop = [...document.querySelectorAll('button')].some(el => cfVisible(el) && /stop|parar|interromper/i.test(cfText(el)));
-  const prompt = cfPrompt();
-  const promptReady = !!prompt && !prompt.disabled && !prompt.readOnly && prompt.getAttribute('aria-disabled') !== 'true';
-  const streaming = [...document.querySelectorAll('[data-is-streaming="true"]')].some(cfVisible);
-  const busy = !!prompt?.closest('[aria-busy="true"]');
-  const sendReady = [...document.querySelectorAll('button')].some(el =>
-    cfVisible(el) && /send message|enviar mensagem|send/i.test(cfText(el)) &&
-    !el.disabled && el.getAttribute('aria-disabled') !== 'true');
   const body = document.body?.innerText || '';
-  return { texts, entries, stop, generating: stop || streaming || busy, promptReady, sendReady,
-    promptText: prompt ? (prompt.value ?? prompt.innerText ?? prompt.textContent ?? '') : null,
-    url: location.href, bodyHint: body.slice(0, 5000) };
+  const completedActionCount = [...document.querySelectorAll('button')].filter(el => cfVisible(el) && /copy|copiar|copie/i.test(el.getAttribute('aria-label') || el.getAttribute('title') || '')).length;
+  return { texts, entries, stop, completedActionCount, url: location.href, bodyHint: body.slice(0, 5000) };
 }
 `;
 
@@ -1442,7 +1228,6 @@ async function setPrompt(bridge, prompt, operationKey) {
         '[contenteditable="true"]',
         '[role="textbox"]',
       ],
-      textIncludes: ["message", "prompt", "reply", "mensagem", "pergunte", "talk to claude"],
       text: prompt,
     },
     operationKey,
@@ -1462,8 +1247,7 @@ async function clickSend(bridge, operationKey, signal) {
       break;
     } catch (error) {
       clickError = error;
-      // Only a confirmed missing control proves that no click happened.
-      if (error?.bridgeCode !== "CONTROL_NOT_FOUND" || attempt === 19) throw error;
+      if (error?.code !== "OUTPUT_VALIDATION_FAILED" || attempt === 19) throw error;
       await sleep(250, signal);
     }
   }
@@ -1474,70 +1258,18 @@ async function responseState(client, sessionId) {
   return await evaluate(
     client,
     sessionId,
-    `(() => { ${PAGE_HELPERS}; return {...cfResponseState(), notices:(${providerNotices.toString()})()}; })()`,
+    `(() => { ${PAGE_HELPERS}; return cfResponseState(); })()`,
   );
 }
 
-async function waitForTurnReady(client, sessionId, timeoutMs, signal, requireSend = false) {
-  const deadline = Date.now() + timeoutMs;
-  let idleSince;
-  let previous;
-  let reason = "editor indisponível";
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-    const state = await responseState(client, sessionId);
-    const fault = preSendProviderError(state?.notices);
-    if (fault) throw codedError(fault.code, fault.message, false);
-    const busy = Boolean(state?.generating || state?.stop);
-    const latest = JSON.stringify(state?.texts ?? []);
-    const ready =
-      state?.promptReady === true && !busy && (!requireSend || state?.sendReady === true);
-    reason = busy
-      ? "resposta ainda em andamento"
-      : !state?.promptReady
-        ? "editor indisponível"
-        : "controle de envio indisponível";
-    if (!ready || latest !== previous) idleSince = undefined;
-    if (ready) {
-      idleSince ??= Date.now();
-      if (Date.now() - idleSince >= 2000) return state;
-    }
-    previous = latest;
-    await waitForDomMutation(client, sessionId, 1000, signal);
-  }
-  throw codedError(
-    "TIMEOUT",
-    `Claude não ficou pronto: ${reason}. Nenhum clique de envio realizado.`,
-    false,
-  );
-}
-
-async function waitForSubmission(client, sessionId, baselineCount, timeoutMs, signal) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
-    const state = await responseState(client, sessionId);
-    const fault = providerError(state?.notices);
-    if (fault) throw codedError(fault.code, fault.message, false);
-    // A cleared, available composer or a new assistant turn acknowledges send.
-    // An absent editor or a spinner alone does not prove submission.
-    if (
-      (state?.texts?.length ?? 0) > baselineCount ||
-      (state?.promptReady === true &&
-        typeof state.promptText === "string" &&
-        !state.promptText.trim())
-    )
-      return;
-    await waitForDomMutation(client, sessionId, 1000, signal);
-  }
-  throw codedError(
-    "TIMEOUT",
-    "Envio sem confirmação do Claude; não reenviar automaticamente.",
-    false,
-  );
-}
-
-async function waitForResponse(client, sessionId, baselineCount, timeoutMs, signal) {
+async function waitForResponse(
+  client,
+  sessionId,
+  baselineCount,
+  timeoutMs,
+  signal,
+  baselineCompletedActionCount = Infinity,
+) {
   const deadline = Date.now() + timeoutMs;
   let previous = "";
   let stablePolls = 0;
@@ -1545,30 +1277,34 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
   while (Date.now() < deadline) {
     if (signal?.aborted) throw codedError("CANCELLED", "Execução cancelada.");
     const state = await responseState(client, sessionId);
-    const notice = providerError(state?.notices);
-    if (notice) throw codedError(notice.code, notice.message, false);
     const texts = Array.isArray(state?.texts) ? state.texts : [];
-    newest = texts.length > baselineCount ? (texts.at(-1) ?? "") : "";
+    newest = texts.length > baselineCount ? texts.at(-1) : (texts.at(-1) ?? "");
     if (newest && newest === previous) stablePolls += 1;
     else stablePolls = 0;
     previous = newest;
     const phase = responsePhase({
       hasNewResponse: Boolean(newest),
-      generating: Boolean(state?.generating || state?.stop || state?.promptReady !== true),
+      generating: Boolean(state?.stop),
       stablePolls,
     });
-    if (phase === "completed") {
-      await sleep(5_000, signal);
+    const strongCompletion =
+      texts.length > baselineCount &&
+      newest &&
+      !state.stop &&
+      state.completedActionCount > baselineCompletedActionCount;
+    if (strongCompletion || phase === "completed") {
+      await sleep(strongCompletion ? 500 : 5_000, signal);
       const confirmedState = await responseState(client, sessionId);
       const confirmedTexts = Array.isArray(confirmedState?.texts) ? confirmedState.texts : [];
-      const confirmedNewest = confirmedTexts.length > baselineCount ? confirmedTexts.at(-1) : "";
-      const confirmedNotice = providerError(confirmedState?.notices);
-      if (confirmedNotice) throw codedError(confirmedNotice.code, confirmedNotice.message, false);
+      const confirmedNewest =
+        confirmedTexts.length > baselineCount
+          ? confirmedTexts.at(-1)
+          : (confirmedTexts.at(-1) ?? "");
       if (
+        confirmedTexts.length > baselineCount &&
         confirmedNewest === newest &&
-        confirmedState?.promptReady === true &&
-        !confirmedState?.generating &&
-        !confirmedState?.stop
+        !confirmedState?.stop &&
+        (!strongCompletion || confirmedState.completedActionCount > baselineCompletedActionCount)
       ) {
         const entry = Array.isArray(confirmedState?.entries)
           ? confirmedState.entries.at(-1)
@@ -1582,6 +1318,21 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
       stablePolls = 0;
       continue;
     }
+    const hint = String(state?.bodyHint ?? "");
+    if (/usage limit|rate limit|limite de uso|try again later/i.test(hint)) {
+      throw codedError(
+        "RATE_LIMIT",
+        "O Claude informou limite temporário de uso. Aguarde antes de tentar novamente.",
+        true,
+      );
+    }
+    if (/captcha|verify you are human|verifique se você é humano/i.test(hint)) {
+      throw codedError(
+        "AUTHENTICATION_FAILED",
+        "O Claude exige verificação manual na janela do Chrome.",
+        true,
+      );
+    }
     await waitForDomMutation(client, sessionId, 1_000, signal);
   }
   throw codedError(
@@ -1591,31 +1342,20 @@ async function waitForResponse(client, sessionId, baselineCount, timeoutMs, sign
   );
 }
 
-async function generatePart(
-  client,
-  sessionId,
-  bridge,
-  prompt,
-  settings,
-  signal,
-  operationKey,
-  lifecycle = {},
-) {
-  const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
-  lifecycle.report?.("Aguardando conversa e editor prontos, sem enviar.");
-  await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal);
-  await setPrompt(bridge, prompt, `prompt:${operationKey}`);
-  lifecycle.report?.("Prompt preenchido; aguardando controle de envio habilitado.");
-  const before = await waitForTurnReady(client, sessionId, timeoutSeconds * 1000, signal, true);
+async function generatePart(client, sessionId, bridge, prompt, settings, signal, operationKey) {
+  const before = await responseState(client, sessionId);
   const baselineCount = Array.isArray(before?.texts) ? before.texts.length : 0;
-  // Dispatch may click successfully and lose its acknowledgement. Mark the
-  // attempt before dispatch; never turn that uncertainty into a safe retry.
-  lifecycle.submitted = true;
+  await setPrompt(bridge, prompt, `prompt:${operationKey}`);
   await clickSend(bridge, `send:${operationKey}`, signal);
-  lifecycle.report?.("Clique realizado; aguardando confirmação do envio.");
-  await waitForSubmission(client, sessionId, baselineCount, 30_000, signal);
-  lifecycle.report?.("Envio confirmado; aguardando resposta nova e concluída.");
-  return await waitForResponse(client, sessionId, baselineCount, timeoutSeconds * 1000, signal);
+  const timeoutSeconds = clampInteger(settings?.responseTimeoutSeconds, 600, 30, 900);
+  return await waitForResponse(
+    client,
+    sessionId,
+    baselineCount,
+    timeoutSeconds * 1000,
+    signal,
+    before.completedActionCount,
+  );
 }
 
 async function configureProfile(request, services) {
@@ -1645,17 +1385,16 @@ async function configureProfile(request, services) {
     return resultError("INVALID_CONFIGURATION", "Ação de configuração de perfil inválida.");
   }
 
-  let client, child, bridge;
+  let client, bridge;
   try {
     const launched = await launchOrReuseChrome({
-      executables: await resolveChromeExecutables(settings),
       profilePath,
       port,
       startMinimized: false,
       keepBrowserOpen: false,
       signal: services.signal,
+      coreSession: settings.__contentFlowBrowserSession,
     });
-    child = launched.child;
     client = await new CdpClient(launched.version.webSocketDebuggerUrl).connect(services.signal);
     const { sessionId } = await attachClaudePage(client, services.signal, true);
     await openNewConversation(client, sessionId, services.signal);
@@ -1682,12 +1421,12 @@ async function configureProfile(request, services) {
       Boolean(error?.retryable),
     );
   } finally {
-    bridge?.dispose();
-    await closeBrowserGracefully(client, child);
+    await bridge?.dispose();
+    await closeBrowserGracefully(client);
   }
 }
 
-export async function execute(request, services) {
+async function executeHandler(request, services) {
   if (request?.invocation?.mode === "configure") return await configureProfile(request, services);
   const settings = request?.settings ?? {};
   const capabilityId = String(request?.capabilityId ?? "generate-text-in-browser");
@@ -1783,11 +1522,9 @@ export async function execute(request, services) {
   const delayBetweenPartsMs = 0;
   const minCharacters = 1;
   let client;
-  let child;
   let bridge;
   let taskTargetId;
   let closeTaskTarget = false;
-  const lifecycle = { submitted: false, succeeded: false };
 
   try {
     let attachments = await resolveAttachments(request, services);
@@ -1798,30 +1535,28 @@ export async function execute(request, services) {
         `O perfil ${profileName} ainda não foi salvo. Abra a configuração do Método e use Salvar perfil antes de executar.`,
       );
     }
-    const executables = await resolveChromeExecutables(settings);
     step(`Preparando perfil ${profileName} para ${parts.length} etapa(s).`);
     const keepBrowserOpen = settings.keepBrowserOpen !== false;
     const launched = await launchOrReuseChrome({
-      executables,
       profilePath,
       port,
       startMinimized,
       keepBrowserOpen,
       signal: services.signal,
+      coreSession: settings.__contentFlowBrowserSession,
     });
-    child = launched.child;
     client = await new CdpClient(launched.version.webSocketDebuggerUrl, trace).connect(
       services.signal,
     );
     const taskPage = await attachClaudePage(
       client,
       services.signal,
-      true,
+      false,
       launched.startedByPlugin === false,
     );
     const { sessionId } = taskPage;
     taskTargetId = taskPage.targetId;
-    closeTaskTarget = taskPage.created || launched.startedByPlugin;
+    closeTaskTarget = true;
     const interactiveWaitSeconds = clampInteger(settings.interactiveWaitSeconds, 600, 30, 900);
     const reusedConversation = await prepareConversation(
       client,
@@ -1862,7 +1597,6 @@ export async function execute(request, services) {
             settings,
             services.signal,
             `${index}:${attempt}`,
-            Object.assign(lifecycle, { report: step }),
           );
           responses.push(response);
           lastError = undefined;
@@ -1870,7 +1604,7 @@ export async function execute(request, services) {
         } catch (error) {
           lastError = error;
           if (
-            !canRetryTurn(error, lifecycle.submitted) ||
+            !error?.retryable ||
             attempt >= retryAttempts ||
             ["AUTHENTICATION_FAILED", "RATE_LIMIT"].includes(error?.code)
           )
@@ -1965,7 +1699,12 @@ export async function execute(request, services) {
         : combined.length;
     const conversationId = await currentConversationUrl(client, sessionId);
     step(`Concluído: ${outputCharacters} caracteres em ${responses.length} resposta(s).`);
-    lifecycle.succeeded = true;
+    await evaluate(
+      client,
+      sessionId,
+      `(() => { const url = new URL(location.href); url.hash = "contentflow-ready-claude"; history.replaceState(history.state, "", url); return true; })()`,
+    );
+    closeTaskTarget = false;
     return {
       status: "success",
       values,
@@ -1980,193 +1719,28 @@ export async function execute(request, services) {
   } catch (error) {
     if (services.signal?.aborted || error?.code === "CANCELLED")
       return resultError("CANCELLED", "Execução cancelada.", false);
-    const fault = failedTurn(error, lifecycle.submitted);
-    return resultError(fault.code, fault.message, fault.retryable);
+    return resultError(
+      error?.code || "UPSTREAM_UNAVAILABLE",
+      error?.message || "Falha na automação do Claude.",
+      Boolean(error?.retryable),
+    );
   } finally {
-    bridge?.dispose();
-    const cleanup = cleanupPolicy({
-      succeeded: lifecycle.succeeded,
-      cancelled: services.signal?.aborted,
-      created: closeTaskTarget,
-      keepBrowserOpen: settings.keepBrowserOpen,
-    });
-    if (cleanup.closeTarget && taskTargetId)
+    await bridge?.dispose();
+    if (closeTaskTarget && taskTargetId)
       try {
         await client?.send("Target.closeTarget", { targetId: taskTargetId });
       } catch {}
-    if (cleanup.closeBrowser && child)
-      try {
-        await client?.send("Browser.close");
-      } catch {}
     client?.close();
-    if (cleanup.closeBrowser && child) {
-      try {
-        child.kill();
-      } catch {
-        /* best effort */
-      }
-    }
   }
 }
 
-// Development diagnostic: no provider navigation, text mutation or send.
-// An explicit reloadBridgeId refreshes only the verified companion extension.
-export async function inspectSendControls(request, services) {
-  const profileName = normalizeAccountProfile(request.configuration?.accountProfile);
-  const profilePath = runtimeProfilePath({}, profileName, services);
-  if (!(await profileIsPrepared(profilePath, profileName)))
-    return resultError("INVALID_CONFIGURATION", "Perfil não preparado.");
-  const version = await fetchBrowserVersion(profilePort(DEFAULT_PORT, profileName));
-  if (!version) return resultError("NOT_FOUND", "Navegador dedicado não está aberto.");
-  const client = await new CdpClient(version.webSocketDebuggerUrl).connect(services.signal);
-  try {
-    if (request.configuration?.inspectConversationUrl) {
-      const url = validateConversationUrl(request.configuration.inspectConversationUrl);
-      const { targetInfos } = await client.send("Target.getTargets");
-      const existing = targetInfos.find((t) => t.type === "page" && t.url === url);
-      if (!existing) {
-        // Explicit read-only reconciliation opens the saved conversation, never sends.
-        const created = await client.send("Target.createTarget", { url, background: false });
-        const { sessionId } = await client.send("Target.attachToTarget", {
-          targetId: created.targetId,
-          flatten: true,
-        });
-        try {
-          await waitForPrompt(client, sessionId, 60_000, services.signal);
-        } finally {
-          await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-        }
-      }
-    }
-    if (request.configuration?.reloadBridgeId) {
-      const id = request.configuration.reloadBridgeId;
-      if (!/^[a-p]{32}$/.test(id)) throw codedError("INVALID_INPUT", "ID de extensão inválido.");
-      const pages = await client.send("Target.getTargets");
-      const page = pages.targetInfos.find(
-        (t) => t.type === "page" && /^https:\/\/claude\.ai\//.test(t.url),
-      );
-      if (!page) throw codedError("NOT_FOUND", "Nenhuma aba Claude disponível.");
-      const attached = await client.send("Target.attachToTarget", {
-        targetId: page.targetId,
-        flatten: true,
-      });
-      await client.send("ServiceWorker.enable", {}, attached.sessionId);
-      await client.send(
-        "ServiceWorker.startWorker",
-        { scopeURL: `chrome-extension://${id}/` },
-        attached.sessionId,
-      );
-      for (let attempt = 0; attempt < 12; attempt++) {
-        const { targetInfos } = await client.send("Target.getTargets");
-        const target = targetInfos.find(
-          (t) =>
-            t.type === "service_worker" && t.url === `chrome-extension://${id}/service-worker.js`,
-        );
-        if (target) {
-          const { sessionId } = await client.send("Target.attachToTarget", {
-            targetId: target.targetId,
-            flatten: true,
-          });
-          const identity = await evaluate(
-            client,
-            sessionId,
-            "globalThis.contentFlowBridge?.identity",
-          );
-          if (identity?.bridgeId !== "com.contentflow.browser-bridge")
-            throw codedError("INVALID_INPUT", "Extensão não é a Browser Bridge.");
-          // Refresh only this verified extension; never reload provider pages.
-          await client
-            .send(
-              "Runtime.evaluate",
-              { expression: "chrome.runtime.reload()", returnByValue: true },
-              sessionId,
-            )
-            .catch(() => {});
-          return {
-            status: "success",
-            values: {
-              result: JSON.stringify({
-                reloadRequested: true,
-                previousVersion: identity.extensionVersion,
-              }),
-            },
-          };
-        }
-        await sleep(250, services.signal);
-      }
-      throw codedError("NOT_FOUND", "Worker da Bridge não disponível para recarga.");
-    }
-    const { targetInfos = [] } = await client.send("Target.getTargets");
-    const pages = targetInfos.filter(
-      (t) => t.type === "page" && /^https:\/\/claude\.ai\//.test(t.url),
-    );
-    const results = [];
-    for (const worker of targetInfos.filter(
-      (t) => t.type === "service_worker" && /^chrome-extension:\/\//.test(t.url),
-    )) {
-      const { sessionId } = await client.send("Target.attachToTarget", {
-        targetId: worker.targetId,
-        flatten: true,
-      });
-      try {
-        const identity = await evaluate(
-          client,
-          sessionId,
-          "globalThis.contentFlowBridge?.identity",
-        );
-        if (identity) results.push({ bridgeIdentity: identity });
-      } finally {
-        await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-      }
-    }
-    for (const target of pages) {
-      const { sessionId } = await client.send("Target.attachToTarget", {
-        targetId: target.targetId,
-        flatten: true,
-      });
-      try {
-        const result = await evaluate(
-          client,
-          sessionId,
-          `(() => { ${PAGE_HELPERS};
-          const p=cfPrompt(); const s=cfResponseState();
-          return {pagePath:location.pathname, responseTexts:s.texts,
-            userMessageCount:document.querySelectorAll('[data-testid="user-message"]').length,
-            promptCharacters:s.promptText?.length??0,
-            promptReady:s.promptReady, generating:s.generating, sendReady:s.sendReady,
-            editors:[...document.querySelectorAll('[contenteditable],textarea,[role="textbox"]')].filter(cfVisible).map(el=>({
-              tag:el.tagName, role:el.getAttribute('role'), editable:el.getAttribute('contenteditable'),
-              className:el.className, label:el.getAttribute('aria-label'), placeholder:el.getAttribute('data-placeholder'),
-              characters:(el.value??el.innerText??'').length, selected:el===p,
-            })),
-            buttons:[...document.querySelectorAll('button')].filter(el=>el.getAttribute('data-testid')==='chat-input-send'||/^(send message|enviar mensagem)$/i.test(el.getAttribute('aria-label')||'')).map(el=>({
-              visible:cfVisible(el), bounds:{width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,
-                bottom:el.getBoundingClientRect().bottom,right:el.getBoundingClientRect().right},
-              style:{display:getComputedStyle(el).display,visibility:getComputedStyle(el).visibility,opacity:getComputedStyle(el).opacity},
-              label:el.getAttribute('aria-label'), title:el.getAttribute('title'),
-              testId:el.getAttribute('data-testid'), type:el.getAttribute('type'),
-              className:el.getAttribute('data-testid')==='chat-input-send'?el.className:undefined,
-              disabled:!!el.disabled, ariaDisabled:el.getAttribute('aria-disabled'),
-              svgLabels:[...el.querySelectorAll('svg')].map(x=>({label:x.getAttribute('aria-label'),'data-icon':x.getAttribute('data-icon')})),
-              nearEditor:!!p&&!!el.parentElement?.contains(p)
-            }))}; })()`,
-        );
-        result.responses = (result.responseTexts ?? []).map((text) => ({
-          characters: text.length,
-          sha256: createHash("sha256")
-            .update(String(text).replace(/\s+/gu, " ").trim())
-            .digest("hex"),
-        }));
-        delete result.responseTexts;
-        results.push(result);
-      } finally {
-        await client.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-      }
-    }
-    return { status: "success", values: { result: JSON.stringify(results) } };
-  } finally {
-    client.close();
-  }
+export async function execute(request, services) {
+  const bridgeDiagnosticsState = await createBridgeDiagnostics(request, services);
+  const response = await executeHandler(
+    { ...request, __bridgeDiagnosticsState: bridgeDiagnosticsState },
+    services,
+  );
+  return { ...response, bridgeDiagnostics: bridgeDiagnosticsState.bridgeDiagnostics };
 }
 
 export const __test = {
@@ -2194,7 +1768,6 @@ export const __test = {
   profilePathFor,
   runtimeProfilePath,
   profilePort,
-  waitForChildExit,
   closeBrowserGracefully,
   searchResponseValues,
   targetCharacterPlan,

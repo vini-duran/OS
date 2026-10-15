@@ -1,0 +1,138 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { parseProcessMethodV3, workspaceMethodV3Schema } from "./method-contract-v3";
+import { parseMethodFile, serializeMethodFile } from "./method-file";
+import { createValidationFields, getMethodConfigurationIssue } from "./human-workflow";
+import { methodNeedsUpgrade } from "./user-data-upgrade";
+
+const method = {
+  contractVersion: 3,
+  name: "Roteiro",
+  processType: "script",
+  blocks: [
+    {
+      id: "create-script",
+      type: "CRIAR",
+      operator: "IA",
+      inputs: [
+        {
+          id: "theme",
+          label: "Tema",
+          shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+          binding: { kind: "previous_process", processType: "theme", outputKey: "theme" },
+        },
+      ],
+      outputs: [
+        {
+          id: "script",
+          label: "Roteiro",
+          key: "script",
+          shape: { kind: "content", family: "text", cardinality: "one", representation: "inline" },
+          required: true,
+        },
+      ],
+      parameters: [],
+      order: 0,
+    },
+  ],
+} as const;
+
+test("accepts the definitive Method v3 contract", () => {
+  assert.equal(parseProcessMethodV3(method).contractVersion, 3);
+});
+
+test("accepts an empty Method while it is being configured", () => {
+  const parsed = parseProcessMethodV3({
+    contractVersion: 3,
+    name: "Thumbnail",
+    processType: "thumbnail",
+    blocks: [],
+  });
+  assert.deepEqual(parsed.blocks, []);
+});
+
+test("an unresolved source is editable as v3 but cannot be executed or exported", () => {
+  const draft = {
+    ...structuredClone(method),
+    blocks: [
+      {
+        ...structuredClone(method.blocks[0]),
+        inputs: [
+          {
+            ...structuredClone(method.blocks[0].inputs[0]),
+            binding: { kind: "previous_block", blockId: "", outputKey: "" },
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(workspaceMethodV3Schema.safeParse(draft).success, true);
+  assert.throws(() => parseProcessMethodV3(draft));
+  assert.throws(() =>
+    serializeMethodFile("Rascunho", draft as unknown as ReturnType<typeof parseProcessMethodV3>),
+  );
+  assert.equal(workspaceMethodV3Schema.safeParse({ ...draft, contractVersion: 2 }).success, false);
+});
+
+test("rejects Method v2 instead of adapting it", () => {
+  assert.throws(() => parseProcessMethodV3({ ...method, contractVersion: 2 }));
+});
+
+test("a new VALIDAR is editable without a target but remains invalid for execution and export", () => {
+  const draft = {
+    ...parseProcessMethodV3(method),
+    blocks: [
+      {
+        id: "review",
+        type: "VALIDAR" as const,
+        operator: "Humano" as const,
+        name: "Review",
+        inputs: [],
+        outputs: createValidationFields("approval"),
+        parameters: [],
+        order: 0,
+        validation: {
+          targetBlockId: "",
+          mode: "approval" as const,
+          onReject: "retry_target" as const,
+          maxAttempts: 3,
+          retryMode: "full" as const,
+        },
+      },
+    ],
+  };
+  assert.equal(workspaceMethodV3Schema.safeParse(draft).success, true);
+  assert.equal(methodNeedsUpgrade(draft), false);
+  assert.match(getMethodConfigurationIssue(draft)!, /Selecione um bloco anterior/);
+  assert.throws(() => parseProcessMethodV3(draft));
+  assert.throws(() => serializeMethodFile("Review", draft));
+  for (const invalid of [
+    { ...draft, contractVersion: 2 },
+    {
+      ...draft,
+      blocks: [
+        { ...draft.blocks[0], validation: { ...draft.blocks[0].validation, mode: "unknown" } },
+      ],
+    },
+  ])
+    assert.equal(workspaceMethodV3Schema.safeParse(invalid).success, false);
+});
+
+test("rejects legacy pseudo-types instead of inferring a shape", () => {
+  const legacy = structuredClone(method) as unknown as Record<string, unknown>;
+  const blocks = legacy.blocks as Array<Record<string, unknown>>;
+  const outputs = blocks[0].outputs as Array<Record<string, unknown>>;
+  delete outputs[0].shape;
+  outputs[0].type = "textarea";
+  assert.throws(() => parseProcessMethodV3(legacy));
+});
+
+test("the public Method file path serializes and parses only envelope v3", () => {
+  const serialized = serializeMethodFile("Roteiro", parseProcessMethodV3(method));
+  const envelope = JSON.parse(serialized) as { version: number };
+  assert.equal(envelope.version, 3);
+  assert.equal(parseMethodFile(serialized).method.contractVersion, 3);
+
+  const oldEnvelope = JSON.stringify({ ...JSON.parse(serialized), version: 1 });
+  assert.throws(() => parseMethodFile(oldEnvelope));
+});

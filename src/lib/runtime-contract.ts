@@ -2,31 +2,34 @@ import {
   PROCESS_META,
   type ActionBlock,
   type BlockInputBinding,
+  type BlockInputSourceBinding,
   type ChannelLibraryItem,
-  type HumanFieldType,
+  type DeliveryItem,
   type ProcessExecution,
   type ProjectDelivery,
   type Project,
   type RuntimeValue,
   type StrategicCollection,
+  type ValueShape,
 } from "@/lib/domain";
 import { projectProcessOrder } from "@/lib/process-order";
 import { createProcessOutputFields, isEmptyRuntimeValue } from "@/lib/human-workflow";
-import { normalizeExecutionDeliveries } from "@/lib/deliveries";
+import { normalizeExecutionDeliveries, processOutputDeliveryFor } from "@/lib/deliveries";
 import { resolveChannelHistory } from "@/lib/channel-history";
-import { collectionItemValuesForPlugin } from "@/lib/plugin-collection";
+import { areInputShapesCompatible, consumeInputValue } from "@/lib/data-shape";
 
 type RuntimeCandidate = {
   id: string;
   label: string;
   key: string;
-  type: HumanFieldType;
+  shape: ValueShape;
   value: RuntimeValue;
   sourceLabel: string;
   sourceBlockId?: string;
   sourceProcessType?: ProcessExecution["processType"];
   deliveryId?: string;
   deliveryItemIds?: string[];
+  deliveryItems?: DeliveryItem[];
 };
 
 export type ResolvedBlockInput = {
@@ -39,14 +42,8 @@ export type ResolvedBlockInput = {
   sourceProcessType?: ProcessExecution["processType"];
   sourceDeliveryId?: string;
   sourceDeliveryItemIds?: string[];
+  sourceDeliveryItems?: DeliveryItem[];
 };
-
-function areRuntimeTypesCompatible(output: HumanFieldType, input: HumanFieldType) {
-  if (output === input) return true;
-  if (["text", "textarea"].includes(output) && ["text", "textarea"].includes(input)) return true;
-  if (input === "file" && ["image", "audio", "video"].includes(output)) return true;
-  return false;
-}
 
 export function resolveBlockInputs({
   block,
@@ -57,6 +54,7 @@ export function resolveBlockInputs({
   channelProjects = [project],
   collections,
   libraryItems,
+  optionalEmptyInputIds = [],
 }: {
   block: ActionBlock;
   execution: ProcessExecution;
@@ -66,6 +64,7 @@ export function resolveBlockInputs({
   channelProjects?: Project[];
   collections: StrategicCollection[];
   libraryItems: ChannelLibraryItem[];
+  optionalEmptyInputIds?: readonly string[];
 }): ResolvedBlockInput[] {
   const candidates = collectCandidates({
     block,
@@ -74,45 +73,47 @@ export function resolveBlockInputs({
     processOrder: projectProcessOrder(project),
     collections,
     libraryItems,
+    includeEmptyCollections: optionalEmptyInputIds.length > 0,
   });
   const usedCandidateIds = new Set<string>();
 
   return (block.inputs ?? []).map((input) => {
-    if (input.source === "channel_history" && block.type !== "ESCOLHER" && block.type !== "CRIAR") {
+    const binding = input.binding;
+    const sourceKind = binding?.kind;
+    if (!binding) return { input, resolved: false };
+    if (sourceKind === "channel_history" && block.type !== "ESCOLHER" && block.type !== "CRIAR") {
       return { input, resolved: false };
     }
-    const explicit = resolveExplicitInput(input, project, candidates, usedCandidateIds, {
+    const context = {
       execution,
+      blockId: block.id,
       channelExecutions,
       channelProjects,
-    });
+    };
+    const explicit = resolveCanonicalInput(
+      input,
+      binding,
+      project,
+      candidates,
+      usedCandidateIds,
+      context,
+    );
     if (explicit) {
+      if (
+        binding.kind === "previous_block" &&
+        isEmptyRuntimeValue(explicit.result.value) &&
+        !(
+          input.shape.cardinality === "many" &&
+          Array.isArray(explicit.result.value) &&
+          explicit.result.value.length === 0 &&
+          optionalEmptyInputIds.includes(input.id)
+        )
+      )
+        return { input, resolved: false };
       if (explicit.candidateId) usedCandidateIds.add(explicit.candidateId);
       return { input, ...explicit.result };
     }
-
-    const available = candidates.filter(
-      (candidate) =>
-        !usedCandidateIds.has(candidate.id) &&
-        areRuntimeTypesCompatible(candidate.type, input.type),
-    );
-    const completeSelectedItems = available.filter((candidate) => candidate.key === "selectedItem");
-    const selected = [...(completeSelectedItems.length ? completeSelectedItems : available)].sort(
-      (left, right) => labelScore(input.label, right.label) - labelScore(input.label, left.label),
-    )[0];
-    if (!selected) return { input, resolved: false };
-    usedCandidateIds.add(selected.id);
-    return {
-      input,
-      resolved: true,
-      value: selected.value,
-      resolvedSourceKey: selected.key,
-      sourceLabel: selected.sourceLabel,
-      sourceBlockId: selected.sourceBlockId,
-      sourceProcessType: selected.sourceProcessType,
-      sourceDeliveryId: selected.deliveryId,
-      sourceDeliveryItemIds: selected.deliveryItemIds,
-    };
+    return { input, resolved: false };
   });
 }
 
@@ -123,6 +124,7 @@ function collectCandidates({
   processOrder,
   collections,
   libraryItems,
+  includeEmptyCollections = false,
 }: {
   block: ActionBlock;
   execution: ProcessExecution;
@@ -130,6 +132,7 @@ function collectCandidates({
   processOrder: ProcessExecution["processType"][];
   collections: StrategicCollection[];
   libraryItems: ChannelLibraryItem[];
+  includeEmptyCollections?: boolean;
 }) {
   const candidates: RuntimeCandidate[] = [];
   const normalizedCurrentExecution = normalizeExecutionDeliveries(execution);
@@ -148,40 +151,43 @@ function collectCandidates({
       const selectedItemId = completed.values.selectedItemId;
       const item =
         typeof selectedItemId === "string"
-          ? libraryItems.find((candidate) => candidate.id === selectedItemId)
+          ? (completed.collectionSelection?.item ??
+            libraryItems.find((candidate) => candidate.id === selectedItemId))
           : undefined;
-      const collection = collections.find((candidate) => candidate.id === item?.collectionId);
+      const collection =
+        completed.collectionSelection?.collection ??
+        collections.find((candidate) => candidate.id === item?.collectionId);
       if (item && collection) {
-        const completeItem = collectionItemValuesForPlugin(collection, item);
-        candidates.push({
-          id: `${completed.blockId}:selected-item`,
-          label: `Item escolhido — ${collection.name}`,
-          key: "selectedItem",
-          type: "textarea",
-          value: `ITEM ESCOLHIDO — ${collection.name}:\n${JSON.stringify(completeItem, null, 2)}`,
-          sourceLabel: definition.name ?? "Escolher",
-          sourceBlockId: completed.blockId,
-        });
-      }
-      for (const field of collection?.fields ?? []) {
-        const value = item?.values[field.id];
-        if (value === undefined || isEmptyRuntimeValue(value)) continue;
-        candidates.push({
-          id: `${completed.blockId}:${field.id}`,
-          label: field.label,
-          key: field.id,
-          type: field.type,
-          value,
-          sourceLabel: definition.name ?? "Escolher",
-          sourceBlockId: completed.blockId,
-        });
+        for (const field of collection.fields) {
+          const value = item.values[field.id];
+          if (value === undefined || isEmptyRuntimeValue(value)) continue;
+          candidates.push({
+            id: `${completed.blockId}:${field.id}`,
+            label: field.label,
+            key: field.id,
+            shape: field.shape,
+            value,
+            sourceLabel: definition.name ?? "Escolher",
+            sourceBlockId: completed.blockId,
+          });
+        }
       }
       continue;
     }
 
     for (const output of definition.outputs ?? []) {
       const value = completed.values[output.key];
-      if (isEmptyRuntimeValue(value)) continue;
+      if (
+        isEmptyRuntimeValue(value) &&
+        !(
+          includeEmptyCollections &&
+          output.required === false &&
+          output.shape.cardinality === "many" &&
+          Array.isArray(value) &&
+          value.length === 0
+        )
+      )
+        continue;
       const delivery = activeDeliveryFor(
         normalizedCurrentExecution.deliveries,
         completed.blockId,
@@ -191,12 +197,13 @@ function collectCandidates({
         id: `${completed.blockId}:${output.key}`,
         label: output.label,
         key: output.key,
-        type: output.type,
+        shape: output.shape,
         value,
         sourceLabel: definition.name ?? definition.type,
         sourceBlockId: completed.blockId,
         deliveryId: delivery?.id,
         deliveryItemIds: delivery?.items.map((item) => item.id),
+        deliveryItems: delivery?.items.map((item) => structuredClone(item)),
       });
     }
   }
@@ -225,9 +232,9 @@ function collectCandidates({
         id: delivery.id,
         label: delivery.label,
         key: delivery.outputKey,
-        type: delivery.type,
+        shape: delivery.shape,
         value:
-          delivery.cardinality === "many"
+          delivery.shape.cardinality === "many"
             ? (delivery.items.map((item) => item.value) as RuntimeValue)
             : ((delivery.items[0]?.value ?? null) as RuntimeValue),
         sourceLabel: `${PROCESS_META[processExecution.processType].label} / ${sourceBlock?.name ?? sourceBlock?.type ?? "Entrega"}`,
@@ -235,125 +242,128 @@ function collectCandidates({
         sourceProcessType: processExecution.processType,
         deliveryId: delivery.id,
         deliveryItemIds: delivery.items.map((item) => item.id),
+        deliveryItems: delivery.items.map((item) => structuredClone(item)),
       });
     }
     for (const output of createProcessOutputFields(processExecution.processType)) {
       const value = processExecution.output?.values[output.key];
       if (value === undefined || isEmptyRuntimeValue(value)) continue;
-      const delivery = activeDeliveryFor(
-        processExecution.deliveries,
-        "__process_output__",
-        output.key,
-      );
+      const delivery = processOutputDeliveryFor(processExecution, output.key);
       candidates.push({
         id: `process:${processExecution.processType}:${output.key}`,
         label: output.label,
         key: output.key,
-        type: output.type,
+        shape: output.shape,
         value,
         sourceLabel: `Processo ${PROCESS_META[processExecution.processType].label}`,
         sourceBlockId: "__process_output__",
         sourceProcessType: processExecution.processType,
         deliveryId: delivery?.id,
         deliveryItemIds: delivery?.items.map((item) => item.id),
+        deliveryItems: delivery?.items.map((item) => structuredClone(item)),
       });
     }
   }
   return candidates;
 }
 
-function resolveExplicitInput(
+type ExplicitResolution = {
+  candidateId?: string;
+  result: Omit<ResolvedBlockInput, "input">;
+};
+
+type InputResolutionContext = {
+  execution: ProcessExecution;
+  blockId: string;
+  channelExecutions: ProcessExecution[];
+  channelProjects: Project[];
+};
+
+function resultForCandidate(
+  candidate: RuntimeCandidate,
   input: BlockInputBinding,
+): ExplicitResolution {
+  const value = consumeInputValue(candidate.shape, input.shape, candidate.value);
+  if (value === undefined) return { result: { resolved: false } };
+  return {
+    candidateId: candidate.id,
+    result: {
+      resolved: true,
+      value: value as RuntimeValue,
+      resolvedSourceKey: candidate.key,
+      sourceLabel: candidate.sourceLabel,
+      sourceBlockId: candidate.sourceBlockId,
+      sourceProcessType: candidate.sourceProcessType,
+      sourceDeliveryId: candidate.deliveryId,
+      sourceDeliveryItemIds: candidate.deliveryItemIds,
+      sourceDeliveryItems: candidate.deliveryItems,
+    },
+  };
+}
+
+function resolveCanonicalInput(
+  input: BlockInputBinding,
+  binding: BlockInputSourceBinding,
   project: Project,
   candidates: RuntimeCandidate[],
   usedCandidateIds: ReadonlySet<string>,
-  historyContext: {
-    execution: ProcessExecution;
-    channelExecutions: ProcessExecution[];
-    channelProjects: Project[];
-  },
-):
-  | {
-      candidateId?: string;
-      result: Omit<ResolvedBlockInput, "input">;
+  context: InputResolutionContext,
+): ExplicitResolution {
+  switch (binding.kind) {
+    case "channel_history": {
+      const value = resolveChannelHistory({
+        binding,
+        currentExecution: context.execution,
+        channelExecutions: context.channelExecutions,
+        channelProjects: context.channelProjects,
+      });
+      return value
+        ? { result: { resolved: true, value, sourceLabel: "Histórico do canal" } }
+        : { result: { resolved: false } };
     }
-  | undefined {
-  if (input.source === "channel_history") {
-    const value = resolveChannelHistory({
-      input,
-      currentExecution: historyContext.execution,
-      channelExecutions: historyContext.channelExecutions,
-      channelProjects: historyContext.channelProjects,
-    });
-    return value
-      ? {
-          result: {
-            resolved: true,
-            value,
-            sourceLabel: "Histórico do canal",
-          },
-        }
-      : { result: { resolved: false } };
+    case "static":
+      return typeof binding.value === "string" && binding.value.trim()
+        ? { result: { resolved: true, value: binding.value, sourceLabel: "Valor fixo" } }
+        : { result: { resolved: false } };
+    case "runtime": {
+      const value = context.execution.blocks.find((block) => block.blockId === context.blockId)
+        ?.runtimeInputs?.[input.id];
+      return value === undefined || isEmptyRuntimeValue(value)
+        ? { result: { resolved: false } }
+        : { result: { resolved: true, value, sourceLabel: "Fornecido na execução" } };
+    }
+    case "project": {
+      if (binding.key !== "title" && binding.key !== "deadline") {
+        return { result: { resolved: false } };
+      }
+      const value = binding.key === "deadline" ? project.deadline : project.title;
+      return { result: { resolved: true, value, sourceLabel: "Projeto" } };
+    }
+    case "previous_block": {
+      const candidate = candidates.find(
+        (item) =>
+          !usedCandidateIds.has(item.id) &&
+          item.sourceProcessType === undefined &&
+          item.sourceBlockId === binding.blockId &&
+          item.key === binding.outputKey &&
+          areInputShapesCompatible(item.shape, input.shape),
+      );
+      return candidate ? resultForCandidate(candidate, input) : { result: { resolved: false } };
+    }
+    case "previous_process": {
+      const candidate = candidates.find(
+        (item) =>
+          !usedCandidateIds.has(item.id) &&
+          item.sourceProcessType === binding.processType &&
+          item.sourceBlockId === (binding.blockId ?? "__process_output__") &&
+          item.key === binding.outputKey &&
+          areInputShapesCompatible(item.shape, input.shape),
+      );
+      return candidate ? resultForCandidate(candidate, input) : { result: { resolved: false } };
+    }
+    default:
+      return { result: { resolved: false } };
   }
-  if (input.source === "static") {
-    return input.staticValue
-      ? { result: { resolved: true, value: input.staticValue, sourceLabel: "Valor fixo" } }
-      : { result: { resolved: false } };
-  }
-  if (input.source === "project") {
-    const value = input.sourceKey === "deadline" ? project.deadline : project.title;
-    return { result: { resolved: true, value, sourceLabel: "Projeto" } };
-  }
-  if (input.source === "previous_block" && input.blockId) {
-    const candidate = candidates.find(
-      (item) =>
-        (!usedCandidateIds.has(item.id) || (!input.sourceKey && item.key === "selectedItem")) &&
-        item.sourceBlockId === input.blockId &&
-        (!input.sourceKey || item.key === input.sourceKey) &&
-        areRuntimeTypesCompatible(item.type, input.type),
-    );
-    return candidate
-      ? {
-          candidateId:
-            !input.sourceKey && candidate.key === "selectedItem" ? undefined : candidate.id,
-          result: {
-            resolved: true,
-            value: candidate.value,
-            resolvedSourceKey: candidate.key,
-            sourceLabel: candidate.sourceLabel,
-            sourceBlockId: candidate.sourceBlockId,
-            sourceDeliveryId: candidate.deliveryId,
-            sourceDeliveryItemIds: candidate.deliveryItemIds,
-          },
-        }
-      : { result: { resolved: false } };
-  }
-  if (input.source === "previous_process" && input.sourceKey) {
-    const candidate = candidates.find(
-      (item) =>
-        Boolean(item.sourceProcessType) &&
-        (!input.sourceProcessType || item.sourceProcessType === input.sourceProcessType) &&
-        (!input.blockId || item.sourceBlockId === input.blockId) &&
-        item.key === input.sourceKey &&
-        areRuntimeTypesCompatible(item.type, input.type),
-    );
-    return candidate
-      ? {
-          candidateId: candidate.id,
-          result: {
-            resolved: true,
-            value: candidate.value,
-            resolvedSourceKey: candidate.key,
-            sourceLabel: candidate.sourceLabel,
-            sourceProcessType: candidate.sourceProcessType,
-            sourceBlockId: candidate.sourceBlockId,
-            sourceDeliveryId: candidate.deliveryId,
-            sourceDeliveryItemIds: candidate.deliveryItemIds,
-          },
-        }
-      : { result: { resolved: false } };
-  }
-  return undefined;
 }
 
 function activeDeliveryFor(
@@ -369,19 +379,4 @@ function activeDeliveryFor(
         delivery.outputKey === outputKey &&
         delivery.status !== "invalidated",
     );
-}
-
-function labelScore(inputLabel: string, outputLabel: string) {
-  const inputTokens = normalizeLabel(inputLabel);
-  const outputTokens = normalizeLabel(outputLabel);
-  return inputTokens.filter((token) => outputTokens.includes(token)).length;
-}
-
-function normalizeLabel(label: string) {
-  return label
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length > 2);
 }

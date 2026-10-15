@@ -1,0 +1,43 @@
+{
+  "$schema": "../schemas/contentflow-plugin-v2.schema.json",
+  "apiVersion": "2",
+  "id": "com.example.text-transform",
+  "name": "Transformador de texto",
+  "version": "1.0.0",
+  "description": "Transforma um texto e devolve outro texto.",
+  "author": "Example",
+  "license": "MIT",
+  "runtime": { "kind": "node", "version": ">=26 <27", "module": "esm" },
+  "entrypoint": "handler.mjs",
+  "permissions": [],
+  "capabilities": [
+    {
+      "id": "transform",
+      "operator": "Código",
+      "instructionUsage": "not_applicable",
+      "blockTypes": ["CRIAR"],
+      "inputPorts": [
+        {
+          "key": "content",
+          "label": "Conteúdo",
+          "shape": { "kind": "content", "family": "text", "cardinality": "one", "representation": "inline" },
+          "required": true
+        }
+      ],
+      "outputPorts": [
+        {
+          "key": "result",
+          "label": "Resultado",
+          "shape": { "kind": "content", "family": "text", "cardinality": "one", "representation": "inline" },
+          "required": true
+        }
+      ],
+      "execution": { "mode": "immediate" },
+      "sideEffects": [],
+      "cost": { "model": "free", "estimateSupported": true },
+      "dataPolicy": { "sendsDataToThirdParties": false },
+      "blockConfigSchema": { "type": "object", "additionalProperties": false },
+      "outputSchema": { "type": "object", "additionalProperties": false }
+    }
+  ]
+}

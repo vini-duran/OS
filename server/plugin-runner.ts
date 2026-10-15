@@ -1,8 +1,11 @@
+import { devProbe, monitorEnabled } from "./dev-monitor/client";
+import { eventSchema, type EventInput } from "./dev-monitor/contract";
 import { spawn } from "node:child_process";
 import {
   createReadStream,
   createWriteStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -19,16 +22,44 @@ import type {
   PluginExecutionRequest,
   PluginExecutionResponse,
   PluginArtifact,
+  PluginClaimedWorkItem,
   PluginManifest,
   PluginPartialUpdate,
+  PluginPlannedWorkItem,
+  PluginWorkItemUpdate,
+  PluginWorkItemUpdateReceipt,
 } from "../src/lib/plugin-contract";
-import type { RuntimeValue, StoredFile } from "../src/lib/domain";
+import type { BlockExecutionItemValue, RuntimeValue, StoredFile } from "../src/lib/domain";
 import {
   assertRemoteArtifactNetworkPermission,
   DEFAULT_REMOTE_ARTIFACT_MAX_BYTES,
   downloadRemoteArtifact,
 } from "./remote-artifact-downloader";
 import { findPluginManifest, validatePluginDirectory } from "./plugin-validation";
+import {
+  isSafePluginVersion,
+  pluginCatalogCompatibility,
+  type PluginCompatibility,
+} from "./plugin-catalog";
+import {
+  BrowserSessionManager,
+  shouldAutoCloseCoreBrowserSession,
+} from "./browser-session-manager";
+
+const browserSessionManager = new BrowserSessionManager();
+
+export async function disposeCoreBrowserSessions() {
+  await browserSessionManager.dispose();
+}
+
+export function storedArtifactsDeclaredByUpdate(
+  storedArtifacts: StoredFile[],
+  declaredArtifacts: PluginArtifact[] | undefined,
+) {
+  if (!declaredArtifacts?.length) return [];
+  const declaredIds = new Set(declaredArtifacts.map((artifact) => artifact.id));
+  return storedArtifacts.filter((artifact) => declaredIds.has(artifact.id));
+}
 
 export type PluginSource = "local" | "installed";
 
@@ -44,18 +75,37 @@ export type RegisteredPlugin = {
 
 type PluginIssue = { directory: string; message: string };
 
+/** Identification for package administration only. Never a PluginManifest or an executor. */
+export type AdministrativePlugin = {
+  id: string;
+  source: PluginSource;
+  directory: string;
+  absoluteDirectory: string;
+  manifest: Pick<PluginManifest, "id" | "name" | "version" | "description" | "author"> & {
+    apiVersion?: string;
+    minCoreVersion?: string;
+    capabilities: [];
+    permissions: [];
+  };
+  executable: false;
+  compatibility: PluginCompatibility;
+};
+
 const maxPluginExecutionMs = 24 * 60 * 60 * 1_000;
 const maxArtifactBytes = 4 * 1024 * 1024 * 1024;
 const maxArtifactBatchBytes = 4 * 1024 * 1024 * 1024;
 const maxRemoteArtifactBatchBytes = 2 * 1024 * 1024 * 1024;
 const maxArtifactsPerResponse = 100;
 const partialPrefix = "CONTENTFLOW_PARTIAL\t";
+const servicePrefix = "CONTENTFLOW_SERVICE\t";
+const serviceResultPrefix = "CONTENTFLOW_SERVICE_RESULT\t";
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
 const defaultDataRoot =
   process.platform === "win32" && process.env.APPDATA
     ? path.join(process.env.APPDATA, "ContentFlow", "data")
     : path.join(applicationRoot, "data");
 const dataRoot = path.resolve(process.env.CONTENTFLOW_DATA_DIR ?? defaultDataRoot);
+const browserBridgeDirectory = path.join(dataRoot, "browser-bridge");
 const localPluginsRoot = path.resolve(
   process.env.CONTENTFLOW_LOCAL_PLUGINS_DIR ?? path.join(dataRoot, "plugins", "local"),
 );
@@ -65,6 +115,32 @@ const installedPluginsRoot = path.resolve(
 const developmentLinksRoot = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ?? path.join(dataRoot, "plugins", "development"),
 );
+
+function pathIsInside(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+function assertNoExternalLinks(root: string) {
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      const stat = lstatSync(candidate);
+      if (stat.isSymbolicLink()) {
+        const resolved = realpathSync(candidate);
+        if (!pathIsInside(root, resolved)) {
+          throw new Error("A pasta autorizada contém link simbólico para fora da raiz permitida.");
+        }
+        continue;
+      }
+      if (stat.isDirectory()) visit(candidate);
+    }
+  };
+  visit(root);
+}
 
 export function windowsExecutableDiscoveryReadPaths(
   environment: NodeJS.ProcessEnv = process.env,
@@ -87,6 +163,7 @@ export function windowsExecutableDiscoveryReadPaths(
 }
 
 const registry = new Map<string, RegisteredPlugin>();
+const administrativeRegistry = new Map<string, AdministrativePlugin>();
 let discoveryIssues: PluginIssue[] = [];
 
 export function pluginRegistrationConflictIsReportable(
@@ -110,7 +187,10 @@ function scanPluginDirectory(
   try {
     const validated = validatePluginDirectory(pluginDirectory, true);
     const { manifest, absoluteDirectory: realDirectory, entrypoint: realEntrypoint } = validated;
-    const registered = registry.get(manifest.id);
+    const compatibility = pluginCatalogCompatibility(manifest);
+    if (compatibility.status !== "compatible")
+      throw new Error("O plugin exige uma versão mais recente do ContentFlow.");
+    const registered = registry.get(manifest.id) ?? administrativeRegistry.get(manifest.id);
     if (registered) {
       if (!pluginRegistrationConflictIsReportable(registered.source, source)) return;
       throw new Error(`O id ${manifest.id} já foi registrado por outro plugin.`);
@@ -125,6 +205,54 @@ function scanPluginDirectory(
       executable: true,
     });
   } catch (error) {
+    // Only safe identity/version and display metadata survive failed validation. No legacy
+    // capabilities, entrypoint, permissions, secrets, profile setup or runtime are interpreted.
+    try {
+      const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+      if (
+        source === "installed" &&
+        typeof raw.id === "string" &&
+        raw.id.length <= 200 &&
+        /^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(raw.id) &&
+        isSafePluginVersion(raw.version) &&
+        !registry.has(raw.id) &&
+        !administrativeRegistry.has(raw.id)
+      ) {
+        const absoluteDirectory = realpathSync(pluginDirectory);
+        if (!pathIsInside(realpathSync(installedPluginsRoot), absoluteDirectory))
+          throw new Error("Invalid installed path");
+        const metadata = {
+          apiVersion: typeof raw.apiVersion === "string" ? raw.apiVersion.slice(0, 20) : undefined,
+          minCoreVersion: isSafePluginVersion(raw.minCoreVersion) ? raw.minCoreVersion : undefined,
+        };
+        const compatibility = pluginCatalogCompatibility(metadata);
+        const display = (value: unknown, fallback: string, limit: number) =>
+          typeof value === "string" ? value.slice(0, limit) : fallback;
+        administrativeRegistry.set(raw.id, {
+          id: raw.id,
+          source,
+          directory: shownDirectory,
+          absoluteDirectory,
+          manifest: {
+            id: raw.id,
+            version: raw.version,
+            name: display(raw.name, raw.id, 100),
+            description: display(raw.description, "", 500),
+            author: display(raw.author, "", 100),
+            ...metadata,
+            capabilities: [],
+            permissions: [],
+          },
+          executable: false,
+          compatibility:
+            compatibility.status === "compatible"
+              ? { status: "incompatible", reason: "invalid_manifest" }
+              : compatibility,
+        });
+      }
+    } catch {
+      // Unidentifiable manifests remain diagnostic issues, never administrative targets.
+    }
     discoveryIssues.push({
       directory: shownDirectory,
       message: error instanceof Error ? error.message : "Não foi possível carregar o plugin.",
@@ -163,6 +291,7 @@ function scanDevelopmentLinks() {
 
 export function initializePluginRunner() {
   registry.clear();
+  administrativeRegistry.clear();
   discoveryIssues = [];
   scanRoot(localPluginsRoot, "local");
   scanDevelopmentLinks();
@@ -171,7 +300,11 @@ export function initializePluginRunner() {
 }
 
 export function getPluginRegistrySnapshot() {
-  return { plugins: [...registry.values()], issues: [...discoveryIssues] };
+  return {
+    plugins: [...registry.values()],
+    administrativePlugins: [...administrativeRegistry.values()],
+    issues: [...discoveryIssues],
+  };
 }
 
 export function getRegisteredPlugin(pluginId: string) {
@@ -184,15 +317,30 @@ export async function executeRegisteredPlugin(
   timeoutMs: number | undefined,
   secrets: Record<string, string> = {},
   options: {
+    monitorCorrelation?: { profileId?: string; pluginJobId?: string };
     workspaceDirectory?: string;
+    profileDirectory?: string;
     existingArtifacts?: StoredFile[];
     artifactDirectory?: string;
     artifactUrlPrefix?: string;
     signal?: AbortSignal;
     onPartial?: (update: PluginPartialUpdate & { storedArtifacts?: StoredFile[] }) => Promise<void>;
+    onRegisterItems?: (
+      parentItemId: string,
+      plannedItems: PluginPlannedWorkItem[],
+    ) => Promise<PluginClaimedWorkItem[]>;
+    onClaimItems?: (limit: number) => Promise<PluginClaimedWorkItem[]>;
+    onPublishItemUpdate?: (
+      update: PluginWorkItemUpdate,
+      storedArtifacts: StoredFile[],
+    ) => Promise<PluginWorkItemUpdateReceipt>;
   } = {},
 ): Promise<PluginExecutionResponse> {
-  if (!plugin.executable) {
+  if (
+    !plugin.executable ||
+    plugin.manifest.apiVersion !== "2" ||
+    pluginCatalogCompatibility(plugin.manifest).status !== "compatible"
+  ) {
     throw new Error("Este plugin não está disponível para execução.");
   }
 
@@ -212,61 +360,82 @@ export async function executeRegisteredPlugin(
         safeSegment(plugin.id),
       ),
   );
-  mkdirSync(uploadsDirectory, { recursive: true });
-  mkdirSync(artifactDirectory, { recursive: true });
-  mkdirSync(workspaceDirectory, { recursive: true });
-  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
-  const realUploadsDirectory = realpathSync(uploadsDirectory);
-  // macOS exposes temporary paths through /var while resolving them physically
-  // under /private/var. Keep both the permission and the worker envelope on the
-  // same canonical root so Node's permission model does not reject valid writes.
+  const profileDirectory = options.profileDirectory
+    ? path.resolve(options.profileDirectory)
+    : undefined;
   const outputDirectory = path.resolve(
-    realWorkspaceDirectory,
+    workspaceDirectory,
     ".contentflow-output",
     safeSegment(request.executionId),
     safeSegment(request.traceId),
   );
+  mkdirSync(uploadsDirectory, { recursive: true });
+  mkdirSync(artifactDirectory, { recursive: true });
+  mkdirSync(workspaceDirectory, { recursive: true });
+  if (profileDirectory) mkdirSync(profileDirectory, { recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
+  const realWorkspaceDirectory = realpathSync(workspaceDirectory);
+  const realProfileDirectory = profileDirectory ? realpathSync(profileDirectory) : undefined;
+  const realOutputDirectory = realpathSync(outputDirectory);
+  const shouldOpenCoreBrowser = Boolean(
+    realProfileDirectory &&
+    plugin.manifest.browserRuntime?.lifecycle === "core" &&
+    !(request.invocation.mode === "configure" && request.invocation.action === "status"),
+  );
+  const coreBrowserSession = shouldOpenCoreBrowser
+    ? await browserSessionManager.open({
+        profileDirectory: realProfileDirectory!,
+        browserBridgeDirectory,
+        chromeExecutable: request.settings.chromeExecutable,
+        // Active browser work must run in a normal window. A minimized Chrome can be
+        // throttled or fail to expose the page lifecycle consistently on Windows;
+        // the user preference remains useful for idle/configuration sessions.
+        visible: true,
+        reusable: request.invocation.mode !== "configure",
+        signal: options.signal,
+        monitorCorrelation: {
+          ...options.monitorCorrelation,
+          executionId: request.executionId,
+          blockId: request.blockId,
+        },
+      })
+    : undefined;
+  const workerRequest: PluginExecutionRequest = coreBrowserSession
+    ? {
+        ...request,
+        settings: {
+          ...request.settings,
+          __contentFlowBrowserSession: {
+            port: coreBrowserSession.port,
+            webSocketDebuggerUrl: coreBrowserSession.webSocketDebuggerUrl,
+          },
+        },
+      }
+    : request;
   const permissions = new Set(plugin.manifest.permissions);
+  if (permissions.has("filesystem:write") && !permissions.has("filesystem:read")) {
+    assertNoExternalLinks(realWorkspaceDirectory);
+    if (realProfileDirectory) assertNoExternalLinks(realProfileDirectory);
+  }
   const nodeMajor = Number(
     process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
   );
   const args = ["--permission"];
   for (const readable of [plugin.absoluteDirectory, workerPath]) {
     args.push(`--allow-fs-read=${readable}`);
-    const canonical = realpathSync(readable);
-    if (canonical !== readable) args.push(`--allow-fs-read=${canonical}`);
   }
   if (permissions.has("filesystem:read")) {
-    args.push(
-      `--allow-fs-read=${realUploadsDirectory}`,
-      `--allow-fs-read=${realWorkspaceDirectory}`,
-    );
-    if (workspaceDirectory !== realWorkspaceDirectory) {
-      args.push(`--allow-fs-read=${workspaceDirectory}`);
-    }
-    if (uploadsDirectory !== realUploadsDirectory) {
-      args.push(`--allow-fs-read=${uploadsDirectory}`);
-    }
+    args.push(`--allow-fs-read=${uploadsDirectory}`, `--allow-fs-read=${realWorkspaceDirectory}`);
+    if (realProfileDirectory) args.push(`--allow-fs-read=${realProfileDirectory}`);
   }
   if (permissions.has("filesystem:write")) {
     args.push(`--allow-fs-write=${realWorkspaceDirectory}`);
-    if (workspaceDirectory !== realWorkspaceDirectory) {
-      args.push(`--allow-fs-write=${workspaceDirectory}`);
-    }
+    if (realProfileDirectory) args.push(`--allow-fs-write=${realProfileDirectory}`);
   }
   if (permissions.has("process")) {
     args.push("--allow-child-process");
     for (const executablePath of windowsExecutableDiscoveryReadPaths()) {
       args.push(`--allow-fs-read=${executablePath}`);
-      try {
-        const real = realpathSync(executablePath);
-        if (real !== executablePath) {
-          args.push(`--allow-fs-read=${real}`);
-        }
-      } catch {
-        // file might not exist yet
-      }
     }
   }
   if (permissions.has("worker")) args.push("--allow-worker");
@@ -275,7 +444,7 @@ export async function executeRegisteredPlugin(
   args.push(workerPath);
   const runtimeExecutable = process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE ?? process.execPath;
   const child = spawn(runtimeExecutable, args, {
-    cwd: realpathSync(plugin.absoluteDirectory),
+    cwd: plugin.absoluteDirectory,
     env: {
       NODE_ENV: process.env.NODE_ENV ?? "development",
       PATH: process.env.PATH,
@@ -285,18 +454,38 @@ export async function executeRegisteredPlugin(
       LOCALAPPDATA: process.env.LOCALAPPDATA,
       TEMP: process.env.TEMP,
       TMP: process.env.TMP,
+      ...(monitorEnabled() ? { CONTENTFLOW_DEV_MONITOR_WORKER: "1" } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 
-  return new Promise((resolve, reject) => {
+  const monitor = devProbe("plugin", "plugin-runner");
+  const monitorId = String(child.pid ?? request.traceId);
+  const monitorCorrelation = {
+    ...coreBrowserSession?.monitorCorrelation,
+    ...options.monitorCorrelation,
+    executionId: request.executionId,
+    blockId: request.blockId,
+    pluginId: plugin.id,
+    invocationId: monitorId,
+  };
+  if (monitor.enabled)
+    monitor.emit({
+      kind: "invocation.started",
+      entity: { type: "invocation", id: monitorId },
+      correlation: monitorCorrelation,
+      phase: "begin",
+    });
+  const execution = new Promise<PluginExecutionResponse>((resolve, reject) => {
     let stdout = "";
     let stdoutBuffer = "";
     let stderr = "";
     let partialArtifacts = [...(options.existingArtifacts ?? [])];
     let partialChain = Promise.resolve();
+    let partialFailure: unknown;
     let settled = false;
+    let monitorWorkerSequence = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => {
       child.kill();
@@ -325,43 +514,180 @@ export async function executeRegisteredPlugin(
     }
 
     const consumeStdoutLine = (line: string) => {
+      if (monitor.enabled && line.startsWith("CONTENTFLOW_DEV_EVENT\t")) {
+        try {
+          const frame = JSON.parse(line.slice("CONTENTFLOW_DEV_EVENT\t".length)) as {
+            sequence: number;
+            event: EventInput;
+          };
+          if (frame.sequence !== ++monitorWorkerSequence)
+            throw new Error("MONITOR_WORKER_SEQUENCE_GAP");
+          const input = frame.event;
+          const safe = eventSchema
+            .omit({
+              source: true,
+              schemaVersion: true,
+              eventId: true,
+              runId: true,
+              observedAt: true,
+            })
+            .parse(input);
+          devProbe("browser_bridge", "bridge-sdk").emit({
+            ...safe,
+            correlation: { ...safe.correlation, ...monitorCorrelation },
+          });
+        } catch {
+          devProbe("browser_bridge", "bridge-sdk").emit({
+            kind: "instrumentation.invalid",
+            entity: { type: "instrumentation", id: monitorId },
+            correlation: monitorCorrelation,
+          });
+        }
+        return;
+      }
+      if (line.startsWith(servicePrefix)) {
+        const payload = line.slice(servicePrefix.length);
+        partialChain = partialChain.then(async () => {
+          const event = JSON.parse(payload) as {
+            requestId: string;
+            method: "registerItems" | "claimItems" | "publishItemUpdate";
+            parentItemId?: string;
+            plannedItems?: PluginPlannedWorkItem[];
+            limit?: number;
+            update?: PluginWorkItemUpdate;
+          };
+          try {
+            let value: PluginClaimedWorkItem[] | PluginWorkItemUpdateReceipt;
+            if (event.method === "registerItems" && options.onRegisterItems) {
+              value = await options.onRegisterItems(
+                event.parentItemId ?? "",
+                event.plannedItems ?? [],
+              );
+            } else if (event.method === "claimItems" && options.onClaimItems) {
+              value = await options.onClaimItems(event.limit ?? 1);
+            } else if (
+              event.method === "publishItemUpdate" &&
+              event.update &&
+              options.onPublishItemUpdate
+            ) {
+              const imported = await importPluginArtifacts(
+                {
+                  status: "pending",
+                  jobId: "item-update",
+                  pollAfterMs: 1_000,
+                  partialValues: {
+                    __item:
+                      event.update.value === undefined
+                        ? null
+                        : (event.update.value as unknown as RuntimeValue),
+                  },
+                  partialArtifacts: event.update.artifacts,
+                },
+                realOutputDirectory,
+                artifactDirectory,
+                plugin.manifest,
+                {
+                  existingArtifacts: partialArtifacts,
+                  urlPrefix: options.artifactUrlPrefix,
+                },
+              );
+              partialArtifacts = imported.storedArtifacts ?? partialArtifacts;
+              const itemStoredArtifacts = storedArtifactsDeclaredByUpdate(
+                partialArtifacts,
+                event.update.artifacts,
+              );
+              const importedValue =
+                event.update.value === undefined
+                  ? undefined
+                  : imported.status === "pending"
+                    ? imported.partialValues?.__item
+                    : undefined;
+              value = await options.onPublishItemUpdate(
+                {
+                  ...event.update,
+                  ...(importedValue !== undefined
+                    ? { value: importedValue as BlockExecutionItemValue }
+                    : {}),
+                },
+                itemStoredArtifacts,
+              );
+            } else {
+              throw new Error("O runtime não habilitou o serviço solicitado para esta invocação.");
+            }
+            child.stdin.write(
+              `${serviceResultPrefix}${JSON.stringify({
+                requestId: event.requestId,
+                ok: true,
+                value,
+              })}\n`,
+            );
+          } catch (error) {
+            child.stdin.write(
+              `${serviceResultPrefix}${JSON.stringify({
+                requestId: event.requestId,
+                ok: false,
+                error:
+                  error instanceof Error ? error.message : "Falha ao registrar itens derivados.",
+              })}\n`,
+            );
+          }
+        });
+        return;
+      }
       if (!line.startsWith(partialPrefix)) {
         stdout += `${line}\n`;
         return;
       }
       const payload = line.slice(partialPrefix.length);
-      partialChain = partialChain.then(async () => {
-        const event = JSON.parse(payload) as { sequence: number; update: PluginPartialUpdate };
-        const update = event.update;
-        const imported = await importPluginArtifacts(
-          {
-            status: "pending",
-            jobId: `stream:${event.sequence}`,
-            pollAfterMs: 1_000,
-            progress: update.progress,
-            message: update.message,
-            partialValues: update.values,
-            partialArtifacts: update.artifacts,
-            logs: update.logs,
-          },
-          outputDirectory,
-          artifactDirectory,
-          plugin.manifest,
-          {
-            existingArtifacts: partialArtifacts,
-            urlPrefix: options.artifactUrlPrefix,
-          },
-        );
-        partialArtifacts = imported.storedArtifacts ?? partialArtifacts;
-        await options.onPartial?.({
-          ...update,
-          values:
-            imported.status === "pending"
-              ? (imported.partialValues ?? update.values)
-              : update.values,
-          storedArtifacts: imported.storedArtifacts,
+      partialChain = partialChain
+        .then(async () => {
+          const event = JSON.parse(payload) as { sequence: number; update: PluginPartialUpdate };
+          const update = event.update;
+          const imported = await importPluginArtifacts(
+            {
+              status: "pending",
+              jobId: `stream:${event.sequence}`,
+              pollAfterMs: 1_000,
+              progress: update.progress,
+              message: update.message,
+              partialValues: update.values,
+              partialArtifacts: update.artifacts,
+              logs: update.logs,
+            },
+            realOutputDirectory,
+            artifactDirectory,
+            plugin.manifest,
+            {
+              existingArtifacts: partialArtifacts,
+              urlPrefix: options.artifactUrlPrefix,
+            },
+          );
+          partialArtifacts = imported.storedArtifacts ?? partialArtifacts;
+          const itemUpdates = update.itemUpdates?.map((item) => ({
+            ...item,
+            ...(item.value !== undefined
+              ? {
+                  value: replacePluginArtifactReferences(
+                    item.value,
+                    imported.storedArtifacts ?? partialArtifacts,
+                  ) as BlockExecutionItemValue,
+                }
+              : {}),
+          }));
+          await options.onPartial?.({
+            ...update,
+            itemUpdates,
+            values:
+              imported.status === "pending"
+                ? (imported.partialValues ?? update.values)
+                : update.values,
+            storedArtifacts: imported.storedArtifacts,
+          });
+        })
+        .catch((error) => {
+          partialFailure ??= error;
+          child.kill();
         });
-      });
     };
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBuffer += chunk.toString("utf8");
@@ -377,54 +703,85 @@ export async function executeRegisteredPlugin(
     child.on("error", (error) => finish(() => reject(error)));
     child.on("close", () => {
       if (stdoutBuffer) consumeStdoutLine(stdoutBuffer);
-      void partialChain.then(
-        () =>
-          finish(() => {
-            try {
-              const pluginResponse = JSON.parse(stdout.trim()) as PluginExecutionResponse;
-              void importPluginArtifacts(
-                pluginResponse,
-                outputDirectory,
-                artifactDirectory,
-                plugin.manifest,
-                {
-                  existingArtifacts: partialArtifacts,
-                  urlPrefix: options.artifactUrlPrefix,
-                },
-              )
-                .then(resolve, reject)
-                .finally(() => rmSync(outputDirectory, { recursive: true, force: true }));
-            } catch {
-              reject(new Error(stderr.trim() || "O plugin devolveu uma resposta inválida."));
-              rmSync(outputDirectory, { recursive: true, force: true });
-            }
-          }),
-        (error) =>
-          finish(() => {
-            rmSync(outputDirectory, { recursive: true, force: true });
-            reject(error);
-          }),
+      void partialChain.then(() =>
+        finish(() => {
+          if (partialFailure) {
+            rmSync(realOutputDirectory, { recursive: true, force: true });
+            reject(partialFailure);
+            return;
+          }
+          try {
+            const pluginResponse = JSON.parse(stdout.trim()) as PluginExecutionResponse;
+            void importPluginArtifacts(
+              pluginResponse,
+              realOutputDirectory,
+              artifactDirectory,
+              plugin.manifest,
+              {
+                existingArtifacts: partialArtifacts,
+                urlPrefix: options.artifactUrlPrefix,
+              },
+            )
+              .then(resolve, reject)
+              .finally(() => rmSync(realOutputDirectory, { recursive: true, force: true }));
+          } catch {
+            reject(new Error(stderr.trim() || "O plugin devolveu uma resposta inválida."));
+            rmSync(realOutputDirectory, { recursive: true, force: true });
+          }
+        }),
       );
     });
     const declaredSecrets = new Set(plugin.manifest.secretKeys ?? []);
     const authorizedSecrets = Object.fromEntries(
       Object.entries(secrets).filter(([key]) => declaredSecrets.has(key)),
     );
-    child.stdin.end(
-      JSON.stringify({
-        entrypoint: realpathSync(plugin.entrypoint),
-        request,
+    child.stdin.write(
+      `${JSON.stringify({
+        entrypoint: plugin.entrypoint,
+        request: workerRequest,
         secrets: authorizedSecrets,
         sandbox: {
           permissions: [...permissions],
           uploadsDirectory,
           workspaceDirectory: realWorkspaceDirectory,
-          outputDirectory,
+          ...(realProfileDirectory ? { profileDirectory: realProfileDirectory } : {}),
+          outputDirectory: realOutputDirectory,
           networkEnforced: nodeMajor >= 26,
         },
-      }),
+      })}\n`,
     );
   });
+  try {
+    const response = await execution;
+    if (monitor.enabled)
+      monitor.emit({
+        kind: "invocation.completed",
+        entity: { type: "invocation", id: monitorId },
+        correlation: monitorCorrelation,
+        phase: "end",
+        outcome: response.status === "error" ? "error" : "ok",
+        payload: { status: response.status },
+      });
+    return response;
+  } catch (error) {
+    if (monitor.enabled)
+      monitor.emit({
+        kind: "invocation.failed",
+        entity: { type: "invocation", id: monitorId },
+        correlation: monitorCorrelation,
+        phase: "end",
+        outcome: "error",
+      });
+    throw error;
+  } finally {
+    if (coreBrowserSession && !shouldAutoCloseCoreBrowserSession(request.invocation)) {
+      browserSessionManager.releaseForConfiguration(coreBrowserSession);
+    }
+    if (coreBrowserSession && shouldAutoCloseCoreBrowserSession(request.invocation)) {
+      if (options.signal?.aborted) await browserSessionManager.close(coreBrowserSession);
+      else await browserSessionManager.release(coreBrowserSession);
+    }
+  }
 }
 
 function safeSegment(value: string) {
@@ -447,32 +804,34 @@ export async function importPluginArtifacts(
   const imported = new Map(
     (dependencies.existingArtifacts ?? []).map((file) => [file.id, file] as const),
   );
-  if (!artifacts?.length) {
-    const values = replaceArtifactUrls(responseValues ?? {}, imported) as Record<
-      string,
-      RuntimeValue
-    >;
-    if (containsArtifactUrl(values)) {
-      throw new Error("A resposta contém artifact://, mas não declarou o arquivo correspondente.");
-    }
-    const storedArtifacts = [...imported.values()];
-    return response.status === "success"
-      ? { ...response, values, storedArtifacts }
-      : { ...response, partialValues: values, storedArtifacts };
-  }
-  const newArtifacts = artifacts.filter((artifact) => !imported.has(artifact.id));
-  if (newArtifacts.length > maxArtifactsPerResponse) {
-    throw new Error(`A resposta excede o limite de ${maxArtifactsPerResponse} artifacts.`);
-  }
-  const artifactIds = artifacts.map((artifact) => artifact.id);
-  if (new Set(artifactIds).size !== artifactIds.length) {
-    throw new Error("A resposta do plugin contém IDs de artifacts duplicados.");
-  }
   const createdPaths: string[] = [];
-  let importedBytes = 0;
-  let remoteBytes = 0;
-  const outputRoot = realpathSync(outputDirectory);
   try {
+    if (!artifacts?.length) {
+      const values = replaceArtifactUrls(responseValues ?? {}, imported) as Record<
+        string,
+        RuntimeValue
+      >;
+      if (containsArtifactUrl(values)) {
+        throw new Error(
+          "A resposta contém artifact://, mas não declarou o arquivo correspondente.",
+        );
+      }
+      const storedArtifacts = [...imported.values()];
+      return response.status === "success"
+        ? { ...response, values, storedArtifacts }
+        : { ...response, partialValues: values, storedArtifacts };
+    }
+    const newArtifacts = artifacts.filter((artifact) => !imported.has(artifact.id));
+    if (newArtifacts.length > maxArtifactsPerResponse) {
+      throw new Error(`A resposta excede o limite de ${maxArtifactsPerResponse} artifacts.`);
+    }
+    const artifactIds = artifacts.map((artifact) => artifact.id);
+    if (new Set(artifactIds).size !== artifactIds.length) {
+      throw new Error("A resposta do plugin contém IDs de artifacts duplicados.");
+    }
+    let importedBytes = 0;
+    let remoteBytes = 0;
+    const outputRoot = realpathSync(outputDirectory);
     for (const artifact of artifacts) {
       const existing = imported.get(artifact.id);
       if (existing) {
@@ -548,8 +907,24 @@ export async function importPluginArtifacts(
       : { ...response, partialValues: values, storedArtifacts };
   } catch (error) {
     await Promise.all(createdPaths.map((createdPath) => rm(createdPath, { force: true })));
-    throw error;
+    // Output already exists when import fails. Losing its local delivery is not
+    // evidence that the executor's external effect failed and must not enable replay.
+    throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
+      code: "OUTPUT_VALIDATION_FAILED",
+      recovery: { stage: "awaiting_result", externalEffect: "possible" },
+    });
   }
+}
+
+export function replacePluginArtifactReferences(value: unknown, artifacts: StoredFile[]) {
+  const replaced = replaceArtifactUrls(
+    value,
+    new Map(artifacts.map((file) => [file.id, file] as const)),
+  );
+  if (containsArtifactUrl(replaced)) {
+    throw new Error("O item incremental contém artifact:// sem arquivo correspondente.");
+  }
+  return replaced;
 }
 
 async function importLocalArtifact(

@@ -1,0 +1,31 @@
+{
+  "configuration_tests_passed": 51,
+  "configuration_tests_failed": 0,
+  "package_json_only_owner_destination_changed": true,
+  "runtime_src_bridge_lock_identical_to_installed_reference": true,
+  "no_github_workflows": true,
+  "restored_files_match_exact_fork_blobs": true,
+  "packaging_guard_checks": [
+    "missing_arguments_refused",
+    "existing_destination_preserved"
+  ],
+  "built_app": false,
+  "executed_installed_app": false,
+  "target_machine_accepted": false,
+  "format": "contentflow-owner-core-source-validation-v1",
+  "date": "2026-10-15",
+  "reference_source": "f8c7771057aec69c4270b637ebfc8adfc7a42baf",
+  "fork_ancestor": "555892b3bd2f2d2f23107220848c08b8b1d8ccd7",
+  "verification_command": "node --test desktop/updater.test.cjs desktop/macos-platform.test.cjs desktop/data-selection.test.cjs desktop/desktop-paths.test.cjs desktop/distribution-boundaries.test.cjs",
+  "node": "26.7.0",
+  "engine": {
+    "bounded_configuration_implementation": "Antigravity gemini-3.8-flash-medium",
+    "architecture_history_review_integration_verification": "Codex",
+    "paid_codex_subagents_used": false
+  },
+  "limitations": [
+    "Source candidate only; no app built or target upgrade performed.",
+    "History merge keeps selected 1.3.7 runtime; not all older fork features are carried forward.",
+    "Source/API/Bridge hashes are preservation evidence, not target functional acceptance."
+  ]
+}

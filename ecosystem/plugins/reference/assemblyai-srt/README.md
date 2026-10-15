@@ -1,6 +1,6 @@
 # AssemblyAI SRT Studio
 
-Plugin privado compatível com ContentFlow Plugin API v1. Ele converte a lógica de `legendas.py` para uma capability assíncrona de transcrição e geração de SRT, sem exigir Python ou instalar dependências em runtime.
+Plugin privado compatível com ContentFlow Plugin API v2. Ele converte a lógica de `legendas.py` para uma capability assíncrona de transcrição e geração de SRT, sem exigir Python ou instalar dependências em runtime.
 
 ## Comportamento preservado
 
@@ -50,3 +50,8 @@ Documentação oficial consultada em agosto de 2026:
 - https://www.assemblyai.com/docs/faq/how-to-get-your-api-key
 - https://www.assemblyai.com/docs/pre-recorded-audio/check-transcript-status
 - https://www.assemblyai.com/docs/data-retention-and-model-training
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

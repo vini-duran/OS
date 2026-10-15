@@ -1,29 +1,19 @@
 import type {
   BlockFieldDefinition,
   BlockInputBinding,
+  BlockExecutionItemValue,
   BlockType,
   BlockValidationConfig,
-  HumanFieldType,
   FieldPresentation,
-  PluginExternalRecoverySnapshot,
-  PluginExternalRecoveryTarget,
-  PluginRecoveryAuthorization,
-  PluginRecoveryAuthorizationTarget,
   ProcessOutput,
   ProjectDelivery,
   RuntimeValue,
   StoredFile,
   UniversalProcess,
+  ValueShape,
 } from "@/lib/domain";
 
-export type {
-  PluginExternalRecoverySnapshot,
-  PluginExternalRecoveryTarget,
-  PluginRecoveryAuthorization,
-  PluginRecoveryAuthorizationTarget,
-};
-
-export const CONTENTFLOW_PLUGIN_API_VERSION = "1" as const;
+export const CONTENTFLOW_PLUGIN_API_VERSION = "2" as const;
 
 export type PluginOperator = "Humano" | "IA" | "Código";
 export type PluginPermission =
@@ -68,17 +58,22 @@ export type JsonSchema = {
     property: string;
     values: Array<string | number | boolean>;
   };
+  /** Declarative presentation hints interpreted by the core-owned configuration renderer. */
+  ui?: {
+    section?: "primary" | "advanced";
+    order?: number;
+    width?: "half" | "full";
+  };
 };
-
-export type PluginDataType = HumanFieldType;
 
 export type PluginInputPort = {
   key: string;
   label: string;
   description?: string;
-  acceptedTypes: PluginDataType[];
+  shape: ValueShape;
   required: boolean;
-  multiple?: boolean;
+  /** Opt-in de recibo interno: somente `true` explícito autoriza proveniência interna limitada. */
+  internal?: true;
   /** Optional request for a renderer owned and validated by the core. */
   presentation?: FieldPresentation;
 };
@@ -87,8 +82,10 @@ export type PluginOutputPort = {
   key: string;
   label: string;
   description?: string;
-  producedTypes: PluginDataType[];
+  shape: ValueShape;
   required: boolean;
+  /** Opt-in de recibo interno: somente `true` explícito autoriza proveniência interna limitada. */
+  internal?: true;
   /** Optional request for a renderer owned and validated by the core. */
   presentation?: FieldPresentation;
 };
@@ -106,7 +103,43 @@ export type PluginExecutionPolicy = {
     /** Optional text output rebuilt from the accumulated list after each item. */
     combinedOutputPort?: string;
     separator?: string;
+    /** Optional API v2 strategies for core-owned item orchestration. */
+    strategies?: Array<"continuous_session" | "per_item">;
+    /** Must reference one of `strategies` when present. */
+    preferredStrategy?: "continuous_session" | "per_item";
+    /** Declares future eligibility for core-owned distribution across distinct physical profiles. */
+    profileParallelism?: {
+      supported: boolean;
+      maxProfiles?: number;
+    };
+    /** Additional structurally valid input/output pairs selectable by Method configuration. */
+    collectionAssociations?: Array<{
+      key: string;
+      inputPort: string;
+      outputPort: string;
+      combinedOutputPort?: string;
+      separator?: string;
+    }>;
   };
+};
+
+export type PluginConfigurationOptionsProvider = {
+  /** Campo de primeiro nível de blockConfigSchema.properties preenchido dinamicamente. */
+  property: string;
+  /** Identificador estável enviado ao plugin em invocation.mode=configure/action=options. */
+  providerId: string;
+  /** Campos de configuração cuja alteração invalida as opções em cache. */
+  dependsOn?: string[];
+  /** Tempo máximo sugerido para reutilizar opções já resolvidas. */
+  cacheTtlMs?: number;
+};
+
+export type PluginItemAction = "regenerate" | "replace" | "select" | "download";
+
+export type PluginItemActionDeclaration = {
+  action: PluginItemAction;
+  /** Rótulo opcional do plugin; quando ausente o núcleo usa seu texto padrão traduzido. */
+  label?: string;
 };
 
 /** Declares whether a capability consumes the Method block instruction. */
@@ -137,7 +170,7 @@ export type PluginDataPolicy = {
 
 export type PluginFieldContract = Pick<
   BlockFieldDefinition,
-  "label" | "key" | "type" | "required" | "options" | "recordFields" | "presentation"
+  "label" | "key" | "shape" | "required" | "presentation"
 > & {
   portKey: string;
 };
@@ -149,7 +182,7 @@ export type PluginCapability = {
   /** Short user-facing explanation of what this capability accomplishes. */
   description?: string;
   operator: PluginOperator;
-  /** Optional in API v1 for backwards compatibility; omitted means `optional`. */
+  /** Omitted means `optional`. */
   instructionUsage?: PluginInstructionUsage;
   /** Exact structural prompt shape declared by the plugin; it never includes secrets. */
   promptPreview?: PluginPromptPreview;
@@ -157,14 +190,30 @@ export type PluginCapability = {
   processTypes?: UniversalProcess[];
   inputPorts: PluginInputPort[];
   outputPorts: PluginOutputPort[];
-  acceptedInputTypes?: PluginDataType[];
-  producedOutputTypes?: PluginDataType[];
   execution: PluginExecutionPolicy;
   sideEffects: PluginSideEffect[];
   cost: PluginCostPolicy;
   dataPolicy: PluginDataPolicy;
   blockConfigSchema: JsonSchema;
+  /** Campos cujas opções são resolvidas pelo plugin usando a configuração/perfil local atual. */
+  configurationOptions?: PluginConfigurationOptionsProvider[];
+  /** Ações que a interface pode oferecer para cada item produzido por esta capability. */
+  itemActions?: PluginItemActionDeclaration[];
   outputSchema: JsonSchema;
+};
+
+export type PluginProfileSetupNamedUrls = {
+  /** Literal HTTPS hosts allowed for user-managed project URLs. No wildcards. */
+  allowedHosts: string[];
+  /** Optional anchored RegExp source tested against the URL pathname. */
+  pathnamePattern?: string;
+  /**
+   * Optional generic runtime configuration field receiving the resolved URL
+   * for the active physical profile. When present, the Method selects a named
+   * catalog entry per profile and the core injects the resolved ordinary URL
+   * value at invocation; without it the declaration is catalog-only (Stage 1).
+   */
+  configurationKey?: string;
 };
 
 export type PluginProfileSetup = {
@@ -174,13 +223,49 @@ export type PluginProfileSetup = {
   label: string;
   description?: string;
   prepareTimeoutMs?: number;
+  /** Opt-in local catalog of user-managed named project URLs scoped to plugin+profile. */
+  namedUrls?: PluginProfileSetupNamedUrls;
 };
-
-export type PluginDeliveryType = "text" | "image" | "audio" | "video" | "processing";
 
 export type PluginBranding = {
   /** Relative PNG/WebP path inside the plugin package. The core validates and serves the asset. */
   iconPath: string;
+};
+
+export type PluginLocalizedText = {
+  name?: string;
+  description?: string;
+  label?: string;
+  title?: string;
+};
+
+export type PluginLocalizedOption = {
+  value: string | number | boolean;
+  label: string;
+};
+
+export type PluginLocalizedSchemaProperty = {
+  title?: string;
+  description?: string;
+  options?: PluginLocalizedOption[];
+};
+
+export type PluginCapabilityLocalization = {
+  name?: string;
+  description?: string;
+  inputPorts?: Record<string, { label?: string; description?: string }>;
+  outputPorts?: Record<string, { label?: string; description?: string }>;
+  itemActions?: Partial<Record<PluginItemAction, { label?: string }>>;
+  blockConfigSchema?: {
+    properties?: Record<string, PluginLocalizedSchemaProperty>;
+  };
+};
+
+export type PluginManifestLocalization = {
+  name?: string;
+  description?: string;
+  profileSetup?: { label?: string; description?: string };
+  capabilities?: Record<string, PluginCapabilityLocalization>;
 };
 
 export type PluginManifest = {
@@ -195,6 +280,8 @@ export type PluginManifest = {
   homepage?: string;
   repository?: string;
   branding?: PluginBranding;
+  /** Optional locale overlays for user-facing plugin text. Technical IDs and values are never translated. */
+  localizations?: Record<string, PluginManifestLocalization>;
   runtime: PluginRuntime;
   minCoreVersion?: string;
   entrypoint: string;
@@ -203,13 +290,23 @@ export type PluginManifest = {
   networkHosts?: string[];
   settingsSchema?: JsonSchema;
   secretKeys?: string[];
-  deliveryTypes?: PluginDeliveryType[];
+  /** Declared secrets that unlock optional functionality but are not required to execute the plugin. */
+  optionalSecretKeys?: string[];
   /** Optional interactive preparation for a dedicated browser profile referenced by block configuration. */
   profileSetup?: PluginProfileSetup;
+  /** Core opens and closes the physical browser; the plugin only controls the authorized page. */
+  browserRuntime?: { lifecycle: "core" };
   /** O pacote pode retomar entre capabilities uma conversa opaca produzida por um bloco anterior. */
   supportsConversationContinuation?: boolean;
   capabilities: PluginCapability[];
 };
+
+export function pluginConnectionRequired(
+  manifest: Pick<PluginManifest, "secretKeys" | "optionalSecretKeys">,
+) {
+  const optional = new Set(manifest.optionalSecretKeys ?? []);
+  return (manifest.secretKeys ?? []).some((secretKey) => !optional.has(secretKey));
+}
 
 export type PluginExecutionContext = {
   locale: string;
@@ -218,11 +315,11 @@ export type PluginExecutionContext = {
   project: { id: string; title: string };
   processType: UniversalProcess;
   block: { type: BlockType; name: string; instructions: string };
-  /** @deprecated Desde a API v1 atual, o núcleo não popula histórico implícito. Use bindings em `inputs`. */
+  /** @deprecated Na API v2, o núcleo não popula histórico implícito. Use bindings em `inputs`. */
   previousProcessOutputs?: ProcessOutput[];
-  /** @deprecated Desde a API v1 atual, o núcleo não popula histórico implícito. Use bindings em `inputs`. */
+  /** @deprecated Na API v2, o núcleo não popula histórico implícito. Use bindings em `inputs`. */
   previousBlockOutputs?: Array<{ blockId: string; values: Record<string, RuntimeValue> }>;
-  /** @deprecated Desde a API v1 atual, o núcleo não popula histórico implícito. Use `inputDeliveries`. */
+  /** @deprecated Na API v2, o núcleo não popula histórico implícito. Use `inputDeliveries`. */
   previousDeliveries?: ProjectDelivery[];
   selectedCollection?: {
     collectionId: string;
@@ -237,11 +334,23 @@ export type PluginInvocation =
   | { mode: "start" }
   | { mode: "resume"; jobId: string }
   | { mode: "cancel"; jobId: string }
-  | { mode: "configure"; action: "status" | "prepare" };
+  | { mode: "configure"; action: "status" | "prepare" }
+  | {
+      mode: "configure";
+      action: "options";
+      providerId: string;
+      property: string;
+    }
+  | {
+      mode: "item_action";
+      action: PluginItemAction;
+      itemId: string;
+      outputPort: string;
+    };
 
 export type PluginInputContract = Pick<
   BlockInputBinding,
-  "id" | "label" | "type" | "recordFields" | "presentation"
+  "id" | "label" | "shape" | "presentation"
 > & {
   portKey: string;
 };
@@ -251,6 +360,11 @@ export type PluginInputDelivery = {
   portKey: string;
   deliveryId?: string;
   itemIds: string[];
+  items?: Array<{
+    id: string;
+    value: RuntimeValue;
+    references?: Array<{ itemId: string; role?: string }>;
+  }>;
 };
 
 export type PluginArtifact = {
@@ -278,8 +392,6 @@ export type PluginExecutionRequest = {
   blockId: string;
   capabilityId: string;
   attempt: number;
-  /** Autorização explícita emitida unicamente por ação humana para recuperar lote/execução bloqueada. */
-  recoveryAuthorization?: PluginRecoveryAuthorization;
   invocation: PluginInvocation;
   configuration: Record<string, unknown>;
   settings: Record<string, unknown>;
@@ -288,7 +400,7 @@ export type PluginExecutionRequest = {
   /** Inputs not already interpolated into `resolvedInstruction`, for prompt context composition. */
   instructionContextInputs?: Record<string, RuntimeValue>;
   inputContract: PluginInputContract[];
-  /** Metadados paralelos aos valores, sem quebrar plugins v1 que leem apenas `inputs`. */
+  /** Metadados paralelos aos valores para plugins que precisam rastrear a proveniência dos `inputs`. */
   inputDeliveries?: PluginInputDelivery[];
   outputContract: PluginFieldContract[];
   /** Core-owned durable partial outputs available to a later retry of the same block. */
@@ -298,6 +410,8 @@ export type PluginExecutionRequest = {
   };
   validation?: BlockValidationConfig;
   retryFeedback?: Record<string, RuntimeValue>;
+  /** Recovery action chosen by the Core from facts reported by the previous invocation. */
+  recoveryDirective?: { action: "reload_page"; reasonCode: string };
   /** Core-resolved block instruction. Updated plugins should prefer this over the raw template. */
   resolvedInstruction?: string;
   /** Variables left intact because no declared runtime source could resolve them. */
@@ -321,12 +435,16 @@ export type PluginExecutionRequest = {
         continuationMessage?: string;
         fallbackAttachments?: StoredFile[];
       };
-  /** Core-owned position and prior outputs when a declared list input is executed item by item. */
-  batch?: {
-    itemId: string;
-    index: number;
-    total: number;
-    completedItems?: Extract<RuntimeValue, unknown[]>;
+  /** Core-owned position when a declared list input is executed item by item. */
+  batch?: { itemId: string; sourceItemId?: string; index: number; total: number };
+  /** Contexto imutável do item quando invocation.mode=item_action. */
+  itemAction?: {
+    key?: string;
+    /** Variante local correlacionada ao item universal que o núcleo selecionou. */
+    variantKey?: string;
+    input: BlockExecutionItemValue;
+    output?: BlockExecutionItemValue;
+    attempt: number;
   };
   context: PluginExecutionContext;
 };
@@ -334,12 +452,15 @@ export type PluginExecutionRequest = {
 export type PluginExecutionResponse =
   | {
       status: "success";
+      /** Values keyed exclusively by the technical `portKey` in `outputContract`. */
       values: Record<string, RuntimeValue>;
       artifacts?: PluginArtifact[];
       /** Preenchido pelo núcleo após importar artifacts; plugins não devem definir este campo. */
       storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
+      /** Eventos estruturais e redigidos da Browser Bridge, sem conteúdo da página. */
+      bridgeDiagnostics?: Array<{ code: "BRIDGE_CONTROLLED_RELOAD" | "BRIDGE_WORKER_RESTART" }>;
       conversation?: { id: string };
     }
   | {
@@ -348,7 +469,7 @@ export type PluginExecutionResponse =
       pollAfterMs: number;
       progress?: number;
       message?: string;
-      /** Snapshot parcial por campo. Cada chave substitui o snapshot anterior da mesma chave. */
+      /** Snapshot keyed exclusively by output `portKey`; each present key replaces that port. */
       partialValues?: Record<string, RuntimeValue>;
       /** Artifacts referenciados por partialValues; passam pelo mesmo importador dos finais. */
       partialArtifacts?: PluginArtifact[];
@@ -356,30 +477,133 @@ export type PluginExecutionResponse =
       storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
+      bridgeDiagnostics?: Array<{ code: "BRIDGE_CONTROLLED_RELOAD" | "BRIDGE_WORKER_RESTART" }>;
     }
   | {
       status: "error";
       code: string;
       message: string;
+      /**
+       * Operational facts observed by the adapter. They are evidence for the
+       * core recovery policy, never an instruction to retry or switch profile.
+       */
+      recovery?: PluginRecoveryFacts;
       retryable: boolean;
       retryAfterMs?: number;
-      /** Completed outputs remain durable when a later item fails. */
+      /** Completed outputs keyed by output `portKey` remain durable when a later item fails. */
       partialValues?: Record<string, RuntimeValue>;
       partialArtifacts?: PluginArtifact[];
       storedArtifacts?: StoredFile[];
       usage?: PluginUsage;
       logs?: string[];
-      /** Snapshot de estado confiável do executor externo para autorização de recuperação. */
-      recoverySnapshot?: PluginExternalRecoverySnapshot;
+      bridgeDiagnostics?: Array<{ code: "BRIDGE_CONTROLLED_RELOAD" | "BRIDGE_WORKER_RESTART" }>;
     };
+
+export type PluginRecoveryFacts = {
+  /** Last externally relevant stage reached by this invocation. */
+  stage?: "before_effect" | "effect_submitted" | "awaiting_result" | "effect_confirmed";
+  /** Whether the invocation can prove that an external side effect did or did not happen. */
+  externalEffect?: "none" | "possible" | "confirmed";
+  /** Opaque provider receipt used only to reconcile the same operation. */
+  externalReceipt?: string;
+  /** Human condition observed by the adapter, without choosing the recovery action. */
+  intervention?:
+    | "authentication"
+    | "captcha"
+    | "permission"
+    | "quota"
+    | "upgrade"
+    | "account_blocked"
+    | "provider_security_challenge"
+    | "provider_ui_changed"
+    | "plugin_setup";
+};
+
+export type PluginConfigurationOption = {
+  value: string | number | boolean;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+};
+
+export type PluginIncrementalItemUpdate = {
+  /** Chave estável apenas dentro da tentativa; o núcleo continua dono do itemId universal. */
+  key: string;
+  /**
+   * Chave local da variante dentro do mesmo item de lote. Quando ausente,
+   * `key` preserva a correlação local de plugins que ainda não declaram variantes.
+   */
+  variantKey?: string;
+  outputPort: string;
+  state: "created" | "running" | "completed" | "failed";
+  /** Entrada editorial que originou o slot e será reutilizada em ações posteriores. */
+  input?: BlockExecutionItemValue;
+  value?: BlockExecutionItemValue;
+  message?: string;
+  errorCode?: string;
+  retryable?: boolean;
+};
 
 /** Incremental snapshot emitted while an immediate plugin invocation is still running. */
 export type PluginPartialUpdate = {
   values: Record<string, RuntimeValue>;
   artifacts?: PluginArtifact[];
+  /** Eventos incrementais de itens; o núcleo mapeia `key` para IDs universais persistentes. */
+  itemUpdates?: PluginIncrementalItemUpdate[];
   progress?: number;
   message?: string;
   logs?: string[];
+};
+
+export type PluginWorkItemStatus =
+  | "planned"
+  | "pending"
+  | "leased"
+  | "submitted"
+  | "awaiting_result"
+  | "completed"
+  | "failed"
+  | "awaiting_human"
+  | "cancelled";
+
+export type PluginPlannedWorkItem = {
+  /** Correlation key supplied by the plugin only for this derived-item plan. */
+  key: string;
+  order: number;
+  input: BlockExecutionItemValue;
+};
+
+export type PluginClaimedWorkItem = {
+  itemId: string;
+  index: number;
+  total: number;
+  order: number;
+  attempt: number;
+  revision: number;
+  /** Durable state observed before this invocation claimed the item. */
+  state: PluginWorkItemStatus;
+  input: BlockExecutionItemValue;
+  sourceDeliveryId?: string;
+  sourceItemId?: string;
+  parentItemId?: string;
+};
+
+export type PluginWorkItemUpdate = {
+  itemId: string;
+  expectedRevision: number;
+  state: Exclude<PluginWorkItemStatus, "planned" | "pending" | "leased">;
+  outputPort?: string;
+  value?: BlockExecutionItemValue;
+  artifacts?: PluginArtifact[];
+  externalReceipt?: string;
+  message?: string;
+  errorCode?: string;
+  retryable?: boolean;
+};
+
+export type PluginWorkItemUpdateReceipt = {
+  itemId: string;
+  revision: number;
 };
 
 export type PluginExecutionServices = {
@@ -388,8 +612,19 @@ export type PluginExecutionServices = {
   resolveInputFile: (file: StoredFile) => Promise<string>;
   getOutputPath: (relativePath: string) => string;
   getWorkspacePath: (relativePath: string) => string;
+  /** Serviço opcional da API v2 para o perfil global selecionado pelo núcleo. */
+  getProfilePath?: (relativePath: string) => string;
   /** Makes completed intermediate work durable before execute() returns. */
   publishPartial: (update: PluginPartialUpdate) => Promise<void>;
+  /** Serviço opcional da API v2; o suporte do runtime é negociado antes do uso. */
+  registerItems?: (
+    parentItemId: string,
+    plannedItems: PluginPlannedWorkItem[],
+  ) => Promise<PluginClaimedWorkItem[]>;
+  /** Serviço opcional da API v2 para sessões contínuas. */
+  claimItems?: (limit: number) => Promise<PluginClaimedWorkItem[]>;
+  /** Resolves only after the core durably persists the material state transition. */
+  publishItemUpdate?: (update: PluginWorkItemUpdate) => Promise<PluginWorkItemUpdateReceipt>;
 };
 
 export type PluginEntrypoint = {
@@ -398,34 +633,3 @@ export type PluginEntrypoint = {
     services: PluginExecutionServices,
   ) => Promise<PluginExecutionResponse>;
 };
-
-export function validateExternalRecoverySnapshot(
-  value: unknown,
-): PluginExternalRecoverySnapshot | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  if (raw.format !== "contentflow-external-recovery-snapshot-v1") return undefined;
-  if (typeof raw.system !== "string" || !raw.system.trim()) return undefined;
-  if (typeof raw.runId !== "string" || !raw.runId.trim()) return undefined;
-  if (typeof raw.targetId !== "string" || !raw.targetId.trim()) return undefined;
-  if (typeof raw.cycle !== "number" || !Number.isInteger(raw.cycle) || raw.cycle < 0)
-    return undefined;
-  if (typeof raw.snapshotRevision !== "string" || !raw.snapshotRevision.trim()) return undefined;
-  if (typeof raw.recordedAt !== "string" || Number.isNaN(Date.parse(raw.recordedAt)))
-    return undefined;
-  const metadata =
-    raw.metadata && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)
-      ? (raw.metadata as Record<string, unknown>)
-      : undefined;
-  return {
-    format: "contentflow-external-recovery-snapshot-v1",
-    system: raw.system.trim(),
-    runId: raw.runId.trim(),
-    targetId: raw.targetId.trim(),
-    cycle: raw.cycle,
-    snapshotRevision: raw.snapshotRevision.trim(),
-    recordedAt: raw.recordedAt,
-    reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : undefined,
-    ...(metadata ? { metadata } : {}),
-  };
-}

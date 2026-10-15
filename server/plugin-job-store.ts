@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { reportSupportEvent } from "./support-diagnostics";
 import type Database from "better-sqlite3";
 import type {
   BlockExecutionItem,
@@ -7,10 +8,62 @@ import type {
   StoredFile,
 } from "../src/lib/domain";
 import type { PluginExecutionRequest } from "../src/lib/plugin-contract";
-import { prepareItemJobResume } from "./plugin-item-resume";
+import type { ResolvedProfileExecutionSnapshot } from "./profile-execution-policy";
+import {
+  cancelProfileLanePool,
+  recoverProfileLanePool,
+  type ProfileLanePoolSnapshot,
+} from "./profile-lane-pool";
 
 export type PluginJobStatus =
   "starting" | "pending" | "cancel_requested" | "completed" | "failed" | "cancelled" | "abandoned";
+
+export type PluginDiagnosticEvent = {
+  at: string;
+  code:
+    | "JOB_CREATED"
+    | "PLUGIN_RETRY_SCHEDULED"
+    | "PROFILE_SWITCH"
+    | "JOB_COMPLETED"
+    | "JOB_FAILED"
+    | "JOB_CANCELLED"
+    | "BRIDGE_CONTROLLED_RELOAD"
+    | "BRIDGE_WORKER_RESTART";
+  reasonCode?: string;
+  profileId?: string;
+  previousProfileId?: string;
+  attempt?: number;
+};
+
+const SAFE_DIAGNOSTIC_REASON = /^[A-Z0-9_]{1,96}$/;
+const SAFE_DIAGNOSTIC_ID = /^[A-Za-z0-9._:-]{1,160}$/;
+
+/**
+ * Diagnostics are persisted with a job and can later be exposed through the
+ * execution diagnostic endpoint. Keep the persisted representation allowlisted
+ * too; export-time redaction alone would leave sensitive values in SQLite and
+ * in the regular job-state response.
+ */
+export function sanitizePluginDiagnostic(
+  event: PluginDiagnosticEvent,
+): PluginDiagnosticEvent | undefined {
+  if (!Number.isFinite(Date.parse(event.at))) return undefined;
+  if (event.reasonCode && !SAFE_DIAGNOSTIC_REASON.test(event.reasonCode)) return undefined;
+  if (event.profileId && !SAFE_DIAGNOSTIC_ID.test(event.profileId)) return undefined;
+  if (event.previousProfileId && !SAFE_DIAGNOSTIC_ID.test(event.previousProfileId))
+    return undefined;
+  if (event.attempt !== undefined && (!Number.isInteger(event.attempt) || event.attempt < 1)) {
+    return undefined;
+  }
+  return {
+    at: event.at,
+    code: event.code,
+    ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
+    ...(event.profileId ? { profileId: event.profileId } : {}),
+    ...(event.previousProfileId ? { previousProfileId: event.previousProfileId } : {}),
+    ...(event.attempt !== undefined ? { attempt: event.attempt } : {}),
+  };
+}
 
 export type PersistentPluginJob = {
   id: string;
@@ -33,13 +86,16 @@ export type PersistentPluginJob = {
   cancelRequested: boolean;
   error?: string;
   retryCount: number;
-  recoveryHistory?: Array<{
-    at: string;
-    previousPluginVersion: string;
-    previousError?: string;
-    currentIndex: number;
-    reconciliationNote: string;
-  }>;
+  diagnosticTimeline?: PluginDiagnosticEvent[];
+  /** Identidade física local fixada para a etapa ativa do job. Nunca é enviada ao plugin. */
+  browserProfile?: {
+    profileId: string;
+    alias: string;
+  };
+  /** Snapshot local e imutável da política de perfis resolvida antes da criação do job. */
+  profileExecution?: ResolvedProfileExecutionSnapshot;
+  /** Pool multiperfil congelado para esta tentativa. Tokens de lease nunca são persistidos aqui. */
+  profileLanePool?: ProfileLanePoolSnapshot;
   /** Define se uma nova tentativa editorial reaproveita o prefixo concluído ou recomeça o lote. */
   retryScope?: BlockItemRetryScope;
   profileFallback?: {
@@ -48,6 +104,10 @@ export type PersistentPluginJob = {
     activeIndex: number;
     history: Array<{ profile: string; code: string; message: string }>;
   };
+  /** Slots incrementais publicados pelo plugin durante esta tentativa. */
+  incrementalItems?: BlockExecutionItem[];
+  /** Filhos registrados pelo plugin antes de qualquer efeito externo. */
+  registeredItems?: BlockExecutionItem[];
   itemOrchestration?: {
     inputPort: string;
     outputPort: string;
@@ -57,8 +117,27 @@ export type PersistentPluginJob = {
     itemIds: string[];
     /** Modelo operacional persistente. Campos legados acima permanecem para compatibilidade. */
     workItems?: BlockExecutionItem[];
+    /** Concessões transitórias de uma invocação contínua. Nunca são expostas ao plugin. */
+    claims?: Array<{
+      itemId: string;
+      invocationId: string;
+      profileId?: string;
+      claimedAt: string;
+      expiresAt: string;
+    }>;
     currentIndex: number;
     accumulatedItems?: RuntimeValue[];
+    /**
+     * Present only when item identities were reconstructed after an aggregate
+     * legacy handler returned. These identities did not exist as an
+     * incremental correlation channel while the handler was running.
+     */
+    compatibility?: {
+      mode: "aggregate_completion";
+      lateUpdates: false;
+      realtimeUpdates: false;
+      profileParallelism: false;
+    };
   };
   createdAt: string;
   updatedAt: string;
@@ -72,6 +151,11 @@ type JobRow = {
 export type ClaimedPluginJob = {
   job: PersistentPluginJob;
   leaseToken: string;
+};
+
+export type AtomicPluginJobMutation<T> = {
+  job: PersistentPluginJob;
+  value: T;
 };
 
 export class PluginJobStore {
@@ -99,7 +183,7 @@ export class PluginJobStore {
   }
 
   create(job: PersistentPluginJob) {
-    this.database
+    const inserted = this.database
       .prepare(
         `INSERT OR IGNORE INTO plugin_jobs
           (id, execution_id, block_id, attempt, status, next_poll_at, payload, created_at, updated_at)
@@ -116,6 +200,17 @@ export class PluginJobStore {
         job.createdAt,
         job.updatedAt,
       );
+    if (inserted.changes)
+      reportSupportEvent({
+        area: "plugin",
+        code: "JOB_CREATED",
+        jobId: job.id,
+        executionId: job.executionId,
+        blockId: job.blockId,
+        pluginId: job.pluginId,
+        pluginVersion: job.pluginVersion,
+        attempt: job.attempt,
+      });
     return this.getByExecution(job.executionId, job.blockId, job.attempt)!;
   }
 
@@ -140,39 +235,6 @@ export class PluginJobStore {
         .prepare("SELECT payload FROM plugin_jobs WHERE execution_id = ? ORDER BY created_at")
         .all(executionId) as Array<{ payload: string }>
     ).map((row) => parseJob(row.payload));
-  }
-
-  resumeFailedItems(
-    id: string,
-    expectedUpdatedAt: string,
-    options: Parameters<typeof prepareItemJobResume>[1],
-    onSaved?: (saved: PersistentPluginJob) => void,
-  ) {
-    return this.database
-      .transaction(() => {
-        const job = this.get(id);
-        if (!job || job.updatedAt !== expectedUpdatedAt)
-          throw new Error("Estado do job mudou; confira novamente antes de retomar.");
-        const next = prepareItemJobResume(job, options);
-        const result = this.database
-          .prepare(
-            `UPDATE plugin_jobs SET status = ?, next_poll_at = ?,
-        lease_token = NULL, lease_until = NULL, payload = ?, updated_at = ?
-        WHERE id = ? AND status = 'failed' AND updated_at = ? AND lease_token IS NULL`,
-          )
-          .run(
-            next.status,
-            next.nextPollAt,
-            JSON.stringify(next),
-            next.updatedAt,
-            id,
-            expectedUpdatedAt,
-          );
-        if (result.changes !== 1) throw new Error("Job ocupado ou alterado; retomada recusada.");
-        onSaved?.(next);
-        return next;
-      })
-      .immediate();
   }
 
   claim(id: string, now = new Date(), leaseMs = 60 * 60 * 1_000): ClaimedPluginJob | undefined {
@@ -251,10 +313,46 @@ export class PluginJobStore {
     return saved;
   }
 
+  /**
+   * Serializa uma mutação pequena no snapshot persistido do job sem tocar no
+   * lease do worker. É usada pelo scheduler multiperfil para conceder/confirmar
+   * unidades enquanto várias lanes compartilham a mesma tentativa lógica.
+   */
+  mutateActiveJobAtomically<T>(
+    id: string,
+    mutate: (job: PersistentPluginJob) => AtomicPluginJobMutation<T> | undefined,
+  ) {
+    const transaction = this.database.transaction(() => {
+      const row = this.database
+        .prepare(
+          `SELECT status, payload FROM plugin_jobs
+           WHERE id = ? AND status IN ('starting', 'pending', 'cancel_requested')`,
+        )
+        .get(id) as { status: PluginJobStatus; payload: string } | undefined;
+      if (!row) return undefined;
+      const current = parseJob(row.payload);
+      const mutation = mutate(current);
+      if (!mutation) return undefined;
+      const updatedAt = new Date().toISOString();
+      const saved: PersistentPluginJob = {
+        ...mutation.job,
+        status: row.status,
+        cancelRequested: row.status === "cancel_requested" || mutation.job.cancelRequested,
+        updatedAt,
+      };
+      const result = this.database
+        .prepare(
+          `UPDATE plugin_jobs SET payload = ?, updated_at = ?
+           WHERE id = ? AND status = ?`,
+        )
+        .run(JSON.stringify(saved), updatedAt, id, row.status);
+      if (!result.changes) return undefined;
+      return { job: saved, value: mutation.value } satisfies AtomicPluginJobMutation<T>;
+    });
+    return transaction.immediate() as AtomicPluginJobMutation<T> | undefined;
+  }
+
   requestCancellation(executionId: string, now = new Date()) {
-    const jobs = this.listForExecution(executionId).filter((job) =>
-      ["starting", "pending", "cancel_requested"].includes(job.status),
-    );
     const update = this.database.prepare(
       `UPDATE plugin_jobs
        SET status = 'cancel_requested', next_poll_at = ?, payload = ?, updated_at = ?
@@ -262,30 +360,63 @@ export class PluginJobStore {
     );
     const timestamp = now.toISOString();
     return this.database.transaction(() => {
+      const jobs = this.listForExecution(executionId).filter((job) =>
+        ["starting", "pending", "cancel_requested"].includes(job.status),
+      );
       let changed = 0;
       for (const job of jobs) {
-        const next = {
+        const next = cancelProfileLanePool({
           ...job,
           status: "cancel_requested" as const,
           cancelRequested: true,
           nextPollAt: timestamp,
           updatedAt: timestamp,
-        };
+        });
         changed += update.run(timestamp, JSON.stringify(next), timestamp, job.id).changes;
       }
       return changed;
     })();
   }
 
-  recoverInterrupted(now = new Date()) {
-    return this.database
+  recoverInterrupted(
+    now = new Date(),
+    shouldRecover: (job: PersistentPluginJob) => boolean = () => true,
+  ) {
+    const timestamp = now.toISOString();
+    const rows = this.database
       .prepare(
-        `UPDATE plugin_jobs
-         SET lease_token = NULL, lease_until = NULL,
-             next_poll_at = CASE WHEN next_poll_at > ? THEN next_poll_at ELSE ? END
+        `SELECT id, status, next_poll_at, payload FROM plugin_jobs
          WHERE status IN ('starting', 'pending', 'cancel_requested')`,
       )
-      .run(now.toISOString(), now.toISOString()).changes;
+      .all() as Array<{
+      id: string;
+      status: PluginJobStatus;
+      next_poll_at: string;
+      payload: string;
+    }>;
+    const update = this.database.prepare(
+      `UPDATE plugin_jobs
+       SET lease_token = NULL, lease_until = NULL, next_poll_at = ?, payload = ?, updated_at = ?
+       WHERE id = ?`,
+    );
+    return this.database.transaction(() => {
+      let changed = 0;
+      for (const row of rows) {
+        const job = parseJob(row.payload);
+        if (!shouldRecover(job)) continue;
+        const recovered = recoverProfileLanePool(job, now);
+        const nextPollAt = row.next_poll_at > timestamp ? row.next_poll_at : timestamp;
+        const next = {
+          ...recovered,
+          status: row.status,
+          cancelRequested: row.status === "cancel_requested" || recovered.cancelRequested,
+          nextPollAt,
+          updatedAt: timestamp,
+        } satisfies PersistentPluginJob;
+        changed += update.run(nextPollAt, JSON.stringify(next), timestamp, row.id).changes;
+      }
+      return changed;
+    })();
   }
 
   defer(claim: ClaimedPluginJob, nextPollAt: Date) {
@@ -356,6 +487,9 @@ export function createPersistentPluginJob(input: {
   request: PluginExecutionRequest;
   timeoutMs: number;
   profileFallback?: PersistentPluginJob["profileFallback"];
+  browserProfile?: PersistentPluginJob["browserProfile"];
+  profileExecution?: PersistentPluginJob["profileExecution"];
+  profileLanePool?: PersistentPluginJob["profileLanePool"];
   itemOrchestration?: PersistentPluginJob["itemOrchestration"];
   retryScope?: BlockItemRetryScope;
   now?: Date;
@@ -379,12 +513,53 @@ export function createPersistentPluginJob(input: {
     partialArtifacts: [],
     cancelRequested: false,
     retryCount: 0,
+    diagnosticTimeline: [
+      {
+        at: timestamp,
+        code: "JOB_CREATED",
+        ...(input.browserProfile?.profileId ? { profileId: input.browserProfile.profileId } : {}),
+        attempt: input.request.attempt,
+      },
+    ],
+    browserProfile: structuredClone(input.browserProfile),
+    profileExecution: structuredClone(input.profileExecution),
+    profileLanePool: structuredClone(input.profileLanePool),
     retryScope: input.retryScope,
     profileFallback: structuredClone(input.profileFallback),
     itemOrchestration: structuredClone(input.itemOrchestration),
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+}
+
+export function appendPluginDiagnostic(
+  job: PersistentPluginJob,
+  event: Omit<PluginDiagnosticEvent, "at"> & { at?: string },
+) {
+  const sanitized = sanitizePluginDiagnostic({
+    ...event,
+    at: event.at ?? new Date().toISOString(),
+  });
+  if (sanitized)
+    reportSupportEvent({
+      area: "plugin",
+      code: sanitized.code,
+      jobId: job.id,
+      executionId: job.executionId,
+      blockId: job.blockId,
+      pluginId: job.pluginId,
+      pluginVersion: job.pluginVersion,
+      attempt: sanitized.attempt ?? job.attempt,
+      reasonCode: sanitized.reasonCode,
+      profileId: sanitized.profileId,
+    });
+  return {
+    ...job,
+    diagnosticTimeline: [
+      ...(job.diagnosticTimeline ?? []),
+      ...(sanitized ? [sanitized] : []),
+    ].slice(-256),
+  } satisfies PersistentPluginJob;
 }
 
 export function isPluginJobTimedOut(job: PersistentPluginJob, now = new Date()) {

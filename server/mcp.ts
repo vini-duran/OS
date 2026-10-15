@@ -3,6 +3,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { valueShapeSchema } from "../src/lib/value-shape-schema";
 
 type BuilderSession = {
   version: 1;
@@ -61,10 +62,10 @@ function channelId(value?: string) {
 }
 
 const server = new McpServer(
-  { name: "contentflow-method-builder", version: "1.0.0" },
+  { name: "contentflow-method-builder", version: "1.2.0" },
   {
     instructions:
-      "Configure Methods, process order, and the Strategic Library only for channels that already exist in ContentFlow. Inspect the channel context and method contract first, use only installed plugins and local connection/profile identifiers exposed by the context, validate Methods before applying, and never request or store secrets. Do not create channels or plugins. Production execution remains inside ContentFlow.",
+      "Configure Methods, process order, and the Strategic Library only for channels that already exist in ContentFlow. Inspect the channel context and method contract first. Create strategic inputs and outputs only as content (text, image, audio, video). JSON and SRT are text when explicitly accepted by the plugin port; never assume the Core parses textual JSON into item relations. For consistent visual characters, extract characters from the script first, then create scene prompts with character IDs using plugin-declared JSON text configuration. The producing plugin supplies canonical input IDs and validates its text format; the consuming plugin resolves references using delivery provenance. Core does not choose characters or interpret editorial associations. Functional plugin controls come from its capability schema. Preserve existing internal control/record contracts; do not expose technical schemas to users. Native validation decisions, collection selection identity and channel history remain internal. Design the strategy and observable Block boundaries before selecting plugins: split stages that have reusable intermediate outputs, editorial validation, different result families, independent effects, or meaningful partial recovery; never collapse stages only because a plugin offers a combined mode. Do not create Blocks for collection items, attempts, profiles, lanes, leases, login, navigation, upload, polling, download, parsing, or technical validation: those belong to Core work units/profile policy or internal plugin/Browser Bridge execution. Use only installed plugins and local connection/profile identifiers exposed by the context, validate Methods before applying, and never request or store secrets. Do not create channels or plugins. Production execution remains inside ContentFlow.",
   },
 );
 
@@ -82,7 +83,7 @@ const universalProcessSchema = z.enum([
 const strategicFieldSchema = z.object({
   id: z.string().optional().describe("Existing field ID when updating; omit for a new field"),
   label: z.string().min(1),
-  type: z.enum(["text", "textarea", "number", "image", "url", "thumbnail_layout"]),
+  shape: valueShapeSchema,
   required: z.boolean(),
 });
 
@@ -102,7 +103,7 @@ server.registerTool(
   {
     title: "Get ContentFlow Method contract",
     description:
-      "Returns the canonical eight processes, four block types, three operators, process outputs, and portability rules.",
+      "Returns the canonical eight processes, four block types, three operators, process output ports, strategic Block-granularity guidance, and portability rules.",
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async () => result(await api("/api/builder/method-contract")),
@@ -113,7 +114,7 @@ server.registerTool(
   {
     title: "Inspect ContentFlow channel",
     description:
-      "Reads one channel, its Methods, strategic collections, installed plugin capabilities, profiles, and connection summaries. Secrets are never returned.",
+      "Reads one channel, its Methods, strategic collections, installed plugin capabilities, profiles, and connection summaries. Inspection does not access the credential vault and connections report connected:null/credentialStatus:not_checked, which is not proof of operational readiness. Secrets are never returned.",
     inputSchema: { channelId: z.string().optional().describe("Existing ContentFlow channel ID") },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -330,7 +331,7 @@ server.registerTool(
   {
     title: "Validate ContentFlow Methods",
     description:
-      "Validates a partial map of Methods without changing the channel. Keys must be universal process IDs and values must be complete ProcessMethod objects.",
+      "Validates a partial map of Methods without changing the channel. Keys must be universal process IDs and values must be complete ProcessMethod objects. New strategic fields must use kind content; preserve existing internal fields.",
     inputSchema: {
       channelId: z.string().optional().describe("Existing ContentFlow channel ID"),
       methods: z.record(z.unknown()).describe("Partial Record<UniversalProcess, ProcessMethod>"),
@@ -351,10 +352,14 @@ server.registerTool(
   {
     title: "Apply ContentFlow Methods",
     description:
-      "Atomically validates and saves a partial map of Methods to an existing channel. Use only after inspection and successful validation, and only when the user asked to apply the plan.",
+      "Validates and saves Methods to an existing channel. During data migration, only stages reviewed v3 Methods in the migration plan without writing data; pass the current planId from channel context. Inspect and validate first. Apply only when requested by the user. Migration is committed separately with backup consent.",
     inputSchema: {
       channelId: z.string().optional().describe("Existing ContentFlow channel ID"),
       methods: z.record(z.unknown()).describe("Partial Record<UniversalProcess, ProcessMethod>"),
+      planId: z
+        .string()
+        .optional()
+        .describe("Required during migration: the fresh reviewed migration plan ID"),
     },
     annotations: {
       readOnlyHint: false,
@@ -363,13 +368,52 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ channelId: requested, methods }) => {
+  async ({ channelId: requested, methods, planId }) => {
     const payload = await api(
       `/api/builder/channels/${encodeURIComponent(channelId(requested))}/apply`,
-      { method: "POST", body: JSON.stringify({ methods }) },
+      { method: "POST", body: JSON.stringify({ methods, planId }) },
     );
     return result(payload, payload?.ok === false);
   },
+);
+
+server.registerTool(
+  "get_contentflow_migration_plan",
+  {
+    title: "Inspect ContentFlow migration",
+    description:
+      "Read migration diagnostics and staged Method proposals. Inspect channel context for original methods, reviewMethods and installed plugin ports. Proposals are temporary and invalidated by changes to data or plugin contracts. Execution stays blocked until migration is applied.",
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => result(await api("/api/upgrade/plan")),
+);
+
+server.registerTool(
+  "apply_contentflow_migration",
+  {
+    title: "Apply reviewed ContentFlow migration",
+    description:
+      "Create and verify a recoverable backup, then atomically apply the reviewed migration and staged Method proposals. Only after explicit user authorization for this plan and backup. Refuses remaining diagnostics or a changed plan; preserves historical jobs and completed work.",
+    inputSchema: {
+      planId: z.string().describe("Fresh migration plan ID reviewed by the user"),
+      confirmBackup: z
+        .boolean()
+        .describe("Explicit user consent to create a recoverable backup and apply this migration"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  async ({ planId, confirmBackup }) =>
+    result(
+      await api("/api/builder/upgrade/apply", {
+        method: "POST",
+        body: JSON.stringify({ planId, confirmBackup }),
+      }),
+    ),
 );
 
 await server.connect(new StdioServerTransport());

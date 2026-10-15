@@ -14,410 +14,12 @@ import {
 export type AppTheme = "light" | "dark";
 export type AppLanguage = "pt-BR" | "en" | "es";
 
-export const PLUGIN_SECTIONS = [
-  "generation",
-  "editing",
-  "publishing",
-  "utilities",
-  "none",
-] as const;
-
-export type PluginSection = (typeof PLUGIN_SECTIONS)[number];
-
-export const PLUGIN_SECTION_META: Record<PluginSection, { id: PluginSection; label: string }> = {
-  generation: { id: "generation", label: "Geração" },
-  editing: { id: "editing", label: "Edição" },
-  publishing: { id: "publishing", label: "Publicação" },
-  utilities: { id: "utilities", label: "Utilitários" },
-  none: { id: "none", label: "Sem seção" },
-};
-
-export type PluginItemPreference = {
-  section: PluginSection;
-  favorite: boolean;
-  hidden: boolean;
-};
-
-export type PluginLibraryOrganization = {
-  items: Record<string, PluginItemPreference>;
-  sectionOrder: Record<PluginSection, string[]>;
-};
-
-export const DEFAULT_PLUGIN_ORGANIZATION: PluginLibraryOrganization = {
-  items: {},
-  sectionOrder: {
-    generation: [],
-    editing: [],
-    publishing: [],
-    utilities: [],
-    none: [],
-  },
-};
-
-export function normalizePluginOrganization(raw: unknown): PluginLibraryOrganization {
-  const sections: PluginSection[] = [...PLUGIN_SECTIONS];
-  const items: Record<string, PluginItemPreference> = {};
-  const sectionOrder: Record<PluginSection, string[]> = {
-    generation: [],
-    editing: [],
-    publishing: [],
-    utilities: [],
-    none: [],
-  };
-
-  if (!raw || typeof raw !== "object") {
-    return { items, sectionOrder };
-  }
-
-  const record = raw as Record<string, unknown>;
-
-  if (record.items && typeof record.items === "object") {
-    for (const [id, value] of Object.entries(record.items as Record<string, unknown>)) {
-      const cleanId = typeof id === "string" ? id.trim() : "";
-      if (!cleanId) continue;
-      const pref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-      const section = sections.includes(pref.section as PluginSection)
-        ? (pref.section as PluginSection)
-        : "none";
-      const favorite = Boolean(pref.favorite);
-      const hidden = Boolean(pref.hidden);
-      items[cleanId] = { section, favorite, hidden };
-    }
-  }
-
-  if (Array.isArray(record.favorites)) {
-    for (const fav of record.favorites) {
-      const cleanId = typeof fav === "string" ? fav.trim() : "";
-      if (!cleanId) continue;
-      items[cleanId] = {
-        section: items[cleanId]?.section ?? "none",
-        favorite: true,
-        hidden: Boolean(items[cleanId]?.hidden),
-      };
-    }
-  }
-
-  if (Array.isArray(record.hidden)) {
-    for (const hid of record.hidden) {
-      const cleanId = typeof hid === "string" ? hid.trim() : "";
-      if (!cleanId) continue;
-      items[cleanId] = {
-        section: items[cleanId]?.section ?? "none",
-        favorite: Boolean(items[cleanId]?.favorite),
-        hidden: true,
-      };
-    }
-  }
-
-  if (record.sections && typeof record.sections === "object") {
-    const sectionsObj = record.sections as Record<string, unknown>;
-    for (const s of sections) {
-      const secArray: unknown = sectionsObj[s];
-      if (Array.isArray(secArray)) {
-        for (const entry of secArray) {
-          const cleanId = typeof entry === "string" ? entry.trim() : "";
-          if (!cleanId) continue;
-          items[cleanId] = {
-            section: s,
-            favorite: Boolean(items[cleanId]?.favorite),
-            hidden: Boolean(items[cleanId]?.hidden),
-          };
-        }
-      }
-    }
-  }
-
-  const rawOrder = (
-    record.sectionOrder && typeof record.sectionOrder === "object"
-      ? record.sectionOrder
-      : record.sections && typeof record.sections === "object"
-        ? record.sections
-        : {}
-  ) as Record<string, unknown>;
-
-  for (const s of sections) {
-    const list = Array.isArray(rawOrder[s]) ? rawOrder[s] : [];
-    for (const id of list) {
-      const cleanId = typeof id === "string" ? id.trim() : "";
-      if (!cleanId) continue;
-      if (!items[cleanId]) {
-        items[cleanId] = { section: s, favorite: false, hidden: false };
-      }
-      if (items[cleanId].section === s && !sectionOrder[s].includes(cleanId)) {
-        sectionOrder[s].push(cleanId);
-      }
-    }
-  }
-
-  for (const [id, item] of Object.entries(items)) {
-    if (!sectionOrder[item.section].includes(id)) {
-      sectionOrder[item.section].push(id);
-    }
-  }
-
-  return { items, sectionOrder };
-}
-
-export function togglePluginFavorite(
-  organization: PluginLibraryOrganization,
-  pluginId: string,
-): PluginLibraryOrganization {
-  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
-  if (!cleanId) return organization;
-  const current = normalizePluginOrganization(organization);
-  const existing = current.items[cleanId] ?? {
-    section: "none",
-    favorite: false,
-    hidden: false,
-  };
-  const updatedItems = {
-    ...current.items,
-    [cleanId]: {
-      ...existing,
-      favorite: !existing.favorite,
-    },
-  };
-  return normalizePluginOrganization({
-    items: updatedItems,
-    sectionOrder: current.sectionOrder,
-  });
-}
-
-export function setPluginSection(
-  organization: PluginLibraryOrganization,
-  pluginId: string,
-  targetSection: PluginSection,
-): PluginLibraryOrganization {
-  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
-  if (!cleanId) return organization;
-  const section = PLUGIN_SECTIONS.includes(targetSection) ? targetSection : "none";
-  const current = normalizePluginOrganization(organization);
-  const existing = current.items[cleanId] ?? {
-    section: "none",
-    favorite: false,
-    hidden: false,
-  };
-  if (existing.section === section) return current;
-  const oldSection = existing.section;
-  const updatedOrder = {
-    ...current.sectionOrder,
-    [oldSection]: current.sectionOrder[oldSection].filter((id) => id !== cleanId),
-    [section]: [...current.sectionOrder[section].filter((id) => id !== cleanId), cleanId],
-  };
-  const updatedItems = {
-    ...current.items,
-    [cleanId]: {
-      ...existing,
-      section,
-    },
-  };
-  return normalizePluginOrganization({
-    items: updatedItems,
-    sectionOrder: updatedOrder,
-  });
-}
-
-export function movePluginInSection(
-  organization: PluginLibraryOrganization,
-  pluginId: string,
-  direction: "up" | "down",
-): PluginLibraryOrganization {
-  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
-  if (!cleanId) return organization;
-  const current = normalizePluginOrganization(organization);
-  const item = current.items[cleanId];
-  const section = item?.section ?? "none";
-  const list = [...(current.sectionOrder[section] ?? [])];
-  const index = list.indexOf(cleanId);
-  if (index === -1) return current;
-  if (direction === "up") {
-    if (index === 0) return current;
-    const temp = list[index - 1];
-    list[index - 1] = list[index];
-    list[index] = temp;
-  } else {
-    if (index === list.length - 1) return current;
-    const temp = list[index + 1];
-    list[index + 1] = list[index];
-    list[index] = temp;
-  }
-  return {
-    items: { ...current.items },
-    sectionOrder: {
-      ...current.sectionOrder,
-      [section]: list,
-    },
-  };
-}
-
-export function setPluginHidden(
-  organization: PluginLibraryOrganization,
-  pluginId: string,
-  hidden: boolean,
-): PluginLibraryOrganization {
-  const cleanId = typeof pluginId === "string" ? pluginId.trim() : "";
-  if (!cleanId) return organization;
-  const current = normalizePluginOrganization(organization);
-  const existing = current.items[cleanId] ?? {
-    section: "none",
-    favorite: false,
-    hidden: false,
-  };
-  const updatedItems = {
-    ...current.items,
-    [cleanId]: {
-      ...existing,
-      hidden: Boolean(hidden),
-    },
-  };
-  return normalizePluginOrganization({
-    items: updatedItems,
-    sectionOrder: current.sectionOrder,
-  });
-}
-
-export type OrganizedPluginGroups<T extends { id: string; manifest?: { name: string } }> = {
-  favorites: T[];
-  sections: Record<PluginSection, T[]>;
-  hiddenCount: number;
-  hiddenWithDependenciesCount: number;
-};
-
-export function organizePluginList<
-  T extends { id: string; manifest?: { name: string }; methodDependencyCount?: number },
->(
-  plugins: T[],
-  organization: PluginLibraryOrganization,
-  options?: {
-    showHidden?: boolean;
-    sectionFilter?: "all" | "favorites" | PluginSection;
-  },
-): OrganizedPluginGroups<T> {
-  const norm = normalizePluginOrganization(organization);
-  const showHidden = Boolean(options?.showHidden);
-  const sectionFilter = options?.sectionFilter ?? "all";
-
-  let hiddenCount = 0;
-  let hiddenWithDependenciesCount = 0;
-
-  for (const plugin of plugins) {
-    const pref = norm.items[plugin.id];
-    if (pref?.hidden) {
-      hiddenCount += 1;
-      if ((plugin.methodDependencyCount ?? 0) > 0) {
-        hiddenWithDependenciesCount += 1;
-      }
-    }
-  }
-
-  const sections: Record<PluginSection, T[]> = {
-    generation: [],
-    editing: [],
-    publishing: [],
-    utilities: [],
-    none: [],
-  };
-
-  const favorites: T[] = [];
-
-  for (const plugin of plugins) {
-    const pref = norm.items[plugin.id] ?? {
-      section: "none",
-      favorite: false,
-      hidden: false,
-    };
-
-    if (pref.hidden && !showHidden) {
-      continue;
-    }
-
-    if (pref.favorite) {
-      favorites.push(plugin);
-    }
-
-    const sec = pref.section;
-    if (sections[sec]) {
-      sections[sec].push(plugin);
-    } else {
-      sections.none.push(plugin);
-    }
-  }
-
-  for (const s of PLUGIN_SECTIONS) {
-    const orderList = norm.sectionOrder[s] ?? [];
-    sections[s].sort((a, b) => {
-      const idxA = orderList.indexOf(a.id);
-      const idxB = orderList.indexOf(b.id);
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      if (idxA !== -1) return -1;
-      if (idxB !== -1) return 1;
-      const nameA = a.manifest?.name ?? a.id;
-      const nameB = b.manifest?.name ?? b.id;
-      return nameA.localeCompare(nameB);
-    });
-  }
-
-  favorites.sort((a, b) => {
-    const secA = norm.items[a.id]?.section ?? "none";
-    const secB = norm.items[b.id]?.section ?? "none";
-    const orderA = norm.sectionOrder[secA]?.indexOf(a.id) ?? -1;
-    const orderB = norm.sectionOrder[secB]?.indexOf(b.id) ?? -1;
-    if (secA !== secB) {
-      return PLUGIN_SECTIONS.indexOf(secA) - PLUGIN_SECTIONS.indexOf(secB);
-    }
-    if (orderA !== -1 && orderB !== -1) return orderA - orderB;
-    const nameA = a.manifest?.name ?? a.id;
-    const nameB = b.manifest?.name ?? b.id;
-    return nameA.localeCompare(nameB);
-  });
-
-  if (sectionFilter === "favorites") {
-    return {
-      favorites,
-      sections: {
-        generation: [],
-        editing: [],
-        publishing: [],
-        utilities: [],
-        none: [],
-      },
-      hiddenCount,
-      hiddenWithDependenciesCount,
-    };
-  }
-
-  if (sectionFilter !== "all") {
-    const singleSection: Record<PluginSection, T[]> = {
-      generation: [],
-      editing: [],
-      publishing: [],
-      utilities: [],
-      none: [],
-    };
-    singleSection[sectionFilter] = sections[sectionFilter] ?? [];
-    return {
-      favorites: [],
-      sections: singleSection,
-      hiddenCount,
-      hiddenWithDependenciesCount,
-    };
-  }
-
-  return {
-    favorites,
-    sections,
-    hiddenCount,
-    hiddenWithDependenciesCount,
-  };
-}
-
 export type AppPreferences = {
   theme: AppTheme;
   language: AppLanguage;
   notificationSound: boolean;
   systemNotifications: boolean;
   methodsLibraryView: "methods" | "channels";
-  pluginOrganization: PluginLibraryOrganization;
 };
 
 type PreferencesContextValue = AppPreferences & {
@@ -427,15 +29,6 @@ type PreferencesContextValue = AppPreferences & {
   setNotificationSound: (enabled: boolean) => void;
   setSystemNotifications: (enabled: boolean) => void;
   setMethodsLibraryView: (view: AppPreferences["methodsLibraryView"]) => void;
-  setPluginOrganization: (
-    organization:
-      | PluginLibraryOrganization
-      | ((current: PluginLibraryOrganization) => PluginLibraryOrganization),
-  ) => void;
-  togglePluginFavorite: (pluginId: string) => void;
-  setPluginSection: (pluginId: string, section: PluginSection) => void;
-  movePluginInSection: (pluginId: string, direction: "up" | "down") => void;
-  setPluginHidden: (pluginId: string, hidden: boolean) => void;
   t: (source: string) => string;
 };
 
@@ -445,7 +38,6 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   notificationSound: false,
   systemNotifications: false,
   methodsLibraryView: "channels",
-  pluginOrganization: DEFAULT_PLUGIN_ORGANIZATION,
 };
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
@@ -453,115 +45,134 @@ const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 type Translation = [english: string, spanish: string];
 
 const PHRASES: Record<string, Translation> = {
-  Favoritos: ["Favorites", "Favoritos"],
-  Geração: ["Generation", "Generación"],
-  Utilitários: ["Utilities", "Utilidades"],
-  "Sem seção": ["No section", "Sin sección"],
-  "Organizar biblioteca": ["Organize library", "Organizar biblioteca"],
-  "Gerenciar biblioteca": ["Manage library", "Gestionar biblioteca"],
-  "Mostrar ocultos": ["Show hidden", "Mostrar ocultos"],
-  "Ocultar da biblioteca": ["Hide from library", "Ocultar de la biblioteca"],
-  "Exibir na biblioteca": ["Show in library", "Mostrar en la biblioteca"],
-  "Oculto na biblioteca": ["Hidden in library", "Oculto en la biblioteca"],
-  "Exibir plugins ocultos": ["Show hidden plugins", "Mostrar plugins ocultos"],
-  "Todas as seções": ["All sections", "Todas las secciones"],
-  Seção: ["Section", "Sección"],
-  "Adicionar aos favoritos": ["Add to favorites", "Añadir a favoritos"],
-  "Remover dos favoritos": ["Remove from favorites", "Eliminar de favoritos"],
-  "Organização na biblioteca": ["Library organization", "Organización en la biblioteca"],
-  "Organizar biblioteca de plugins": ["Organize plugin library", "Organizar biblioteca de plugins"],
-  "Defina favoritos, organize plugins em seções, ajuste a ordem manual e oculte plugins sem afetar os Métodos ou a execução.":
+  "Preferências do aplicativo": ["Application preferences", "Preferencias de la aplicación"],
+  "Suporte e diagnóstico": ["Support and diagnostics", "Soporte y diagnóstico"],
+  "Inclui códigos de erro, etapas, horários e versões técnicas do aplicativo e dos plugins.": [
+    "Includes error codes, steps, times and technical versions of the application and plugins.",
+    "Incluye códigos de error, etapas, horarios y versiones técnicas de la aplicación y los plugins.",
+  ],
+  "Registros locais por até 24 horas, com limite de 4 MB. Sem prompts, conteúdo, senhas ou cookies.":
     [
-      "Set favorites, organize plugins into sections, adjust manual order, and hide plugins without affecting Methods or execution.",
-      "Define favoritos, organiza plugins en secciones, ajusta el orden manual y oculta plugins sin afectar los Métodos ni la ejecución.",
+      "Local records for up to 24 hours, limited to 4 MB. No prompts, content, passwords or cookies.",
+      "Registros locales por hasta 24 horas, limitados a 4 MB. Sin prompts, contenido, contraseñas ni cookies.",
     ],
-  "Pesquisa estratégica": ["Strategic research", "Investigación estratégica"],
-  Pesquisa: ["Research", "Investigación"],
-  "Não foi possível ler as pesquisas.": [
-    "Could not load research runs.",
-    "No se pudieron cargar las investigaciones.",
+  "Exportar diagnóstico": ["Export diagnostics", "Exportar diagnóstico"],
+  "Abrir pasta de logs": ["Open logs folder", "Abrir carpeta de registros"],
+  "Aguarde…": ["Please wait…", "Espera…"],
+  "Disponível no aplicativo instalado ou portátil.": [
+    "Available in the installed or portable application.",
+    "Disponible en la aplicación instalada o portátil.",
   ],
-  "Não foi possível ler os briefs.": [
-    "Could not load briefs.",
-    "No se pudieron cargar los briefs.",
+  "Diagnóstico exportado. Você pode enviar o ZIP ao suporte.": [
+    "Diagnostics exported. You can send the ZIP to support.",
+    "Diagnóstico exportado. Puedes enviar el ZIP a soporte.",
   ],
-  "Não foi possível atualizar a pesquisa.": [
-    "Could not refresh research.",
-    "No se pudo actualizar la investigación.",
+  "Não foi possível acessar o diagnóstico. Tente novamente.": [
+    "Could not access diagnostics. Please try again.",
+    "No se pudo acceder al diagnóstico. Inténtalo de nuevo.",
   ],
-  "A operação não foi concluída.": [
-    "The operation was not completed.",
-    "La operación no se completó.",
+  "Dados entre blocos": ["Data between blocks", "Datos entre bloques"],
+  "Escolha as entregas anteriores que esta capacidade deve receber.": [
+    "Choose the previous deliveries this capability should receive.",
+    "Elige las entregas anteriores que debe recibir esta capacidad.",
   ],
-  "A operação falhou.": ["The operation failed.", "La operación falló."],
-  "Plano criado a partir do Radar do Método Tema.": [
-    "Plan created from the Theme Method radar.",
-    "Plan creado a partir del radar del Método Tema.",
+  "Sem entrega anterior": ["No previous delivery", "Sin entrega anterior"],
+  "Entrada configurada no bloco": [
+    "Input configured in the block",
+    "Entrada configurada en el bloque",
   ],
-  "Snapshot factual concluído. Nenhum tema foi criado.": [
-    "Factual snapshot completed. No theme was created.",
-    "Snapshot factual completado. No se creó ningún tema.",
+  "Usar entrega de": ["Use delivery from", "Usar entrega de"],
+  "Disponibilizar entrega": ["Make delivery available", "Habilitar entrega"],
+  "Revise o vínculo da entrega no painel do plugin.": [
+    "Review the delivery binding in the plugin panel.",
+    "Revisa el vínculo de la entrega en el panel del plugin.",
   ],
-  "Brief factual local criado: 0 tokens.": [
-    "Local factual brief created: 0 tokens.",
-    "Brief factual local creado: 0 tokens.",
+  "Não é possível remover um bloco com trabalho já iniciado nesta execução.": [
+    "A block with work already started in this execution cannot be removed.",
+    "No se puede eliminar un bloque con trabajo ya iniciado en esta ejecución.",
   ],
-  "Brief aprovado para a Biblioteca Estratégica.": [
-    "Brief approved for the Strategic Library.",
-    "Brief aprobado para la Biblioteca Estratégica.",
+  "A nova ordem do Método interrompe um bloco que já está em execução.": [
+    "The new Method order interrupts a block that is already running.",
+    "El nuevo orden del Método interrumpe un bloque que ya está en ejecución.",
   ],
-  "Factual, no nível do canal. Não cria Tema, Título, Thumbnail ou Roteiro automaticamente.": [
-    "Factual channel-level research. Does not automatically create a Theme, Title, Thumbnail or Script.",
-    "Investigación factual del canal. No crea Tema, Título, Thumbnail ni Guion automáticamente.",
+  Conteúdo: ["Content", "Contenido"],
+  "Tipo de conteúdo": ["Content type", "Tipo de contenido"],
+  Quantidade: ["Quantity", "Cantidad"],
+  Representação: ["Representation", "Representación"],
+  Direto: ["Inline", "Directo"],
+  "Direto ou arquivo": ["Inline or file", "Directo o archivo"],
+  Um: ["One", "Uno"],
+  Vários: ["Many", "Varios"],
+  Áudio: ["Audio", "Audio"],
+  Vídeo: ["Video", "Vídeo"],
+  "Salvando…": ["Saving…", "Guardando…"],
+  "Uso da coleção": ["Collection usage", "Uso de la colección"],
+  Fixa: ["Fixed", "Fija"],
+  Consumível: ["Consumable", "Consumible"],
+  Reservado: ["Reserved", "Reservado"],
+  Salvo: ["Saved", "Guardado"],
+  "Os itens permanecem na coleção após o uso.": [
+    "Items remain in the collection after use.",
+    "Los elementos permanecen en la colección después de usarlos.",
   ],
-  "Pesquisa ainda não conectada": ["Research not connected yet", "Investigación aún no conectada"],
-  "O plano reaproveita exatamente o Radar BUSCAR que já existe no Método Tema. Ele não altera suas consultas.":
+  "Os itens são reservados ao escolher e excluídos somente quando o Processo termina. Falha ou cancelamento mantém a reserva até excluir ou reiniciar a execução.":
     [
-      "The plan reuses the existing SEARCH radar from the Theme Method without changing its queries.",
-      "El plan reutiliza el radar BUSCAR del Método Tema sin cambiar sus consultas.",
+      "Items are reserved when selected and deleted only when the Process finishes. Failure or cancellation keeps the reservation until the execution is deleted or restarted.",
+      "Los elementos se reservan al elegirlos y se eliminan solo cuando termina el Proceso. Un fallo o cancelación mantiene la reserva hasta eliminar o reiniciar la ejecución.",
     ],
-  "Conectar Radar do Tema": ["Connect Theme radar", "Conectar radar del Tema"],
-  "Radar do canal": ["Channel radar", "Radar del canal"],
-  "Rodada manual; nenhuma agenda oculta.": [
-    "Manual run; no hidden schedule.",
-    "Ejecución manual; sin agenda oculta.",
+  "Importar em lote": ["Bulk import", "Importar en lote"],
+  "Preencha as linhas ou importe uma coluna por vez. Revise a ordem antes de salvar.": [
+    "Fill in rows or import one column at a time. Review the order before saving.",
+    "Completa las filas o importa una columna a la vez. Revisa el orden antes de guardar.",
   ],
-  "Local · 0 tokens": ["Local · 0 tokens", "Local · 0 tokens"],
-  "Só passa ao Tema após aprovação.": [
-    "Available to Theme only after approval.",
-    "Disponible para Tema solo tras aprobación.",
+  "Preencher por coluna": ["Fill by column", "Completar por columna"],
+  Coluna: ["Column", "Columna"],
+  "Valores da coluna": ["Column values", "Valores de la columna"],
+  "Os arquivos preenchem esta coluna na ordem selecionada, a partir da primeira linha.": [
+    "Files fill this column in the selected order, starting at the first row.",
+    "Los archivos completan esta columna en el orden seleccionado, desde la primera fila.",
   ],
-  Mínimo: ["Minimum", "Mínimo"],
-  registros: ["records", "registros"],
-  "Antes de permitir criar um brief.": [
-    "Required before creating a brief.",
-    "Necesario antes de crear un brief.",
+  "Edite os layouts diretamente nas linhas.": [
+    "Edit layouts directly in the rows.",
+    "Edita los diseños directamente en las filas.",
   ],
-  "1. Coleta factual": ["1. Factual collection", "1. Recopilación factual"],
-  "Usa as consultas já configuradas no Radar. Não chama OpenAI nem inicia produção.": [
-    "Uses the configured radar queries. Does not call OpenAI or start production.",
-    "Usa las consultas del radar. No llama a OpenAI ni inicia producción.",
+  "Um valor por linha": ["One value per line", "Un valor por fila"],
+  "Aplicar à coluna": ["Apply to column", "Aplicar a la columna"],
+  Linha: ["Row", "Fila"],
+  "Remover linha": ["Remove row", "Eliminar fila"],
+  "Adicionar linha": ["Add row", "Agregar fila"],
+  "Preencha os campos obrigatórios e corrija os valores antes de importar.": [
+    "Fill in required fields and correct values before importing.",
+    "Completa los campos obligatorios y corrige los valores antes de importar.",
   ],
-  "Executar pesquisa": ["Run research", "Ejecutar investigación"],
-  "2. Brief estratégico": ["2. Strategic brief", "2. Brief estratégico"],
-  "Separa observado, inferência/hipótese, anti-cópia e limitações. Não usa IA.": [
-    "Separates observations, inference/hypotheses, anti-copying rules and limitations. No AI is used.",
-    "Separa observaciones, inferencias/hipótesis, reglas anticopia y limitaciones. No usa IA.",
+  "Importar itens": ["Import items", "Importar elementos"],
+  "Lote importado.": ["Batch imported.", "Lote importado."],
+  "Não foi possível importar o lote. Revise os campos e tente novamente.": [
+    "Could not import the batch. Review the fields and try again.",
+    "No se pudo importar el lote. Revisa los campos e inténtalo de nuevo.",
   ],
-  "Gerar brief": ["Create brief", "Crear brief"],
-  "Draft factual": ["Factual draft", "Borrador factual"],
-  "Aprovar para Tema": ["Approve for Theme", "Aprobar para Tema"],
-  "Após uma coleta concluída, gere aqui o primeiro brief.": [
-    "Create the first brief here after completing a collection.",
-    "Crea aquí el primer brief tras completar una recopilación.",
+  "Este item está reservado por outra execução.": [
+    "This item is reserved by another execution.",
+    "Este elemento está reservado por otra ejecución.",
   ],
-  "Snapshots recentes": ["Recent snapshots", "Snapshots recientes"],
-  "Nenhuma coleta executada.": ["No collection performed.", "No se realizó ninguna recopilación."],
-  "Configure a conexão do plugin de pesquisa.": [
-    "Configure the research plugin connection.",
-    "Configura la conexión del plugin de investigación.",
+  "Esta coleção possui itens reservados.": [
+    "This collection contains reserved items.",
+    "Esta colección contiene elementos reservados.",
   ],
-  "Conexão indisponível.": ["Connection unavailable.", "Conexión no disponible."],
+  "Lote inválido.": ["Invalid batch.", "Lote no válido."],
+  "Revise os campos do lote antes de importar.": [
+    "Review the batch fields before importing.",
+    "Revisa los campos del lote antes de importar.",
+  ],
+  "Campo desconhecido na coleção.": [
+    "Unknown collection field.",
+    "Campo desconocido en la colección.",
+  ],
+
+  "Sem conexão com o serviço local. Seus dados salvos estão preservados; tentando reconectar…": [
+    "No connection to the local service. Your saved data is preserved; trying to reconnect…",
+    "Sin conexión con el servicio local. Tus datos guardados están preservados; intentando reconectar…",
+  ],
   Orquestrador: ["Orchestrator", "Orquestador"],
   "Centralize as filas de produção dos seus canais em um só lugar.": [
     "Manage your channels' production queues in one place.",
@@ -703,7 +314,40 @@ const PHRASES: Record<string, Translation> = {
   "Salvar item": ["Save item", "Guardar elemento"],
   "Substituir arquivo": ["Replace file", "Sustituir archivo"],
   "Regenerar item": ["Regenerate item", "Regenerar elemento"],
+  "Item regenerado": ["Item regenerated", "Elemento regenerado"],
+  "Selecionar item": ["Select item", "Seleccionar elemento"],
+  "Item selecionado": ["Item selected", "Elemento seleccionado"],
+  Selecionado: ["Selected", "Seleccionado"],
+  "Baixar item": ["Download item", "Descargar elemento"],
+  "Não foi possível executar a ação no item": [
+    "Could not run the item action",
+    "No se pudo ejecutar la acción del elemento",
+  ],
+  "Use apenas as ações declaradas pelo plugin; arraste para reorganizar a sequência.": [
+    "Use only the actions declared by the plugin; drag to reorder the sequence.",
+    "Usa solo las acciones declaradas por el plugin; arrastra para reorganizar la secuencia.",
+  ],
   "Item atualizado": ["Item updated", "Elemento actualizado"],
+  "Apagar Método": ["Delete Method", "Eliminar Método"],
+  "Apagar este Método e todos os seus Blocos?": [
+    "Delete this Method and all its Blocks?",
+    "¿Eliminar este Método y todos sus Bloques?",
+  ],
+  "O Processo ficará sem Método configurado. Coleções e resultados já produzidos serão preservados.":
+    [
+      "The Process will have no configured Method. Collections and existing results will be preserved.",
+      "El Proceso quedará sin Método configurado. Se conservarán las colecciones y los resultados ya producidos.",
+    ],
+  "Método apagado.": ["Method deleted.", "Método eliminado."],
+  "Não foi possível apagar o Método.": [
+    "Could not delete the Method.",
+    "No se pudo eliminar el Método.",
+  ],
+  "Nenhum arquivo selecionado": ["No file selected", "Ningún archivo seleccionado"],
+  "Revise os campos do item antes de salvar.": [
+    "Review the item fields before saving.",
+    "Revisa los campos del elemento antes de guardar.",
+  ],
   "Item substituído": ["Item replaced", "Elemento sustituido"],
   "Não foi possível atualizar o item": [
     "Could not update the item",
@@ -783,9 +427,67 @@ const PHRASES: Record<string, Translation> = {
     "Registra, prepara y consulta dónde se utiliza cada perfil.",
   ],
   "Nome do novo perfil": ["New profile name", "Nombre del nuevo perfil"],
+  "Usar perfil existente": ["Use existing profile", "Usar perfil existente"],
+  "Nenhum perfil existente disponível": [
+    "No existing profile available",
+    "No hay perfiles existentes disponibles",
+  ],
   "Adicionar perfil": ["Add profile", "Añadir perfil"],
   "Carregando perfis…": ["Loading profiles…", "Cargando perfiles…"],
   "Identificador local:": ["Local identifier:", "Identificador local:"],
+  "Não foi possível carregar os perfis.": [
+    "Could not load the profiles.",
+    "No se pudieron cargar los perfiles.",
+  ],
+  "Nenhum perfil vinculado a este plugin.": [
+    "No profile is linked to this plugin.",
+    "No hay ningún perfil vinculado a este plugin.",
+  ],
+  "Perfis disponíveis para vincular": [
+    "Profiles available to link",
+    "Perfiles disponibles para vincular",
+  ],
+  "Use um perfil global já existente. O vínculo exige confirmação porque a sessão local pode ser compartilhada com outro plugin.":
+    [
+      "Use an existing global profile. Linking requires confirmation because the local session may be shared with another plugin.",
+      "Usa un perfil global existente. El vínculo requiere confirmación porque la sesión local puede compartirse con otro plugin.",
+    ],
+  "Não há outros perfis globais disponíveis para vincular.": [
+    "There are no other global profiles available to link.",
+    "No hay otros perfiles globales disponibles para vincular.",
+  ],
+  "Vincular perfil": ["Link profile", "Vincular perfil"],
+  "Perfil vinculado": ["Profile linked", "Perfil vinculado"],
+  "A preparação deste plugin continua separada dos outros plugins.": [
+    "Preparation for this plugin remains separate from other plugins.",
+    "La preparación de este plugin permanece separada de los demás plugins.",
+  ],
+  "Perfil desvinculado": ["Profile unlinked", "Perfil desvinculado"],
+  "O perfil global e a sessão local foram preservados.": [
+    "The global profile and local session were preserved.",
+    "Se conservaron el perfil global y la sesión local.",
+  ],
+  "Não foi possível vincular o perfil": [
+    "Could not link the profile",
+    "No se pudo vincular el perfil",
+  ],
+  "Não foi possível desvincular o perfil": [
+    "Could not unlink the profile",
+    "No se pudo desvincular el perfil",
+  ],
+  "Troque as referências antes de desvincular": [
+    "Change the references before unlinking",
+    "Cambia las referencias antes de desvincular",
+  ],
+  "Desvincular deste plugin": ["Unlink from this plugin", "Desvincular de este plugin"],
+  "Preparação registrada para este plugin.": [
+    "Preparation is recorded for this plugin.",
+    "La preparación está registrada para este plugin.",
+  ],
+  "Ainda não vinculado a outro plugin.": [
+    "Not linked to another plugin yet.",
+    "Todavía no está vinculado a otro plugin.",
+  ],
   "Ative o plugin": ["Enable the plugin", "Activa el plugin"],
   "Este perfil ainda não é utilizado por nenhum Método.": [
     "This profile is not used by any Method yet.",
@@ -796,6 +498,12 @@ const PHRASES: Record<string, Translation> = {
     "No hay perfiles registrados para este plugin.",
   ],
   "Perfil da conta": ["Account profile", "Perfil de la cuenta"],
+  "Interface do plugin": ["Plugin interface", "Interfaz del plugin"],
+  "Defina como esta capacidade deve trabalhar neste bloco.": [
+    "Define how this capability should work in this block.",
+    "Define cómo debe funcionar esta capacidad en este bloque.",
+  ],
+  "Opções avançadas": ["Advanced options", "Opciones avanzadas"],
   "Selecione um perfil já cadastrado. A preparação e o gerenciamento ficam em Plugins.": [
     "Select an existing profile. Preparation and management are handled in Plugins.",
     "Selecciona un perfil existente. La preparación y la gestión se realizan en Plugins.",
@@ -807,6 +515,90 @@ const PHRASES: Record<string, Translation> = {
     "If it fails, they will be tried in the order below.",
     "Si falla, se probarán en el orden indicado abajo.",
   ],
+  "Modo de execução dos perfis": ["Profile execution mode", "Modo de ejecución de perfiles"],
+  "Um perfil": ["Single profile", "Un perfil"],
+  "Fallback ordenado": ["Ordered fallback", "Respaldo ordenado"],
+  "Executar perfis simultaneamente": [
+    "Run profiles simultaneously",
+    "Ejecutar perfiles simultáneamente",
+  ],
+  "Perfis simultâneos": ["Simultaneous profiles", "Perfiles simultáneos"],
+  "Selecione e ordene os perfis que poderão receber itens desta execução.": [
+    "Select and order the profiles that may receive items from this run.",
+    "Selecciona y ordena los perfiles que podrán recibir elementos de esta ejecución.",
+  ],
+  "Máximo de workers": ["Maximum workers", "Máximo de workers"],
+  "Workers efetivos": ["Effective workers", "Workers efectivos"],
+  "Resumo antes de salvar": ["Summary before saving", "Resumen antes de guardar"],
+  "Perfis selecionados": ["Selected profiles", "Perfiles seleccionados"],
+  "Ordem dos perfis": ["Profile order", "Orden de los perfiles"],
+  "Projeto nomeado por perfil": ["Named project per profile", "Proyecto nombrado por perfil"],
+  "Escolha um projeto pelo nome para cada perfil selecionado.": [
+    "Choose a project by name for each selected profile.",
+    "Elige un proyecto por nombre para cada perfil seleccionado.",
+  ],
+  "Selecione o projeto": ["Select the project", "Selecciona el proyecto"],
+  "Carregando projetos…": ["Loading projects…", "Cargando proyectos…"],
+  "Nenhum projeto cadastrado neste perfil.": [
+    "No projects saved on this profile.",
+    "No hay proyectos guardados en este perfil.",
+  ],
+  "Cadastre URLs em Plugins, na seção Projetos deste perfil.": [
+    "Register URLs in Plugins, under Projects on this profile.",
+    "Registra URLs en Plugins, en la sección Proyectos de este perfil.",
+  ],
+  "Gerenciar projetos do perfil": ["Manage profile projects", "Gestionar proyectos del perfil"],
+  "O projeto selecionado foi removido. Escolha outro projeto.": [
+    "The selected project was removed. Choose another project.",
+    "El proyecto seleccionado fue eliminado. Elige otro proyecto.",
+  ],
+  "Não foi possível carregar os projetos deste perfil.": [
+    "Could not load this profile's projects.",
+    "No se pudieron cargar los proyectos de este perfil.",
+  ],
+  "Nenhum projeto selecionado para este perfil.": [
+    "No project selected for this profile.",
+    "Ningún proyecto seleccionado para este perfil.",
+  ],
+  "O destino deste projeto mudou no catálogo. Escolha novamente o projeto antes de executar.": [
+    "This project's destination changed in the catalog. Choose the project again before running.",
+    "El destino de este proyecto cambió en el catálogo. Elige de nuevo el proyecto antes de ejecutar.",
+  ],
+  "Progresso por perfil": ["Progress by profile", "Progreso por perfil"],
+  Perfil: ["Profile", "Perfil"],
+  "Progresso do perfil": ["Profile progress", "Progreso del perfil"],
+  Ativos: ["Active", "Activos"],
+  Falhos: ["Failed", "Fallidos"],
+  "Reconciliação necessária": ["Reconciliation required", "Reconciliación necesaria"],
+  "Não preparado": ["Not prepared", "No preparado"],
+  Ocupado: ["Busy", "Ocupado"],
+  "O modo simultâneo exige sessão contínua com correlação incremental compatível.": [
+    "Parallel mode requires a continuous session with compatible incremental correlation.",
+    "El modo simultáneo requiere una sesión continua con correlación incremental compatible.",
+  ],
+  "O modo simultâneo só inicia quando a coleção estiver materializada em itens independentes pelo núcleo.":
+    [
+      "Parallel mode only starts after the core materializes the collection into independent items.",
+      "El modo simultáneo solo comienza cuando el núcleo materializa la colección en elementos independientes.",
+    ],
+  "Um perfil selecionado foi desvinculado deste plugin. Escolha outro perfil antes de executar.": [
+    "A selected profile was unlinked from this plugin. Choose another profile before running.",
+    "Un perfil seleccionado fue desvinculado de este plugin. Elige otro perfil antes de ejecutar.",
+  ],
+  "Há perfil selecionado ainda não preparado para este plugin. Prepare-o na Central de Plugins antes de executar.":
+    [
+      "A selected profile is not prepared for this plugin yet. Prepare it in the Plugin Center before running.",
+      "Hay un perfil seleccionado que aún no está preparado para este plugin. Prepáralo en la Central de Plugins antes de ejecutar.",
+    ],
+  "Há perfil selecionado ocupado por outra execução. Ele ficará indisponível até o lease atual ser liberado.":
+    [
+      "A selected profile is busy with another run. It will remain unavailable until the current lease is released.",
+      "Hay un perfil seleccionado ocupado por otra ejecución. Permanecerá no disponible hasta que se libere el lease actual.",
+    ],
+  "Coleção distribuída": ["Distributed collection", "Colección distribuida"],
+  "Entrega agregada": ["Aggregated output", "Salida agregada"],
+  Subir: ["Move up", "Subir"],
+  Descer: ["Move down", "Bajar"],
   "Nenhum perfil cadastrado para este plugin. Abra Plugins para adicionar o primeiro.": [
     "No profiles registered for this plugin. Open Plugins to add the first one.",
     "No hay perfiles registrados para este plugin. Abre Plugins para añadir el primero.",
@@ -919,6 +711,7 @@ const PHRASES: Record<string, Translation> = {
   "Aparência e idioma": ["Appearance and language", "Apariencia e idioma"],
   Aparência: ["Appearance", "Apariencia"],
   Aprovado: ["Approved", "Aprobado"],
+  Aplicar: ["Apply", "Aplicar cambios"],
   "Arquivar canal": ["Archive channel", "Archivar canal"],
   "Arraste para reorganizar": ["Drag to reorder", "Arrastra para reordenar"],
   "Assets Visuais": ["Visual Assets", "Recursos visuales"],
@@ -971,6 +764,10 @@ const PHRASES: Record<string, Translation> = {
   "Criar coleção": ["Create collection", "Crear colección"],
   "Criar ou consultar chave da API": ["Create or view API key", "Crear o consultar clave de API"],
   Criar: ["Create", "Crear"],
+  "Revise os campos inválidos antes de aplicar.": [
+    "Review the invalid fields before applying.",
+    "Revisa los campos no válidos antes de aplicar.",
+  ],
   "Dados de entrada": ["Input data", "Datos de entrada"],
   "Dados de saída": ["Output data", "Datos de salida"],
   "Dados locais deste dispositivo": [
@@ -1000,6 +797,7 @@ const PHRASES: Record<string, Translation> = {
   "Escolher opção": ["Choose an option", "Elegir una opción"],
   Escolher: ["Choose", "Elegir"],
   Escuro: ["Dark", "Oscuro"],
+  "Escuro · Dracula": ["Dark · Dracula", "Oscuro · Dracula"],
   "Estas preferências são globais e ficam salvas neste dispositivo.": [
     "These preferences are global and saved on this device.",
     "Estas preferencias son globales y se guardan en este dispositivo.",
@@ -1212,6 +1010,8 @@ const PHRASES: Record<string, Translation> = {
     "Output offered for selection",
     "Salida presentada para elegir",
   ],
+  "Saída enviada ao plugin": ["Output sent to the plugin", "Salida enviada al plugin"],
+  "Aprovar o bloco inteiro": ["Approve the whole block", "Aprobar el bloque completo"],
   "Selecione a saída com as opções": [
     "Select the output containing the options",
     "Selecciona la salida con las opciones",
@@ -1280,12 +1080,50 @@ const PHRASES: Record<string, Translation> = {
     "This block will be run by the plugin configured in the Method.",
     "Este bloque será ejecutado por el plugin configurado en el Método.",
   ],
+  "Fornecido na execução": ["Provided at runtime", "Proporcionado durante la ejecución"],
+  "Fornecer na execução": ["Provide at runtime", "Proporcionar durante la ejecución"],
+  Obrigatória: ["Required", "Obligatoria"],
+  "Arquivos e dados desta execução": [
+    "Files and data for this run",
+    "Archivos y datos de esta ejecución",
+  ],
+  "O ContentFlow salva estes itens na execução e entrega ao plugin somente pelas portas declaradas.":
+    [
+      "ContentFlow stores these items in the run and sends them to the plugin only through its declared ports.",
+      "ContentFlow guarda estos elementos en la ejecución y los entrega al plugin solo mediante los puertos declarados.",
+    ],
+  "Enviar e executar": ["Send and run", "Enviar y ejecutar"],
+  "Entradas enviadas. O plugin será iniciado.": [
+    "Inputs sent. The plugin will start.",
+    "Entradas enviadas. El plugin se iniciará.",
+  ],
+  "Não foi possível enviar as entradas": [
+    "Could not send the inputs",
+    "No se pudieron enviar las entradas",
+  ],
+  "Formato de arquivo incompatível": [
+    "Incompatible file format",
+    "Formato de archivo incompatible",
+  ],
+  "não atende às restrições MIME deste campo.": [
+    "does not meet this field's MIME restrictions.",
+    "no cumple las restricciones MIME de este campo.",
+  ],
+  "Não foi possível salvar o arquivo": ["Could not save the file", "No se pudo guardar el archivo"],
+  "Salvando...": ["Saving...", "Guardando..."],
   "Executando automaticamente...": ["Running automatically...", "Ejecutando automáticamente..."],
   "Cancelar execução": ["Cancel execution", "Cancelar ejecución"],
   "Existem entradas sem conexão": ["Some inputs are not connected", "Hay entradas sin conexión"],
   "Não informado": ["Not provided", "No informado"],
   "Nenhum registro": ["No records", "Ningún registro"],
   "Nenhuma opção disponível.": ["No options available.", "No hay opciones disponibles."],
+  "Opção salva indisponível": ["Saved option unavailable", "Opción guardada no disponible"],
+  "Atualizar opções": ["Refresh options", "Actualizar opciones"],
+  "Carregando opções…": ["Loading options…", "Cargando opciones…"],
+  "Não foi possível carregar as opções.": [
+    "Could not load the options.",
+    "No se pudieron cargar las opciones.",
+  ],
   "Selecionar arquivo": ["Select file", "Seleccionar archivo"],
   "Selecionar arquivos": ["Select files", "Seleccionar archivos"],
   "Selecione uma decisão": ["Select a decision", "Selecciona una decisión"],
@@ -1328,6 +1166,14 @@ const PHRASES: Record<string, Translation> = {
       "Ejecuta cualquier bloque basado en lenguaje con un modelo de texto compatible con la API Responses de OpenAI.",
     ],
   "Execução cancelada": ["Execution cancelled", "Ejecución cancelada"],
+  "Perfil de navegador ocupado.": [
+    "Browser profile is busy.",
+    "El perfil del navegador está ocupado.",
+  ],
+  "O navegador não respondeu. A sessão foi preservada.": [
+    "The browser did not respond. The session was preserved.",
+    "El navegador no respondió. Se conservó la sesión.",
+  ],
   "Exportar manifesto": ["Export manifest", "Exportar manifiesto"],
   "Frequência de publicação": ["Publishing frequency", "Frecuencia de publicación"],
   "Gerencie as ferramentas que executam blocos de IA e Código": [
@@ -1559,6 +1405,10 @@ const PHRASES: Record<string, Translation> = {
     "Want to help develop ContentFlow?",
     "¿Quieres participar en el desarrollo de ContentFlow?",
   ],
+  "Saiba mais sobre o projeto ContentFlow": [
+    "Learn more about the ContentFlow project",
+    "Conoce más sobre el proyecto ContentFlow",
+  ],
   "Regra de validação": ["Validation rule", "Regla de validación"],
   "Remover bloco": ["Remove block", "Eliminar bloque"],
   "Remover canal": ["Remove channel", "Eliminar canal"],
@@ -1628,13 +1478,6 @@ const PHRASES: Record<string, Translation> = {
     "Buscar por nombre, Canal, proceso o acción...",
   ],
   "Recursos para criar Métodos": ["Resources for creating Methods", "Recursos para crear Métodos"],
-  "Use o agente guiado ou consulte a skill para trabalhar com seu agente de IA.": [
-    "Use the guided agent or consult the skill to work with your AI agent.",
-    "Usa el agente guiado o consulta la skill para trabajar con tu agente de IA.",
-  ],
-  "Abrir agente de Métodos": ["Open Methods agent", "Abrir agente de Métodos"],
-  "Criação guiada no ChatGPT": ["Guided creation in ChatGPT", "Creación guiada en ChatGPT"],
-  "Consultar skill de Métodos": ["Consult Methods skill", "Consultar skill de Métodos"],
   "Use um agente conectado ao ContentFlow, o agente guiado ou a skill atualizada.": [
     "Use an agent connected to ContentFlow, the guided agent, or the updated skill.",
     "Usa un agente conectado a ContentFlow, el agente guiado o la skill actualizada.",
@@ -1704,28 +1547,20 @@ const PHRASES: Record<string, Translation> = {
   Reutilizar: ["Reuse", "Reutilizar"],
   "Instalar plugin": ["Install plugin", "Instalar plugin"],
   "Verificar atualizações": ["Check for updates", "Buscar actualizaciones"],
-  "Não foi possível verificar atualizações": [
-    "Could not check for updates",
-    "No se pudieron buscar actualizaciones",
-  ],
   "Componentes externos": ["External components", "Componentes externos"],
-  "Consulte os componentes e suas instruções. Instale somente os plugins que você precisa pela opção Instalar plugin.":
+  "O ContentFlow é instalado sem plugins. Baixe o pacote, extraia uma vez e instale todos de uma vez pela pasta raiz — ou informe a pasta de apenas um plugin.":
     [
-      "Consult the components and their instructions. Install only the plugins you need using Install plugin.",
-      "Consulta los componentes y sus instrucciones. Instala solo los plugins que necesitas con la opción Instalar plugin.",
+      "ContentFlow is installed without plugins. Download the package, extract it once, and install all plugins from the root folder—or select a single plugin folder.",
+      "ContentFlow se instala sin plugins. Descarga el paquete, extráelo una vez e instala todos desde la carpeta raíz, o selecciona la carpeta de un solo plugin.",
     ],
-  "Consultar plugins": ["Browse plugins", "Consultar plugins"],
+  "Baixar plugins": ["Download plugins", "Descargar plugins"],
   "Mesmo fluxo para qualquer autor": [
     "Same flow for every author",
     "El mismo flujo para cualquier autor",
   ],
-  "Configurar Browser Bridge": ["Set up Browser Bridge", "Configurar Browser Bridge"],
+  "Baixar Browser Bridge": ["Download Browser Bridge", "Descargar Browser Bridge"],
   "Somente para automação web": ["For web automation only", "Solo para automatización web"],
-  "Consultar skill de plugins": ["Consult plugin skill", "Consultar skill de plugins"],
-  "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.": [
-    "Catalog updates are unavailable. You can update from a folder.",
-    "Las actualizaciones por catálogo no están disponibles. Puedes actualizar desde una carpeta.",
-  ],
+  "Baixar skill de plugins": ["Download plugin skill", "Descargar skill de plugins"],
   "Para criar com um agente de IA": [
     "For building with an AI agent",
     "Para crear con un agente de IA",
@@ -1774,6 +1609,20 @@ const PHRASES: Record<string, Translation> = {
     "Prepare the account in the browser window",
     "Prepara la cuenta en la ventana del navegador",
   ],
+  "A janela continuará aberta. Instale ou atualize a extensão, faça login e feche o navegador quando terminar.":
+    [
+      "The window will remain open. Install or update the extension, sign in, and close the browser when you are finished.",
+      "La ventana permanecerá abierta. Instala o actualiza la extensión, inicia sesión y cierra el navegador cuando termines.",
+    ],
+  "O perfil está pronto. Feche o navegador quando terminar a configuração.": [
+    "The profile is ready. Close the browser when you finish configuring it.",
+    "El perfil está listo. Cierra el navegador cuando termines de configurarlo.",
+  ],
+  "A janela permanecerá aberta para você corrigir a extensão ou o login. Feche o navegador quando terminar.":
+    [
+      "The window will remain open so you can fix the extension or sign-in. Close the browser when you are finished.",
+      "La ventana permanecerá abierta para que puedas corregir la extensión o el inicio de sesión. Cierra el navegador cuando termines.",
+    ],
   "Agora prepare a conta para confirmar a sessão neste perfil.": [
     "Now prepare the account to confirm the session in this profile.",
     "Ahora prepara la cuenta para confirmar la sesión en este perfil.",
@@ -1784,6 +1633,15 @@ const PHRASES: Record<string, Translation> = {
   "Perfil removido do gerenciamento": [
     "Profile removed from management",
     "Perfil eliminado de la gestión",
+  ],
+  "Este perfil ainda está vinculado a processos. Ao removê-lo deste plugin, será necessário configurar outro perfil nesses processos antes de executar. O perfil global e a sessão local serão preservados.":
+    [
+      "This profile is still linked to processes. After removing it from this plugin, you will need to configure another profile in those processes before running them. The global profile and local session will be preserved.",
+      "Este perfil todavía está vinculado a procesos. Después de eliminarlo de este plugin, tendrás que configurar otro perfil en esos procesos antes de ejecutarlos. Se conservarán el perfil global y la sesión local.",
+    ],
+  "Remover este perfil deste plugin? O perfil global e a sessão local serão preservados.": [
+    "Remove this profile from this plugin? The global profile and local session will be preserved.",
+    "¿Eliminar este perfil de este plugin? Se conservarán el perfil global y la sesión local.",
   ],
   "Troque as referências antes de remover": [
     "Change the references before removing",
@@ -2085,6 +1943,30 @@ const PHRASES: Record<string, Translation> = {
     "Select who will perform this action",
     "Selecciona quién ejecutará esta acción",
   ],
+  "Configuração salva": ["Saved configuration", "Configuración guardada"],
+  Perfis: ["Profiles", "Perfiles"],
+  "Configurar plugin executor": ["Configure runner plugin", "Configurar plugin ejecutor"],
+  "Fechar configuração do plugin": [
+    "Close plugin configuration",
+    "Cerrar configuración del plugin",
+  ],
+  "Voltar ao bloco": ["Back to block", "Volver al bloque"],
+  "Revise o executor, o contrato e as configurações locais desta ação.": [
+    "Review the runner, contract, and local settings for this action.",
+    "Revisa el ejecutor, el contrato y la configuración local de esta acción.",
+  ],
+  "A configuração histórica foi preservada, mas o plugin não está instalado.": [
+    "The saved historical configuration was preserved, but the plugin is not installed.",
+    "La configuración histórica guardada se conservó, pero el plugin no está instalado.",
+  ],
+  "A configuração histórica foi preservada, mas o plugin está desativado ou indisponível.": [
+    "The saved historical configuration was preserved, but the plugin is disabled or unavailable.",
+    "La configuración histórica guardada se conservó, pero el plugin está desactivado o no disponible.",
+  ],
+  "Escape fecha a janela e descarta alterações não aplicadas.": [
+    "Escape closes the window and discards unapplied changes.",
+    "Escape cierra la ventana y descarta los cambios no aplicados.",
+  ],
   "Requer ajustes": ["Needs attention", "Requiere ajustes"],
   "Pronto para executar": ["Ready to run", "Listo para ejecutar"],
   "Revise o contrato antes de executar": [
@@ -2119,6 +2001,10 @@ const PHRASES: Record<string, Translation> = {
   "Como o plugin usará este dado?": [
     "How will the plugin use this data?",
     "¿Cómo usará el plugin este dato?",
+  ],
+  "Nenhuma porta aceita este formato.": [
+    "No port accepts this format.",
+    "Ningún puerto acepta este formato.",
   ],
   "O que o plugin entregará aqui?": [
     "What will the plugin output here?",
@@ -2380,6 +2266,25 @@ function translateDynamic(source: string, language: AppLanguage): string {
     return language === "en"
       ? `View ${match[1]} ${match[1] === "1" ? "usage" : "usages"}`
       : `Ver ${match[1]} ${match[1] === "1" ? "uso" : "usos"}`;
+  match = source.match(/^Já vinculado a (\d+) plugins?\.$/);
+  if (match)
+    return language === "en"
+      ? `Already linked to ${match[1]} ${match[1] === "1" ? "plugin" : "plugins"}.`
+      : `Ya está vinculado a ${match[1]} ${match[1] === "1" ? "plugin" : "plugins"}.`;
+  match = source.match(
+    /^Vincular (.+) a (.+)\? Este plugin poderá usar a sessão local já existente neste perfil\.$/,
+  );
+  if (match)
+    return language === "en"
+      ? `Link ${match[1]} to ${match[2]}? This plugin will be able to use the local session already stored in this profile.`
+      : `¿Vincular ${match[1]} a ${match[2]}? Este plugin podrá usar la sesión local ya guardada en este perfil.`;
+  match = source.match(
+    /^Desvincular (.+) deste plugin\? O perfil e sua sessão local serão preservados\.$/,
+  );
+  if (match)
+    return language === "en"
+      ? `Unlink ${match[1]} from this plugin? The profile and its local session will be preserved.`
+      : `¿Desvincular ${match[1]} de este plugin? Se conservarán el perfil y su sesión local.`;
   return source;
 }
 
@@ -2459,11 +2364,7 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       })
       .then((stored) => {
         if (active && !hasLocalChange.current) {
-          setPreferences({
-            ...DEFAULT_PREFERENCES,
-            ...stored,
-            pluginOrganization: normalizePluginOrganization(stored?.pluginOrganization),
-          });
+          setPreferences({ ...DEFAULT_PREFERENCES, ...stored });
         }
       })
       .catch((error) => console.error(error))
@@ -2480,7 +2381,7 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     document.documentElement.classList.toggle("dark", preferences.theme === "dark");
     document.documentElement.lang = preferences.language;
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#18191B");
+    themeColor?.setAttribute("content", preferences.theme === "light" ? "#F5F6F8" : "#282a36");
   }, [preferences]);
 
   useEffect(() => {
@@ -2505,28 +2406,24 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
     return () => observer.disconnect();
   }, [preferences.language]);
 
-  const updatePreferences = useCallback(
-    (patch: Partial<AppPreferences> | ((current: AppPreferences) => Partial<AppPreferences>)) => {
-      hasLocalChange.current = true;
-      setPreferences((current) => {
-        const resolvedPatch = typeof patch === "function" ? patch(current) : patch;
-        const next = { ...current, ...resolvedPatch };
-        persistenceQueue.current = persistenceQueue.current
-          .catch(() => undefined)
-          .then(async () => {
-            const response = await fetch("/api/preferences", {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(next),
-            });
-            if (!response.ok) throw new Error("Could not save preferences");
-          })
-          .catch((error) => console.error(error));
-        return next;
-      });
-    },
-    [],
-  );
+  const updatePreferences = useCallback((patch: Partial<AppPreferences>) => {
+    hasLocalChange.current = true;
+    setPreferences((current) => {
+      const next = { ...current, ...patch };
+      persistenceQueue.current = persistenceQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const response = await fetch("/api/preferences", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(next),
+          });
+          if (!response.ok) throw new Error("Could not save preferences");
+        })
+        .catch((error) => console.error(error));
+      return next;
+    });
+  }, []);
 
   const value = useMemo<PreferencesContextValue>(
     () => ({
@@ -2537,50 +2434,6 @@ export function AppPreferencesProvider({ children }: { children: ReactNode }) {
       setNotificationSound: (notificationSound) => updatePreferences({ notificationSound }),
       setSystemNotifications: (systemNotifications) => updatePreferences({ systemNotifications }),
       setMethodsLibraryView: (methodsLibraryView) => updatePreferences({ methodsLibraryView }),
-      setPluginOrganization: (organizationOrUpdater) => {
-        updatePreferences((current) => {
-          const nextOrg =
-            typeof organizationOrUpdater === "function"
-              ? organizationOrUpdater(current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION)
-              : organizationOrUpdater;
-          return { pluginOrganization: normalizePluginOrganization(nextOrg) };
-        });
-      },
-      togglePluginFavorite: (pluginId: string) => {
-        updatePreferences((current) => ({
-          pluginOrganization: togglePluginFavorite(
-            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
-            pluginId,
-          ),
-        }));
-      },
-      setPluginSection: (pluginId: string, section: PluginSection) => {
-        updatePreferences((current) => ({
-          pluginOrganization: setPluginSection(
-            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
-            pluginId,
-            section,
-          ),
-        }));
-      },
-      movePluginInSection: (pluginId: string, direction: "up" | "down") => {
-        updatePreferences((current) => ({
-          pluginOrganization: movePluginInSection(
-            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
-            pluginId,
-            direction,
-          ),
-        }));
-      },
-      setPluginHidden: (pluginId: string, hidden: boolean) => {
-        updatePreferences((current) => ({
-          pluginOrganization: setPluginHidden(
-            current.pluginOrganization ?? DEFAULT_PLUGIN_ORGANIZATION,
-            pluginId,
-            hidden,
-          ),
-        }));
-      },
       t: (source) => translate(source, preferences.language),
     }),
     [preferences, ready, updatePreferences],

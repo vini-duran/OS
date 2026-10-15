@@ -2,55 +2,12 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { mkdtempSync, mkdirSync, symlinkSync, rmSync } = require("node:fs");
-const { tmpdir } = require("node:os");
-const { assertWritableDataOutsideApp } = require("./desktop-paths.cjs");
 
 const repositoryRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+const packageLockJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package-lock.json"), "utf8"));
 const desktopMain = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const desktopPreload = readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
-
-test("proteção de dados integra pacote e precede criação de userData e API", () => {
-  assert.ok(packageJson.build.files.includes("desktop/desktop-paths.cjs"));
-  assert.ok(
-    desktopMain.indexOf("assertWritableDataOutsideApp(app.getAppPath(), selected.userData)") <
-      desktopMain.indexOf("mkdirSync(selected.userData"),
-  );
-  assert.ok(
-    desktopMain.indexOf("assertWritableDataOutsideApp(appRoot, dataRoot)") <
-      desktopMain.indexOf("const apiPort = await reservePort()"),
-  );
-});
-
-test("dados fora do bundle são aceitos; caminhos internos e symlinks são recusados", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "contentflow-path-guard-"));
-  try {
-    const bundle = path.join(root, "Candidate.app");
-    const appRoot = path.join(bundle, "Contents", "Resources", "app");
-    mkdirSync(appRoot, { recursive: true });
-    for (const destination of [appRoot, path.join(appRoot, "data"), path.join(bundle, "data")]) {
-      assert.throws(
-        () => assertWritableDataOutsideApp(appRoot, destination),
-        /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
-      );
-    }
-    assert.doesNotThrow(() =>
-      assertWritableDataOutsideApp(appRoot, path.join(root, "userData", "data")),
-    );
-    assert.doesNotThrow(() =>
-      assertWritableDataOutsideApp(appRoot, path.join(root, "Candidate.app-other", "data")),
-    );
-    const link = path.join(root, "alias");
-    symlinkSync(bundle, link, "dir");
-    assert.throws(
-      () => assertWritableDataOutsideApp(appRoot, path.join(link, "future", "data")),
-      /CONTENTFLOW_DATA_INSIDE_APPLICATION/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test("a distribuição do núcleo não incorpora plugins de referência", () => {
   const packagedSources = [
@@ -93,8 +50,23 @@ test("o Electron inicia fechado, isolado e sem bloquear no stdout da API", () =>
   assert.match(desktopMain, /contextIsolation:\s*true/);
   assert.match(desktopMain, /nodeIntegration:\s*false/);
   assert.match(desktopMain, /sandbox:\s*true/);
-  assert.match(desktopMain, /stdio:\s*\["ignore",\s*"ignore",\s*"pipe"\]/);
+  assert.match(desktopMain, /stdio:\s*\["ignore",\s*"pipe",\s*"pipe"\]/);
+  assert.match(desktopMain, /apiProcess\.stdout\.on\(\s*"data",\s*createApiDiagnosticReader/);
   assert.match(desktopMain, /ready-to-show/);
+});
+
+test("isolamento de dados precede diagnósticos e usa diretório selecionado", () => {
+  assert.match(desktopMain, /applyDataIsolation\(app\)/);
+  const isolationIndex = desktopMain.indexOf("applyDataIsolation(app)");
+  const lockIndex = desktopMain.indexOf("requestSingleInstanceLock");
+  assert.ok(isolationIndex !== -1 && lockIndex !== -1 && isolationIndex < lockIndex);
+  const selectionIndex = desktopMain.indexOf("resolveDesktopDataSelection(app)");
+  const logDirIndex = desktopMain.indexOf('path.join(app.getPath("userData"), "logs")');
+  const diagnosticsIndex = desktopMain.indexOf("createDiagnostics(logDirectory)");
+  assert.ok(selectionIndex !== -1 && logDirIndex !== -1 && diagnosticsIndex !== -1);
+  assert.ok(selectionIndex < logDirIndex);
+  assert.ok(logDirIndex < diagnosticsIndex);
+  assert.match(desktopMain, /const dataRoot = dataSelection\.dataDir/);
 });
 
 test("a API inesperadamente encerrada também fecha o Electron quando retorna código zero", () => {
@@ -111,4 +83,49 @@ test("pendências humanas atualizam badge e notificações pelo preload isolado"
   assert.match(desktopPreload, /humanTasks:\s*Object\.freeze/);
   assert.match(desktopPreload, /ipcRenderer\.send\(HUMAN_TASKS_UPDATE_CHANNEL/);
   assert.doesNotMatch(desktopPreload, /contextBridge\.exposeInMainWorld\([^)]*ipcRenderer/s);
+});
+
+test("dependências de produção não forçam pacotes restritos a um único sistema desktop suportado", () => {
+  const rootLockPackage = packageLockJson.packages?.[""] ?? {};
+  assert.deepEqual(
+    packageJson.dependencies,
+    rootLockPackage.dependencies,
+    "Dependências de produção no package.json e no package-lock.json devem ser idênticas",
+  );
+  assert.deepEqual(
+    packageJson.optionalDependencies,
+    rootLockPackage.optionalDependencies,
+    "Dependências opcionais no package.json e no package-lock.json devem ser idênticas",
+  );
+
+  const supportedDesktopPlatforms = ["win32", "darwin"];
+
+  for (const depName of Object.keys(packageJson.dependencies ?? {})) {
+    const lockEntry = packageLockJson.packages?.[`node_modules/${depName}`];
+    if (!lockEntry || !Array.isArray(lockEntry.os) || lockEntry.os.length === 0) {
+      continue;
+    }
+
+    const restrictsSupportedDesktop = supportedDesktopPlatforms.some(
+      (platform) =>
+        lockEntry.os.includes(platform) &&
+        !supportedDesktopPlatforms.every((target) => lockEntry.os.includes(target)),
+    );
+
+    assert.equal(
+      restrictsSupportedDesktop,
+      false,
+      `Dependência direta de produção "${depName}" é restrita a uma única plataforma desktop (${lockEntry.os.join(", ")}) e deve ser opcional`,
+    );
+  }
+
+  for (const depName of Object.keys(packageJson.optionalDependencies ?? {})) {
+    const lockEntry = packageLockJson.packages?.[`node_modules/${depName}`];
+    assert.ok(lockEntry, `Pacote opcional "${depName}" deve existir no package-lock.json`);
+    assert.equal(
+      lockEntry.optional,
+      true,
+      `Pacote opcional "${depName}" deve estar marcado com "optional: true" no lockfile`,
+    );
+  }
 });

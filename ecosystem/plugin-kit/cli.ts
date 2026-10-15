@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { format } from "prettier";
+import type { ContentFamily } from "../../src/lib/domain";
 import type { PluginExecutionRequest, PluginManifest } from "../../src/lib/plugin-contract";
 import {
   PluginValidationError,
@@ -15,8 +16,7 @@ import {
 } from "../../server/plugin-validation";
 
 type TemplateId = "text-transform" | "hosted-api" | "file-artifact";
-type DataType =
-  PluginManifest["capabilities"][number]["inputPorts"][number]["acceptedTypes"][number];
+type DataType = ContentFamily;
 export type Answers = {
   template: TemplateId;
   name: string;
@@ -43,7 +43,6 @@ type TemplateDefaults = {
   secretKeys?: string[];
   input: Answers["input"];
   output: Answers["output"];
-  deliveryTypes: PluginManifest["deliveryTypes"];
 };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -58,25 +57,16 @@ const permissions = [
   "native",
 ] as const;
 const blockTypes = ["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"] as const;
-const dataTypes = [
-  "text",
-  "textarea",
-  "number",
-  "boolean",
-  "list",
-  "records",
-  "select",
-  "multiselect",
-  "datetime",
-  "url",
-  "file",
-  "files",
-  "image",
-  "audio",
-  "video",
-  "approval",
-  "thumbnail_layout",
-] as const;
+const dataTypes = ["text", "image", "audio", "video"] as const;
+
+function contentShape(family: ContentFamily) {
+  return {
+    kind: "content" as const,
+    family,
+    cardinality: "one" as const,
+    representation: family === "text" ? ("inline" as const) : ("artifact" as const),
+  };
+}
 
 function parseArgs(values: string[]) {
   const command = values[0] ?? "help";
@@ -231,8 +221,8 @@ function buildManifest(answers: Answers, defaults: TemplateDefaults): PluginMani
   const sends = answers.sendsDataToThirdParties;
   return {
     $schema:
-      "https://raw.githubusercontent.com/andremjr/contentflow/main/ecosystem/docs/schemas/contentflow-plugin-v1.schema.json",
-    apiVersion: "1",
+      "https://raw.githubusercontent.com/andremjr/contentflow/main/docs/ecosystem/schemas/contentflow-plugin-v2.schema.json",
+    apiVersion: "2",
     id: answers.id,
     name: answers.name,
     version: "0.1.0",
@@ -246,7 +236,6 @@ function buildManifest(answers: Answers, defaults: TemplateDefaults): PluginMani
       ? { networkHosts: answers.networkHosts }
       : {}),
     ...(answers.secretKeys.length ? { secretKeys: answers.secretKeys } : {}),
-    deliveryTypes: defaults.deliveryTypes,
     capabilities: [
       {
         id: capabilityId,
@@ -256,7 +245,7 @@ function buildManifest(answers: Answers, defaults: TemplateDefaults): PluginMani
           {
             key: answers.input.key,
             label: answers.input.label,
-            acceptedTypes: [answers.input.type],
+            shape: contentShape(answers.input.type),
             required: true,
           },
         ],
@@ -264,12 +253,10 @@ function buildManifest(answers: Answers, defaults: TemplateDefaults): PluginMani
           {
             key: answers.output.key,
             label: answers.output.label,
-            producedTypes: [answers.output.type],
+            shape: contentShape(answers.output.type),
             required: true,
           },
         ],
-        acceptedInputTypes: [answers.input.type],
-        producedOutputTypes: [answers.output.type],
         execution: { mode: "immediate", defaultTimeoutMs: 30_000 },
         sideEffects:
           answers.template === "hosted-api"
@@ -289,7 +276,7 @@ function buildManifest(answers: Answers, defaults: TemplateDefaults): PluginMani
         outputSchema: {
           type: "object",
           properties: {
-            [answers.output.key]: { type: answers.output.type === "file" ? "object" : "string" },
+            [answers.output.key]: { type: answers.output.type === "text" ? "string" : "object" },
           },
           required: [answers.output.key],
         },
@@ -349,7 +336,7 @@ function executionFixture(manifest: PluginManifest, answers: Answers) {
         id: "kit-input",
         portKey: answers.input.key,
         label: answers.input.label,
-        type: answers.input.type,
+        shape: contentShape(answers.input.type),
       },
     ],
     outputContract: [
@@ -357,7 +344,7 @@ function executionFixture(manifest: PluginManifest, answers: Answers) {
         portKey: answers.output.key,
         label: answers.output.label,
         key: answers.output.key,
-        type: answers.output.type,
+        shape: contentShape(answers.output.type),
         required: true,
       },
     ],
@@ -379,7 +366,7 @@ function executionFixture(manifest: PluginManifest, answers: Answers) {
 }
 
 function generatedReadme(answers: Answers) {
-  return `# ${answers.name}\n\nPlugin gerado pelo kit oficial do ContentFlow usando a API pública v1.\n\n## Desenvolvimento\n\nNa raiz do ContentFlow, substitua \`<pasta-do-plugin>\` pela pasta deste plugin:\n\n\`\`\`powershell\nnpm run plugin:kit -- validate <pasta-do-plugin>\nnpm run plugin:kit -- test-contract <pasta-do-plugin>\nnpm run plugin:kit -- test-sandbox <pasta-do-plugin>\nnpm run plugin:kit -- report <pasta-do-plugin>\n\`\`\`\n\nCredenciais declaradas: ${answers.secretKeys.length ? answers.secretKeys.map((key) => `\`${key}\``).join(", ") : "nenhuma"}. Não grave valores secretos no manifesto.\n\nPolítica de dados: ${answers.sendsDataToThirdParties ? `envia dados para ${answers.providers.join(", ")}` : "não envia dados a terceiros"}.\n`;
+  return `# ${answers.name}\n\nPlugin gerado pelo kit oficial do ContentFlow usando a API pública v2.\n\n## Desenvolvimento\n\nNa raiz do ContentFlow, substitua \`<pasta-do-plugin>\` pela pasta deste plugin:\n\n\`\`\`powershell\nnpm run plugin:kit -- validate <pasta-do-plugin>\nnpm run plugin:kit -- test-contract <pasta-do-plugin>\nnpm run plugin:kit -- test-sandbox <pasta-do-plugin>\nnpm run plugin:kit -- report <pasta-do-plugin>\n\`\`\`\n\nCredenciais declaradas: ${answers.secretKeys.length ? answers.secretKeys.map((key) => `\`${key}\``).join(", ") : "nenhuma"}. Não grave valores secretos no manifesto.\n\nPolítica de dados: ${answers.sendsDataToThirdParties ? `envia dados para ${answers.providers.join(", ")}` : "não envia dados a terceiros"}.\n`;
 }
 
 async function generatedTest(answers: Answers) {
@@ -468,9 +455,9 @@ export async function fixtureCommand(directory: string, destination?: string) {
   const capability = result.manifest.capabilities[0]!;
   const inputPort = capability.inputPorts[0];
   const outputPort = capability.outputPorts[0]!;
-  const firstInputType = inputPort?.acceptedTypes[0] ?? "text";
+  const firstInputType = inputPort?.shape.kind === "content" ? inputPort.shape.family : "text";
   const inferredTemplate: TemplateId =
-    firstInputType === "file" || firstInputType === "files"
+    firstInputType !== "text"
       ? "file-artifact"
       : result.manifest.permissions.includes("network")
         ? "hosted-api"
@@ -482,7 +469,11 @@ export async function fixtureCommand(directory: string, destination?: string) {
       label: inputPort?.label ?? "Entrada",
       type: firstInputType,
     },
-    output: { key: outputPort.key, label: outputPort.label, type: outputPort.producedTypes[0] },
+    output: {
+      key: outputPort.key,
+      label: outputPort.label,
+      type: outputPort.shape.kind === "content" ? outputPort.shape.family : "text",
+    },
     blockTypes: capability.blockTypes,
   } as Answers;
   const target = path.resolve(
@@ -537,12 +528,12 @@ export async function sandboxCommand(directory: string) {
       response.status === "error" &&
       (!response.code || !response.message || typeof response.retryable !== "boolean")
     )
-      throw new Error("O plugin devolveu um erro fora do contrato da API v1.");
+      throw new Error("O plugin devolveu um erro fora do contrato da API v2.");
     if (
       response.status === "pending" &&
       (!response.jobId || !Number.isFinite(response.pollAfterMs))
     )
-      throw new Error("O plugin devolveu uma pendência fora do contrato da API v1.");
+      throw new Error("O plugin devolveu uma pendência fora do contrato da API v2.");
     output.write(
       `✓ Execução real encerrada no sandbox do ContentFlow (${response.status}).\n✓ Permissões concedidas somente conforme manifesto: ${result.manifest.permissions.join(", ") || "nenhuma"}.\n`,
     );
@@ -552,7 +543,7 @@ export async function sandboxCommand(directory: string) {
 }
 
 export async function compatibilityReport(directory: string) {
-  const lines = ["RELATÓRIO DE COMPATIBILIDADE — CONTENTFLOW PLUGIN API v1", ""];
+  const lines = ["RELATÓRIO DE COMPATIBILIDADE — CONTENTFLOW PLUGIN API v2", ""];
   let compatible = true;
   try {
     const result = validatePluginDirectory(directory);

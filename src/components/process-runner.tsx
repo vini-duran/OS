@@ -24,10 +24,12 @@ import {
   CheckCircle2,
   ChevronDown,
   Code2,
+  Download,
   LoaderCircle,
   Pencil,
   Play,
   GripVertical,
+  MousePointer2,
   RotateCcw,
   Square,
   Upload,
@@ -40,7 +42,6 @@ import { ImageGallery } from "@/components/image-gallery";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -49,10 +50,9 @@ import {
   type BlockExecution,
   type BlockExecutionItem,
   type BlockItemProgress,
+  type ProfileLaneExecutionProgress,
   type BlockItemRetryScope,
   type ChannelLibraryItem,
-  type HumanFieldType,
-  type PluginExternalRecoverySnapshot,
   type ProcessExecution,
   type ProcessId,
   type Project,
@@ -61,7 +61,9 @@ import {
   type StrategicCollection,
   type StructuredRecord,
   type ThumbnailLayout,
+  type ValueShape,
 } from "@/lib/domain";
+import { contentShape } from "@/lib/data-shape";
 import { projectProcessOrder } from "@/lib/process-order";
 import {
   createProcessOutputFields,
@@ -81,8 +83,10 @@ import {
   saveHumanBlockDraft,
   readRuntimeDraft,
   reorderBlockExecutionItems,
+  runBlockExecutionItemAction,
   saveProcessOutputDraft,
   startProcessExecution,
+  submitBlockRuntimeInputs,
   updateBlockExecutionItemOutput,
   updateBlockExecutionValues,
   uploadLocalFile,
@@ -94,6 +98,15 @@ import {
   useProjectExecutions,
   useProjects,
 } from "@/lib/store";
+import { useAppPreferences } from "@/lib/app-preferences";
+import { localizePluginManifest } from "@/lib/plugin-localization";
+import { projectSelectionFailureTextForCode } from "@/lib/plugin-profile-named-urls-localization";
+import { isLocalStoredFileUrl } from "@/lib/plugin-item-actions";
+import type {
+  PluginItemAction,
+  PluginItemActionDeclaration,
+  PluginManifest,
+} from "@/lib/plugin-contract";
 import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<BlockExecution["status"], string> = {
@@ -114,9 +127,6 @@ export function ProcessRunner(props: ProcessRunnerProps) {
 }
 
 function ProcessRunnerSession({ project, processId, description }: ProcessRunnerProps) {
-  const [isRetrying, setIsRetrying] = useState(false);
-  const [isSubmittingRecovery, setIsSubmittingRecovery] = useState(false);
-  const [recoveryRevisionError, setRecoveryRevisionError] = useState<string | undefined>(undefined);
   const navigate = useNavigate();
   const channel = useChannel(project?.channelId ?? "");
   const collections = useLibraryCollections(project?.channelId);
@@ -136,6 +146,30 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
   const nextNavigationTimer = useRef<number | undefined>(undefined);
   const previousExecutionStatus = useRef(execution?.status);
   const [isAdvancing, setIsAdvancing] = useState(false);
+  const [pluginManifests, setPluginManifests] = useState<Record<string, PluginManifest>>({});
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/plugins", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return { plugins: [] };
+        return (await response.json()) as {
+          plugins?: Array<{ id: string; manifest: PluginManifest }>;
+        };
+      })
+      .then((payload) => {
+        if (!active) return;
+        setPluginManifests(
+          Object.fromEntries((payload.plugins ?? []).map((plugin) => [plugin.id, plugin.manifest])),
+        );
+      })
+      .catch(() => {
+        if (active) setPluginManifests({});
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const activeExecution = execution?.blocks.find((item) => item.status !== "completed");
   const activeBlock = activeExecution
     ? execution?.methodSnapshot.blocks.find((item) => item.id === activeExecution.blockId)
@@ -148,8 +182,15 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
   );
   const hasActiveDelivery = Boolean(
     activeExecution &&
+    activeBlock &&
+    activeBlock.type !== "VALIDAR" &&
+    activeBlock.type !== "ESCOLHER" &&
     Object.values(activeExecution.values).some((value) => !isEmptyDisplayValue(value)),
   );
+  const pausedNonHumanValidation =
+    activeExecution?.status === "awaiting_human" &&
+    activeBlock?.type === "VALIDAR" &&
+    activeBlock?.operator !== "Humano";
   const waitingForHumanAction =
     activeExecution?.status === "awaiting_human" && activeBlock?.operator === "Humano";
   const waitingForHumanChoice =
@@ -264,8 +305,6 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
   }
 
   async function retry(retryScope: BlockItemRetryScope = "all", itemId?: string) {
-    if (isRetrying) return;
-    setIsRetrying(true);
     try {
       if (
         !execution ||
@@ -282,33 +321,6 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
       );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível repetir.");
-    } finally {
-      setIsRetrying(false);
-    }
-  }
-
-  async function handleConfirmRecovery(revision: string) {
-    if (isSubmittingRecovery) return;
-    setIsSubmittingRecovery(true);
-    setRecoveryRevisionError(undefined);
-    try {
-      if (!execution || !activeExecution) return;
-      const ok = await retryBlockExecution(execution.id, activeExecution.blockId, revision);
-      if (!ok) return;
-      toast.success("Recuperação autorizada. Bloco preparado para nova tentativa.");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Não foi possível autorizar a recuperação.";
-      if (/409|revisão|snapshot|vigente|expirou/i.test(message)) {
-        setRecoveryRevisionError(
-          "A revisão do snapshot foi alterada ou expirou. Atualize o estado e confirme novamente.",
-        );
-      } else {
-        setRecoveryRevisionError(message);
-      }
-      toast.error(message);
-    } finally {
-      setIsSubmittingRecovery(false);
     }
   }
 
@@ -382,21 +394,19 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
         />
       ) : execution ? (
         <>
-          <ExecutionTimeline execution={execution} />
-          <ExecutionResults
+          <MethodExecution
             execution={execution}
             collections={collections}
             libraryItems={libraryItems}
-            onRetryItem={(blockId, itemId) => {
-              if (activeExecution?.blockId !== blockId) return;
-              void retry("selected", itemId);
-            }}
+            pluginManifests={pluginManifests}
           />
           {waitingForHumanChoice && activeBlock ? (
             <HumanChoiceGate
               block={activeBlock}
               collection={collections.find((item) => item.id === activeBlock.collectionId)}
-              items={libraryItems.filter((item) => item.collectionId === activeBlock.collectionId)}
+              items={libraryItems.filter(
+                (item) => item.collectionId === activeBlock.collectionId && !item.reservation,
+              )}
               execution={execution}
               project={project}
               projectExecutions={projectExecutions}
@@ -429,34 +439,33 @@ function ProcessRunnerSession({ project, processId, description }: ProcessRunner
               <PluginExecutionGate
                 key={`${execution.id}:${activeExecution.blockId}:${activeExecution.attempt ?? 1}`}
                 block={activeBlock}
+                execution={execution}
+                blockExecution={activeExecution}
               />
             ) : (
               <MissingPluginGate block={activeBlock} />
             )
+          ) : pausedNonHumanValidation && activeBlock && activeExecution ? (
+            <PausedValidationGate
+              key={`${execution.id}:${activeExecution.blockId}:${activeExecution.attempt ?? 1}`}
+              block={activeBlock}
+              blockExecution={activeExecution}
+              onCancel={() => void cancel()}
+            />
           ) : execution.status === "failed" && activeBlock && activeExecution ? (
-            activeExecution.recoverySnapshot ? (
-              <ExternalRecoveryGate
-                key={`${execution.id}:${activeExecution.blockId}:${activeExecution.recoverySnapshot.snapshotRevision}`}
-                block={activeBlock}
-                blockExecution={activeExecution}
-                snapshot={activeExecution.recoverySnapshot}
-                onConfirm={(revision) => void handleConfirmRecovery(revision)}
-                isSubmitting={isSubmittingRecovery}
-                revisionError={recoveryRevisionError}
-                onClearError={() => setRecoveryRevisionError(undefined)}
-              />
-            ) : (
-              <FailedExecutionGate
-                block={activeBlock}
-                error={activeExecution.error ?? execution.error}
-                itemProgress={activeExecution.itemProgress}
-                canAcceptCurrent={hasActiveDelivery}
-                isLastBlock={activeBlockIsLast}
-                onAcceptCurrent={acceptCurrentDelivery}
-                onRetry={retry}
-                isRetrying={isRetrying}
-              />
-            )
+            <FailedExecutionGate
+              block={activeBlock}
+              error={activeExecution.error ?? execution.error}
+              errorCode={activeExecution.errorCode}
+              itemProgress={activeExecution.itemProgress}
+              canAcceptCurrent={hasActiveDelivery}
+              isLastBlock={activeBlockIsLast}
+              onAcceptCurrent={acceptCurrentDelivery}
+              onRetry={retry}
+              onRestartProcess={() =>
+                void resetStage(project.id, processId).catch((error) => toast.error(error.message))
+              }
+            />
           ) : execution.status === "cancelled" && activeBlock && activeExecution ? (
             <ExecutionCancelled
               block={activeBlock}
@@ -511,104 +520,35 @@ function MissingMethod({
   );
 }
 
-function ExecutionTimeline({ execution }: { execution: ProcessExecution }) {
-  return (
-    <section className="rounded-xl border border-border/70 bg-card p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Execução do método
-        </h3>
-        <Badge variant="outline">
-          {execution.blocks.filter((item) => item.status === "completed").length}/
-          {execution.blocks.length}
-        </Badge>
-      </div>
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-        {execution.blocks.map((item, index) => {
-          const block = execution.methodSnapshot.blocks.find(
-            (candidate) => candidate.id === item.blockId,
-          );
-          const done = item.status === "completed";
-          const waiting = item.status === "awaiting_human";
-          const running = ["in_progress", "blocked_executor"].includes(item.status);
-          return (
-            <div
-              key={item.blockId}
-              className={cn(
-                "rounded-lg border p-3 transition-colors duration-500",
-                done
-                  ? "border-border bg-secondary"
-                  : waiting
-                    ? "border-warning/45 bg-warning/10"
-                    : running
-                      ? "border-brand/40 bg-brand/10"
-                      : "border-border/60 bg-background/30",
-              )}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    "grid size-6 place-items-center rounded-sm transition-colors duration-500",
-                    done
-                      ? "bg-muted-foreground text-background"
-                      : waiting
-                        ? "bg-warning/20 text-warning"
-                        : running
-                          ? "bg-brand/20 text-brand-soft"
-                          : "bg-secondary text-muted-foreground",
-                  )}
-                >
-                  {done ? (
-                    <Check className="size-3.5" />
-                  ) : running ? (
-                    <LoaderCircle className="size-3.5 animate-spin" />
-                  ) : (
-                    <span className="font-mono text-[10px]">{index + 1}</span>
-                  )}
-                </span>
-                <span className="truncate text-xs font-semibold">{block?.name ?? block?.type}</span>
-              </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">{STATUS_LABEL[item.status]}</p>
-              {item.status === "in_progress" && item.progress !== undefined && (
-                <Progress value={item.progress * 100} className="mt-2 h-1" />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function ExecutionResults({
+function MethodExecution({
   execution,
   collections,
   libraryItems,
-  onRetryItem,
+  pluginManifests,
 }: {
   execution: ProcessExecution;
   collections: StrategicCollection[];
   libraryItems: ChannelLibraryItem[];
-  onRetryItem: (blockId: string, itemId: string) => void;
+  pluginManifests: Record<string, PluginManifest>;
 }) {
+  const { language } = useAppPreferences();
   const [editingBlockId, setEditingBlockId] = useState<string>();
   const [editValues, setEditValues] = useState<Record<string, RuntimeValue>>({});
   const [savingBlockId, setSavingBlockId] = useState<string>();
-  const visibleResults = execution.blocks.filter(
-    (item) =>
-      item.status === "completed" ||
-      ((item.status === "in_progress" || item.status === "failed" || item.status === "cancelled") &&
-        Object.values(item.values).some((value) => !isEmptyDisplayValue(value))),
-  );
-  if (!visibleResults.length) return null;
+  const completedBlocks = execution.blocks.filter((item) => item.status === "completed").length;
 
   return (
     <section className="rounded-xl border border-border/70 bg-card p-4">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Resultados produzidos
-      </h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Execução do método
+        </h3>
+        <Badge variant="outline">
+          {completedBlocks}/{execution.blocks.length}
+        </Badge>
+      </div>
       <div className="mt-3 space-y-2">
-        {visibleResults.map((blockExecution) => {
+        {execution.blocks.map((blockExecution, index) => {
           const block = execution.methodSnapshot.blocks.find(
             (candidate) => candidate.id === blockExecution.blockId,
           );
@@ -616,15 +556,36 @@ function ExecutionResults({
           const selectedItemId = blockExecution.values.selectedItemId;
           const selectedItem =
             block.type === "ESCOLHER" && typeof selectedItemId === "string"
-              ? libraryItems.find((item) => item.id === selectedItemId)
+              ? (blockExecution.collectionSelection?.item ??
+                libraryItems.find((item) => item.id === selectedItemId))
               : undefined;
-          const collection = collections.find(
-            (candidate) => candidate.id === selectedItem?.collectionId,
-          );
+          const collection =
+            blockExecution.collectionSelection?.collection ??
+            collections.find((candidate) => candidate.id === selectedItem?.collectionId);
           const outputs = (block.outputs ?? []).filter(
             (output) => !isEmptyDisplayValue(blockExecution.values[output.key]),
           );
           const editing = editingBlockId === blockExecution.blockId;
+          const pluginManifest = block.plugin ? pluginManifests[block.plugin.pluginId] : undefined;
+          const pluginCapability =
+            block.plugin && pluginManifest
+              ? localizePluginManifest(pluginManifest, language).capabilities.find(
+                  (capability) => capability.id === block.plugin?.capabilityId,
+                )
+              : undefined;
+          const itemActions =
+            block.plugin && pluginCapability
+              ? (pluginCapability.itemActions ?? [])
+              : ([{ action: "replace" }] satisfies PluginItemActionDeclaration[]);
+          const showExecutionItemsWorkspace = Boolean(
+            (pluginCapability?.execution.itemOrchestration && blockExecution.itemProgress) ||
+            blockExecution.items?.some(
+              (item) =>
+                item.output !== undefined ||
+                item.parentItemId !== undefined ||
+                item.pluginCorrelation !== undefined,
+            ),
+          );
 
           async function saveEditedValues() {
             setSavingBlockId(blockExecution.blockId);
@@ -649,8 +610,21 @@ function ExecutionResults({
           return (
             <details
               key={blockExecution.blockId}
-              open={blockExecution.status !== "completed"}
-              className="group rounded-lg border border-border/60 bg-background/30"
+              open={[
+                "awaiting_human",
+                "in_progress",
+                "blocked_executor",
+                "failed",
+                "cancelled",
+              ].includes(blockExecution.status)}
+              className={cn(
+                "group rounded-lg border bg-background/30 transition-colors duration-500",
+                blockExecution.status === "awaiting_human"
+                  ? "border-warning/45 bg-warning/5"
+                  : ["in_progress", "blocked_executor"].includes(blockExecution.status)
+                    ? "border-brand/40 bg-brand/5"
+                    : "border-border/60",
+              )}
             >
               <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-medium">
                 {blockExecution.status === "completed" ? (
@@ -659,20 +633,29 @@ function ExecutionResults({
                   <AlertTriangle className="size-4 text-destructive" />
                 ) : blockExecution.status === "cancelled" ? (
                   <Square className="size-4 text-muted-foreground" />
-                ) : (
+                ) : ["in_progress", "blocked_executor"].includes(blockExecution.status) ? (
                   <LoaderCircle className="size-4 animate-spin text-brand-soft" />
+                ) : blockExecution.status === "awaiting_human" ? (
+                  <MousePointer2 className="size-4 text-warning" />
+                ) : (
+                  <span className="grid size-4 place-items-center font-mono text-[10px] text-muted-foreground">
+                    {index + 1}
+                  </span>
                 )}
                 <span className="min-w-0 flex-1 truncate">{block.name ?? block.type}</span>
                 <Badge variant="outline" className="text-[9px] text-muted-foreground">
                   {STATUS_LABEL[blockExecution.status]}
                 </Badge>
               </summary>
+              {blockExecution.status === "in_progress" && blockExecution.progress !== undefined ? (
+                <Progress value={blockExecution.progress * 100} className="mx-3 mb-2 h-1 w-auto" />
+              ) : null}
               <div className="border-t border-border/60 p-3">
-                {blockExecution.items?.length ? (
+                {showExecutionItemsWorkspace ? (
                   <ExecutionItemsWorkspace
                     execution={execution}
                     blockExecution={blockExecution}
-                    onRetryItem={(itemId) => onRetryItem(blockExecution.blockId, itemId)}
+                    itemActions={itemActions}
                   />
                 ) : null}
                 {!selectedItem &&
@@ -725,7 +708,7 @@ function ExecutionResults({
                       <ResultValue
                         key={field.id}
                         label={field.label}
-                        type={field.type}
+                        shape={field.shape}
                         value={selectedItem.values[field.id]}
                         showCharacterCount
                       />
@@ -744,17 +727,19 @@ function ExecutionResults({
                       <ResultValue
                         key={output.id}
                         label={output.label}
-                        type={output.type}
+                        shape={output.shape}
                         presentation={output.presentation}
                         value={blockExecution.values[output.key]}
                         showCharacterCount
                       />
                     ))}
                   </div>
-                ) : (
+                ) : blockExecution.status === "completed" ? (
                   <p className="text-xs text-muted-foreground">
                     Esta ação foi concluída sem uma entrega visual.
                   </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Entrega ainda não disponível.</p>
                 )}
               </div>
             </details>
@@ -767,18 +752,20 @@ function ExecutionResults({
 
 function ResultValue({
   label,
-  type,
+  shape,
   presentation,
   value,
   source,
   showCharacterCount = true,
+  compact = true,
 }: {
   label: string;
-  type: Parameters<typeof RuntimeValueViewer>[0]["type"];
+  shape: Parameters<typeof RuntimeValueViewer>[0]["shape"];
   presentation?: Parameters<typeof RuntimeValueViewer>[0]["presentation"];
   value: RuntimeValue | undefined;
   source?: string;
   showCharacterCount?: boolean;
+  compact?: boolean;
 }) {
   return (
     <div className="min-w-0 rounded-lg border border-border/50 bg-card/60 p-3">
@@ -793,10 +780,10 @@ function ResultValue({
         )}
       </div>
       <RuntimeValueViewer
-        type={type}
+        shape={shape}
         presentation={presentation}
         value={value}
-        compact
+        compact={compact}
         showCharacterCount={showCharacterCount}
       />
     </div>
@@ -806,20 +793,25 @@ function ResultValue({
 function ExecutionItemsWorkspace({
   execution,
   blockExecution,
-  onRetryItem,
+  itemActions,
 }: {
   execution: ProcessExecution;
   blockExecution: BlockExecution;
-  onRetryItem: (itemId: string) => void;
+  itemActions: PluginItemActionDeclaration[];
 }) {
+  const { t } = useAppPreferences();
   const [editingItemId, setEditingItemId] = useState<string>();
   const [draft, setDraft] = useState("");
   const [savingItemId, setSavingItemId] = useState<string>();
   const [replacingItemId, setReplacingItemId] = useState<string>();
+  const [actingItemId, setActingItemId] = useState<string>();
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const items = [...(blockExecution.items ?? [])].sort((a, b) => a.order - b.order);
   const itemIds = items.map((item) => item.id);
   const canReorder = blockExecution.status !== "in_progress" && items.length > 1;
+  const declaredActions = new Map(
+    itemActions.map((declaration) => [declaration.action, declaration]),
+  );
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -895,13 +887,37 @@ function ExecutionItemsWorkspace({
     }
   }
 
+  async function runItemAction(item: BlockExecutionItem, action: "regenerate" | "select") {
+    setActingItemId(item.id);
+    try {
+      await runBlockExecutionItemAction(
+        execution.id,
+        blockExecution.blockId,
+        item.id,
+        action,
+        execution.revision ?? 0,
+      );
+      toast.success(action === "regenerate" ? t("Item regenerado") : t("Item selecionado"));
+    } catch (error) {
+      toast.error(t("Não foi possível executar a ação no item"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setActingItemId(undefined);
+    }
+  }
+
+  function actionLabel(action: PluginItemAction, fallback: string) {
+    return declaredActions.get(action)?.label ?? t(fallback);
+  }
+
   return (
     <div className="mb-4 rounded-lg border border-border/60 bg-card/40 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold">Itens da execução</p>
+          <p className="text-xs font-semibold">{t("Itens da execução")}</p>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            Edite, substitua ou arraste os itens para reorganizar a sequência.
+            {t("Use apenas as ações declaradas pelo plugin; arraste para reorganizar a sequência.")}
           </p>
         </div>
         {blockExecution.itemProgress ? (
@@ -915,7 +931,8 @@ function ExecutionItemsWorkspace({
               const output = singleItemOutput(item.output);
               const kind = itemOutputKind(item.output);
               const isEditing = editingItemId === item.id;
-              const busy = savingItemId === item.id || replacingItemId === item.id;
+              const busy =
+                savingItemId === item.id || replacingItemId === item.id || actingItemId === item.id;
               const canMutate = blockExecution.status !== "in_progress";
               const media = isStoredFileValue(output) ? output : undefined;
               return (
@@ -929,13 +946,18 @@ function ExecutionItemsWorkspace({
                       <div className="flex min-h-10 items-center gap-2 border-b border-border/50 px-3 py-2">
                         {dragHandle}
                         <Badge variant="outline" className="shrink-0 text-[10px]">
-                          Item {item.order + 1}
+                          {t("Item")} {item.order + 1}
                         </Badge>
+                        {item.selected ? (
+                          <Badge variant="secondary" className="shrink-0 text-[9px]">
+                            {t("Selecionado")}
+                          </Badge>
+                        ) : null}
                         <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
                           {itemStatusLabel(item.status)}
                         </span>
                         <span className="shrink-0 text-[10px] text-muted-foreground">
-                          Tentativa {item.attempt}
+                          {t("Tentativa")} {item.attempt}
                         </span>
                       </div>
 
@@ -952,7 +974,7 @@ function ExecutionItemsWorkspace({
                               variant="ghost"
                               onClick={() => setEditingItemId(undefined)}
                             >
-                              Cancelar
+                              {t("Cancelar")}
                             </Button>
                             <Button
                               size="sm"
@@ -962,7 +984,7 @@ function ExecutionItemsWorkspace({
                               {busy ? (
                                 <LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
                               ) : null}
-                              Salvar item
+                              {t("Salvar item")}
                             </Button>
                           </div>
                         </div>
@@ -997,7 +1019,7 @@ function ExecutionItemsWorkspace({
                       ) : output !== undefined ? (
                         <div className="min-h-40 flex-1 p-3">
                           <RuntimeValueViewer
-                            type={kind ?? "text"}
+                            shape={contentShape(kind ?? "text")}
                             value={output as RuntimeValue}
                             compact
                           />
@@ -1005,24 +1027,32 @@ function ExecutionItemsWorkspace({
                       ) : (
                         <div className="flex min-h-40 flex-1 items-center justify-center p-3">
                           <p className="text-xs text-muted-foreground">
-                            Sem resultado materializado.
+                            {t("Sem resultado materializado.")}
                           </p>
                         </div>
                       )}
 
-                      {canMutate && !isEditing ? (
+                      {canMutate && !isEditing && declaredActions.size > 0 ? (
                         <div className="mt-auto flex items-center gap-1 border-t border-border/50 bg-card/70 p-1.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-8 min-w-0 flex-1 gap-1.5 px-2 text-[11px]"
-                            disabled={busy}
-                            onClick={() => onRetryItem(item.id)}
-                          >
-                            <RotateCcw className="size-3.5 shrink-0" />
-                            <span className="truncate">Regenerar item</span>
-                          </Button>
-                          {kind === "text" ? (
+                          {declaredActions.has("regenerate") ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 min-w-0 flex-1 gap-1.5 px-2 text-[11px]"
+                              disabled={busy}
+                              onClick={() => void runItemAction(item, "regenerate")}
+                            >
+                              {actingItemId === item.id ? (
+                                <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
+                              ) : (
+                                <RotateCcw className="size-3.5 shrink-0" />
+                              )}
+                              <span className="truncate">
+                                {actionLabel("regenerate", "Regenerar item")}
+                              </span>
+                            </Button>
+                          ) : null}
+                          {declaredActions.has("replace") && kind === "text" ? (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -1033,9 +1063,11 @@ function ExecutionItemsWorkspace({
                               }}
                             >
                               <Pencil className="size-3.5 shrink-0" />
-                              <span className="truncate">Editar item</span>
+                              <span className="truncate">
+                                {actionLabel("replace", "Editar item")}
+                              </span>
                             </Button>
-                          ) : kind ? (
+                          ) : declaredActions.has("replace") && kind ? (
                             <>
                               <input
                                 ref={(element) => {
@@ -1060,28 +1092,63 @@ function ExecutionItemsWorkspace({
                                 ) : (
                                   <Upload className="size-3.5 shrink-0" />
                                 )}
-                                <span className="truncate">Substituir arquivo</span>
+                                <span className="truncate">
+                                  {actionLabel("replace", "Substituir arquivo")}
+                                </span>
                               </Button>
                             </>
+                          ) : null}
+                          {declaredActions.has("select") ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 min-w-0 flex-1 gap-1.5 px-2 text-[11px]"
+                              disabled={busy || item.selected}
+                              onClick={() => void runItemAction(item, "select")}
+                            >
+                              <MousePointer2 className="size-3.5 shrink-0" />
+                              <span className="truncate">
+                                {actionLabel("select", "Selecionar item")}
+                              </span>
+                            </Button>
+                          ) : null}
+                          {declaredActions.has("download") && isLocalStoredFileUrl(media?.url) ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 min-w-0 flex-1 gap-1.5 px-2 text-[11px]"
+                              asChild
+                            >
+                              <a href={media.url} download={media.name}>
+                                <Download className="size-3.5 shrink-0" />
+                                <span className="truncate">
+                                  {actionLabel("download", "Baixar item")}
+                                </span>
+                              </a>
+                            </Button>
                           ) : null}
                         </div>
                       ) : null}
 
-                      {item.attempts.length > 1 ? (
+                      {item.attempts.some((attempt) => attempt.attempt < item.attempt) ? (
                         <details className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
                           <summary className="cursor-pointer text-[10px]">
-                            Ver tentativas anteriores
+                            {t("Ver tentativas anteriores")}
                           </summary>
                           <div className="mt-2 space-y-1 text-[10px]">
-                            {item.attempts.map((attempt) => (
-                              <div
-                                key={attempt.attempt}
-                                className="flex items-center justify-between gap-2"
-                              >
-                                <span>Tentativa {attempt.attempt}</span>
-                                <span>{itemStatusLabel(attempt.status)}</span>
-                              </div>
-                            ))}
+                            {item.attempts
+                              .filter((attempt) => attempt.attempt < item.attempt)
+                              .map((attempt) => (
+                                <div
+                                  key={attempt.attempt}
+                                  className="flex items-center justify-between gap-2"
+                                >
+                                  <span>
+                                    {t("Tentativa")} {attempt.attempt}
+                                  </span>
+                                  <span>{itemStatusLabel(attempt.status)}</span>
+                                </div>
+                              ))}
                           </div>
                         </details>
                       ) : null}
@@ -1171,13 +1238,13 @@ function itemStatusLabel(status: BlockExecutionItem["status"]) {
 
 function CollapsibleResultValue({
   label,
-  type,
+  shape,
   presentation,
   value,
   source,
 }: {
   label: string;
-  type: Parameters<typeof RuntimeValueViewer>[0]["type"];
+  shape: Parameters<typeof RuntimeValueViewer>[0]["shape"];
   presentation?: Parameters<typeof RuntimeValueViewer>[0]["presentation"];
   value: RuntimeValue | undefined;
   source?: string;
@@ -1207,7 +1274,7 @@ function CollapsibleResultValue({
       </summary>
       <div className="border-t border-border/50 p-3">
         <RuntimeValueViewer
-          type={type}
+          shape={shape}
           presentation={presentation}
           value={value}
           compact
@@ -1288,6 +1355,79 @@ function MethodPreview({ method }: { method: ActionBlock[] }) {
   );
 }
 
+function PausedValidationGate({
+  block,
+  blockExecution,
+  onCancel,
+}: {
+  block: ActionBlock;
+  blockExecution: BlockExecution;
+  onCancel: () => void;
+}) {
+  const recordedOutputs = (block.outputs ?? []).filter(
+    (output) => !isEmptyDisplayValue(blockExecution.values[output.key]),
+  );
+  return (
+    <section className="rounded-xl border border-warning/40 bg-warning/5 p-5 sm:p-6">
+      <div className="text-center">
+        <Badge variant="outline" className="border-warning/40 text-warning">
+          Aguardando ação
+        </Badge>
+        <h3 className="mt-3 text-base font-semibold">
+          Validação pausada: <span data-i18n-ignore>{block.name ?? block.type}</span>
+        </h3>
+        <p className="mx-auto mt-1 max-w-2xl whitespace-pre-wrap text-sm text-muted-foreground">
+          A validação reprovou a entrega e a execução está pausada. Nenhum bloco está em execução.
+        </p>
+      </div>
+
+      {recordedOutputs.length ? (
+        <div className="mt-5 rounded-xl border border-border/70 bg-background/30 p-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Decisão registrada pela validação
+          </h4>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {recordedOutputs.map((output) => (
+              <ResultValue
+                key={output.id}
+                label={output.label}
+                shape={output.shape}
+                presentation={output.presentation}
+                value={blockExecution.values[output.key]}
+                showCharacterCount
+                compact={false}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mx-auto mt-5 max-w-2xl rounded-xl border border-border/70 bg-background/30 p-4 text-left">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Como continuar
+        </h4>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          O bloco validado já concluído pode ser expandido acima e corrigido com Editar entrega.
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          Para repetir apenas esta validação, cancele a execução pausada e depois use Refazer este
+          bloco na tela de cancelamento. O cancelamento preserva os blocos já concluídos e não refaz
+          as etapas anteriores.
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          A próxima validação pode acionar novamente o provedor do validador.
+        </p>
+      </div>
+
+      <div className="mt-5 flex justify-center">
+        <Button variant="outline" onClick={onCancel}>
+          <Square className="mr-1.5 size-3.5 fill-current" /> Cancelar para refazer a validação
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function ActiveExecutionBlock({
   block,
   blockExecution,
@@ -1318,6 +1458,9 @@ function ActiveExecutionBlock({
       )}
       {blockExecution.itemProgress && (
         <ItemProgressSummary itemProgress={blockExecution.itemProgress} />
+      )}
+      {blockExecution.profileLaneProgress && (
+        <ProfileLaneProgressSummary progress={blockExecution.profileLaneProgress} />
       )}
       <div className="mt-4 flex justify-center">
         <OperatorBadge block={block} />
@@ -1366,7 +1509,7 @@ function HumanChoiceGate({
   const hasMissingInputs = resolvedInputs.some((item) => !item.resolved);
   const historicalChoiceCounts = new Map<string, number>();
   for (const resolved of resolvedInputs) {
-    if (resolved.input.source !== "channel_history" || !resolved.resolved) continue;
+    if (resolved.input.binding.kind !== "channel_history" || !resolved.resolved) continue;
     if (!Array.isArray(resolved.value)) continue;
     for (const record of resolved.value) {
       if (!record || typeof record !== "object" || !("value" in record)) continue;
@@ -1403,7 +1546,7 @@ function HumanChoiceGate({
                 <ResultValue
                   key={item.input.id}
                   label={item.input.label}
-                  type={item.input.type}
+                  shape={item.input.shape}
                   presentation={item.input.presentation}
                   value={item.value}
                   source={item.sourceLabel}
@@ -1458,7 +1601,7 @@ function HumanChoiceGate({
                           {field.label}
                         </dt>
                         <dd className="mt-1 text-sm">
-                          <RuntimeValueViewer type={field.type} value={value} compact />
+                          <RuntimeValueViewer shape={field.shape} value={value} compact />
                         </dd>
                       </div>
                     );
@@ -1527,12 +1670,13 @@ function validationOptions(value: RuntimeValue | undefined): ValidationOption[] 
   return value === undefined || value === null ? [] : [value];
 }
 
-function validationOptionType(value: ValidationOption, sourceType: HumanFieldType): HumanFieldType {
-  if (!isStoredFileOption(value)) return typeof value === "string" ? "text" : sourceType;
-  if (value.mimeType.startsWith("image/")) return "image";
-  if (value.mimeType.startsWith("audio/")) return "audio";
-  if (value.mimeType.startsWith("video/")) return "video";
-  return "file";
+function validationOptionShape(value: ValidationOption, sourceShape: ValueShape): ValueShape {
+  if (!isStoredFileOption(value))
+    return typeof value === "string" ? contentShape("text") : sourceShape;
+  if (value.mimeType.startsWith("image/")) return contentShape("image");
+  if (value.mimeType.startsWith("audio/")) return contentShape("audio");
+  if (value.mimeType.startsWith("video/")) return contentShape("video");
+  return contentShape("text", "one", "artifact");
 }
 
 function ValidationChoiceField({
@@ -1572,13 +1716,13 @@ function ValidationChoiceField({
   const fieldKey = field.key;
   const fieldLabel = field.label;
   const fieldRequired = field.required;
-  const targetOutputType = targetOutput.type;
+  const targetOutputShape = targetOutput.shape;
   const storedValue = values[fieldKey];
   const current: ValidationOption[] = multiple
     ? Array.isArray(storedValue)
       ? (storedValue as ValidationOption[])
       : []
-    : targetOutputType === "records" && Array.isArray(storedValue)
+    : targetOutputShape.kind === "record" && Array.isArray(storedValue)
       ? (storedValue.slice(0, 1) as ValidationOption[])
       : storedValue === undefined || storedValue === null
         ? []
@@ -1590,8 +1734,7 @@ function ValidationChoiceField({
     if (!multiple) {
       onChange({
         ...values,
-        [fieldKey]:
-          targetOutputType === "records" ? ([option] as RuntimeValue) : (option as RuntimeValue),
+        [fieldKey]: option as RuntimeValue,
       });
       return;
     }
@@ -1645,7 +1788,7 @@ function ValidationChoiceField({
                   </span>
                   <div className="min-w-0 flex-1">
                     <RuntimeValueViewer
-                      type={validationOptionType(option, targetOutputType)}
+                      shape={validationOptionShape(option, targetOutputShape)}
                       value={option}
                       compact
                     />
@@ -1681,6 +1824,7 @@ function HumanBlockGate({
   libraryItems: ChannelLibraryItem[];
   onProcessCompleted: () => void;
 }) {
+  const { t } = useAppPreferences();
   const blockExecution = execution.blocks.find((item) => item.blockId === block.id);
   const retryFeedback = blockExecution?.retryFeedback;
   const [values, setValues] = useState<Record<string, RuntimeValue>>(() =>
@@ -1701,11 +1845,26 @@ function HumanBlockGate({
   const missingInputs = resolvedInputs.filter((item) => !item.resolved);
   const context: Array<{
     label: string;
-    type: Parameters<typeof RuntimeValueViewer>[0]["type"];
+    shape: Parameters<typeof RuntimeValueViewer>[0]["shape"];
     presentation?: Parameters<typeof RuntimeValueViewer>[0]["presentation"];
     value: RuntimeValue;
     source?: string;
   }> = [];
+  const validationTargetBlock =
+    block.type === "VALIDAR"
+      ? execution.methodSnapshot.blocks.find(
+          (candidate) => candidate.id === block.validation?.targetBlockId,
+        )
+      : undefined;
+  const validationTargetExecution = validationTargetBlock
+    ? execution.blocks.find((candidate) => candidate.blockId === validationTargetBlock.id)
+    : undefined;
+  const validationTargetOutputs =
+    block.type === "VALIDAR" && block.validation?.mode !== "approval"
+      ? (validationTargetBlock?.outputs ?? []).filter(
+          (output) => output.key === block.validation?.targetOutputKey,
+        )
+      : (validationTargetBlock?.outputs ?? []);
 
   for (const previousProcess of projectExecutions
     .filter(
@@ -1721,7 +1880,7 @@ function HumanBlockGate({
       if (!isEmptyDisplayValue(value)) {
         context.push({
           label: output.label,
-          type: output.type,
+          shape: output.shape,
           value: value!,
           source: `Processo ${PROCESS_META[previousProcess.processType].label}`,
         });
@@ -1734,14 +1893,18 @@ function HumanBlockGate({
       (item) => item.id === previous.blockId,
     );
     if (previousBlock?.type === "ESCOLHER" && typeof previous.values.selectedItemId === "string") {
-      const selectedItem = libraryItems.find((item) => item.id === previous.values.selectedItemId);
-      const collection = collections.find((item) => item.id === selectedItem?.collectionId);
+      const selectedItem =
+        previous.collectionSelection?.item ??
+        libraryItems.find((item) => item.id === previous.values.selectedItemId);
+      const collection =
+        previous.collectionSelection?.collection ??
+        collections.find((item) => item.id === selectedItem?.collectionId);
       for (const field of collection?.fields ?? []) {
         const value = selectedItem?.values[field.id];
         if (value !== undefined) {
           context.push({
             label: field.label,
-            type: field.type,
+            shape: field.shape,
             value,
             source: previousBlock.name ?? "Escolher",
           });
@@ -1754,7 +1917,7 @@ function HumanBlockGate({
       if (!isEmptyDisplayValue(value)) {
         context.push({
           label: output.label,
-          type: output.type,
+          shape: output.shape,
           value: value!,
           source: previousBlock?.name ?? previousBlock?.type,
         });
@@ -1770,7 +1933,12 @@ function HumanBlockGate({
           (item) => item.id === previous.blockId,
         );
         return (definition?.outputs ?? [])
-          .filter((output) => output.type === "list")
+          .filter(
+            (output) =>
+              output.shape.kind === "content" &&
+              output.shape.family === "text" &&
+              output.shape.cardinality === "many",
+          )
           .flatMap((output) => valuesAsOptions(previous.values[output.key]));
       })
       .find((options) => options.length > 0) ?? [];
@@ -1862,6 +2030,26 @@ function HumanBlockGate({
         </div>
       )}
 
+      {validationTargetBlock && validationTargetExecution && validationTargetOutputs.length > 0 && (
+        <div className="mt-5 rounded-xl border border-border/70 bg-background/30 p-4">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("Bloco validado")} · {validationTargetBlock.name ?? validationTargetBlock.type}
+          </h4>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {validationTargetOutputs.map((output) => (
+              <CollapsibleResultValue
+                key={output.id}
+                label={output.label}
+                shape={output.shape}
+                presentation={output.presentation}
+                value={validationTargetExecution.values[output.key]}
+                source={validationTargetBlock.name ?? validationTargetBlock.type}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {resolvedInputs.length > 0 && (
         <div className="mt-5 rounded-xl border border-border/70 bg-background/30 p-4">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1874,7 +2062,7 @@ function HumanBlockGate({
                   <CollapsibleResultValue
                     key={item.input.id}
                     label={item.input.label}
-                    type={item.input.type}
+                    shape={item.input.shape}
                     presentation={item.input.presentation}
                     value={item.value}
                     source={item.sourceLabel}
@@ -1883,7 +2071,7 @@ function HumanBlockGate({
                   <ResultValue
                     key={item.input.id}
                     label={item.input.label}
-                    type={item.input.type}
+                    shape={item.input.shape}
                     presentation={item.input.presentation}
                     value={item.value}
                     source={item.sourceLabel}
@@ -2034,8 +2222,45 @@ function MissingPluginGate({ block }: { block: ActionBlock }) {
   );
 }
 
-function PluginExecutionGate({ block }: { block: ActionBlock }) {
+function PluginExecutionGate({
+  block,
+  execution,
+  blockExecution,
+}: {
+  block: ActionBlock;
+  execution: ProcessExecution;
+  blockExecution: BlockExecution;
+}) {
+  const { t } = useAppPreferences();
   const plugin = block.plugin;
+  const runtimeFields = (block.inputs ?? [])
+    .filter((input) => input.binding.kind === "runtime")
+    .map((input) => ({
+      id: input.id,
+      key: input.id,
+      label: input.label,
+      shape: input.shape,
+      required: true,
+      presentation: input.presentation,
+    }));
+  const [values, setValues] = useState<Record<string, RuntimeValue>>(
+    blockExecution.runtimeInputs ?? {},
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      await submitBlockRuntimeInputs(execution.id, block.id, execution.revision ?? 0, values);
+      toast.success(t("Entradas enviadas. O plugin será iniciado."));
+    } catch (error) {
+      toast.error(t("Não foi possível enviar as entradas"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <section className="rounded-xl border border-brand/35 bg-brand/5 p-5 sm:p-6">
@@ -2047,23 +2272,42 @@ function PluginExecutionGate({ block }: { block: ActionBlock }) {
             ) : (
               <Code2 className="mr-1 size-3" />
             )}
-            Execução automática
+            {t("Execução automática")}
           </Badge>
           <h3 className="mt-3 text-base font-semibold">{block.name ?? block.type}</h3>
           <p className="mt-1 max-w-2xl whitespace-pre-wrap text-sm text-muted-foreground">
-            {block.instructions || "Este bloco será executado pelo plugin configurado no Método."}
+            {block.instructions ||
+              t("Este bloco será executado pelo plugin configurado no Método.")}
           </p>
         </div>
         <OperatorBadge block={block} />
       </header>
 
       <div className="mt-5 rounded-xl border border-border/70 bg-card p-4">
-        <p className="text-xs font-semibold">Plugin</p>
+        <p className="text-xs font-semibold">{t("Plugin")}</p>
         <p className="mt-1 font-mono text-xs text-muted-foreground">{plugin?.pluginId}</p>
-        <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-          <LoaderCircle className="size-3.5 animate-spin" />
-          Executando automaticamente...
-        </p>
+        {runtimeFields.length ? (
+          <div className="mt-4 space-y-4">
+            <div>
+              <p className="text-sm font-medium">{t("Arquivos e dados desta execução")}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(
+                  "O ContentFlow salva estes itens na execução e entrega ao plugin somente pelas portas declaradas.",
+                )}
+              </p>
+            </div>
+            <RuntimeFieldsForm fields={runtimeFields} values={values} onChange={setValues} />
+            <Button type="button" disabled={submitting} onClick={() => void submit()}>
+              {submitting && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+              {t("Enviar e executar")}
+            </Button>
+          </div>
+        ) : (
+          <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircle className="size-3.5 animate-spin" />
+            {t("Executando automaticamente...")}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -2127,25 +2371,43 @@ function ExecutionCancelled({
   );
 }
 
-export function FailedExecutionGate({
+export function resolveFailedExecutionVisibleError(
+  error: string | undefined,
+  errorCode: string | undefined,
+  language: "pt-BR" | "en" | "es",
+): string {
+  return (
+    projectSelectionFailureTextForCode(errorCode, language) ??
+    error ??
+    "A execução não pôde ser concluída."
+  );
+}
+
+function FailedExecutionGate({
   block,
   error,
+  errorCode,
   itemProgress,
   canAcceptCurrent,
   isLastBlock,
   onAcceptCurrent,
   onRetry,
-  isRetrying,
+  onRestartProcess,
 }: {
   block: ActionBlock;
   error?: string;
+  errorCode?: string;
   itemProgress?: BlockItemProgress;
-  canAcceptCurrent?: boolean;
-  isLastBlock?: boolean;
-  onAcceptCurrent?: () => void;
+  canAcceptCurrent: boolean;
+  isLastBlock: boolean;
+  onAcceptCurrent: () => void;
   onRetry: (retryScope: BlockItemRetryScope) => void;
-  isRetrying?: boolean;
+  onRestartProcess: () => void;
 }) {
+  const { language } = useAppPreferences();
+  // Only new project-selection failures map the structured code to localized
+  // text; all legacy errors render the server message unchanged.
+  const visibleError = resolveFailedExecutionVisibleError(error, errorCode, language);
   const canContinuePending = Boolean(
     itemProgress && itemProgress.completed > 0 && itemProgress.pending > 0,
   );
@@ -2154,10 +2416,10 @@ export function FailedExecutionGate({
       <AlertTriangle className="mx-auto size-7 text-destructive" />
       <h3 className="mt-3 text-base font-semibold">O bloco “{block.name ?? block.type}” falhou</h3>
       <p className="mx-auto mt-1 max-w-xl text-sm text-muted-foreground">
-        {error ?? "A execução não pôde ser concluída."}
+        {visibleError}
       </p>
       {itemProgress && <ItemProgressSummary itemProgress={itemProgress} showFailure />}
-      {canAcceptCurrent && onAcceptCurrent && (
+      {canAcceptCurrent && (
         <Button className="mt-5" onClick={onAcceptCurrent}>
           <Check className="mr-1.5 size-4" />
           {isLastBlock ? "Finalizar com entregas atuais" : "Usar entrega atual e continuar"}
@@ -2169,14 +2431,10 @@ export function FailedExecutionGate({
             O núcleo preservou os itens concluídos deste lote.
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
-            <Button
-              variant="destructive"
-              disabled={isRetrying}
-              onClick={() => onRetry("remaining")}
-            >
+            <Button variant="destructive" onClick={() => onRetry("remaining")}>
               <Play className="mr-1.5 size-4" /> Continuar pendentes
             </Button>
-            <Button variant="outline" disabled={isRetrying} onClick={() => onRetry("all")}>
+            <Button variant="outline" onClick={() => onRetry("all")}>
               <RotateCcw className="mr-1.5 size-4" /> Refazer este bloco
             </Button>
           </div>
@@ -2185,165 +2443,14 @@ export function FailedExecutionGate({
         <Button
           className={canAcceptCurrent ? "mt-3" : "mt-5"}
           variant="outline"
-          disabled={isRetrying}
           onClick={() => onRetry("all")}
         >
-          <RotateCcw className="mr-1.5 size-4" />
-          {itemProgress ? "Refazer este bloco" : "Tentar novamente"}
+          <RotateCcw className="mr-1.5 size-4" /> Refazer este bloco
         </Button>
       )}
-    </section>
-  );
-}
-
-export function ExternalRecoveryGate({
-  block,
-  blockExecution,
-  snapshot,
-  onConfirm,
-  isSubmitting,
-  revisionError,
-  onClearError,
-}: {
-  block: ActionBlock;
-  blockExecution: BlockExecution;
-  snapshot: PluginExternalRecoverySnapshot;
-  onConfirm: (revision: string) => void;
-  isSubmitting: boolean;
-  revisionError?: string;
-  onClearError?: () => void;
-}) {
-  const [confirmed, setConfirmed] = useState(false);
-
-  useEffect(() => {
-    setConfirmed(false);
-  }, [snapshot.snapshotRevision, revisionError]);
-
-  const reason =
-    snapshot.reason ??
-    blockExecution.error ??
-    "Tentativas automáticas esgotadas no serviço externo.";
-  const targetLabel = snapshot.targetId;
-  const cycleLabel = snapshot.cycle;
-  const revisionLabel = snapshot.snapshotRevision;
-  const systemLabel = snapshot.system;
-
-  return (
-    <section
-      data-testid="external-recovery-gate"
-      className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-6 text-left space-y-4"
-    >
-      <div className="flex items-start gap-3">
-        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-amber-500/20 text-amber-500">
-          <AlertTriangle className="size-5" />
-        </div>
-        <div className="space-y-1">
-          <h3 className="text-base font-semibold text-foreground">
-            Recuperação Externa Necessária: “{block.name ?? block.type}”
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            A execução externa foi esgotada ou bloqueada. Para retomar, é necessária verificação e
-            autorização explícita.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 rounded-lg border border-border/60 bg-background/50 p-4 text-xs sm:grid-cols-2">
-        <div>
-          <span className="font-medium text-muted-foreground">Alvo / Layout:</span>
-          <p className="font-semibold text-foreground" data-testid="recovery-target">
-            {targetLabel} {systemLabel ? `(${systemLabel})` : ""}
-          </p>
-        </div>
-        <div>
-          <span className="font-medium text-muted-foreground">Ciclo:</span>
-          <p className="font-semibold text-foreground" data-testid="recovery-cycle">
-            {cycleLabel}
-          </p>
-        </div>
-        <div className="sm:col-span-2">
-          <span className="font-medium text-muted-foreground">Revisão do Snapshot:</span>
-          <p
-            className="font-mono text-xs text-foreground break-all"
-            data-testid="recovery-revision"
-          >
-            {revisionLabel}
-          </p>
-        </div>
-        <div className="sm:col-span-2">
-          <span className="font-medium text-muted-foreground">Motivo:</span>
-          <p className="text-destructive font-medium" data-testid="recovery-reason">
-            {reason}
-          </p>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-border/60 bg-muted/40 p-3 text-xs text-muted-foreground space-y-1">
-        <span className="font-semibold text-foreground">Consequência da Retomada:</span>
-        <p data-testid="recovery-consequence">
-          A confirmação emitirá uma autorização de uso único vinculada à revisão vigente deste alvo.
-          Um novo ciclo de tentativas será liberado no serviço externo. Qualquer efeito externo
-          incerto anterior bloqueará a recuperação.
-        </p>
-      </div>
-
-      {revisionError && (
-        <div
-          data-testid="recovery-revision-error"
-          className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive space-y-1"
-        >
-          <div className="flex items-center gap-1.5 font-semibold">
-            <AlertTriangle className="size-4 shrink-0" />
-            <span>Revisão alterada ou expirada</span>
-          </div>
-          <p>{revisionError}</p>
-        </div>
-      )}
-
-      <div className="pt-2 space-y-3">
-        <label className="flex items-start gap-2.5 text-xs text-foreground cursor-pointer select-none">
-          <Checkbox
-            id="confirm-recovery-consent"
-            data-testid="recovery-confirm-checkbox"
-            checked={confirmed}
-            disabled={isSubmitting}
-            onCheckedChange={(checked) => {
-              if (onClearError) onClearError();
-              setConfirmed(Boolean(checked));
-            }}
-          />
-          <span className="leading-tight pt-0.5">
-            Confirmo que inspecionei o alvo <strong>{targetLabel}</strong> e autorizo expressamente
-            a retomada da recuperação para o ciclo <strong>{cycleLabel}</strong> com a revisão
-            exibida.
-          </span>
-        </label>
-
-        <div className="flex items-center gap-3">
-          <Button
-            data-testid="recovery-confirm-button"
-            variant="default"
-            className="bg-amber-600 hover:bg-amber-700 text-white"
-            disabled={!confirmed || isSubmitting}
-            onClick={() => {
-              if (!confirmed || isSubmitting) return;
-              onConfirm(revisionLabel);
-            }}
-          >
-            {isSubmitting ? (
-              <>
-                <LoaderCircle className="mr-1.5 size-4 animate-spin" />
-                Autorizando recuperação...
-              </>
-            ) : (
-              <>
-                <RotateCcw className="mr-1.5 size-4" />
-                Confirmar e Retomar Recuperação
-              </>
-            )}
-          </Button>
-        </div>
-      </div>
+      <Button className="mt-3" variant="ghost" onClick={onRestartProcess}>
+        Reiniciar processo do zero
+      </Button>
     </section>
   );
 }
@@ -2368,6 +2475,63 @@ function ItemProgressSummary({
           <span>Falhou no item</span>: {itemProgress.failedIndex + 1}
         </Badge>
       )}
+    </div>
+  );
+}
+
+function ProfileLaneProgressSummary({ progress }: { progress: ProfileLaneExecutionProgress }) {
+  const { t } = useAppPreferences();
+  return (
+    <div
+      className="mx-auto mt-4 max-w-2xl rounded-lg border border-border/70 bg-background/45 p-3 text-left"
+      role="status"
+      aria-live="polite"
+      aria-label={t("Progresso por perfil")}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold">{t("Progresso por perfil")}</p>
+        <span className="text-[10px] text-muted-foreground">
+          {t("Concluídos")}: {progress.counts.completed}/{progress.counts.total}
+          {" · "}
+          {t("Ativos")}: {progress.counts.active}
+          {" · "}
+          {t("Pendentes")}: {progress.counts.pending}
+          {progress.counts.failed > 0 ? " · " + t("Falhos") + ": " + progress.counts.failed : ""}
+        </span>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        {progress.lanes.map((lane, index) => {
+          const lanePercent = lane.counts.total
+            ? Math.round((lane.counts.completed / lane.counts.total) * 100)
+            : 0;
+          return (
+            <div key={lane.laneId} className="rounded-md border border-border/60 p-2.5">
+              <div className="flex items-center justify-between gap-2 text-[10px]">
+                <span className="font-medium">
+                  {t("Perfil")} {index + 1}
+                </span>
+                <span className="text-muted-foreground">
+                  {lane.counts.completed}/{lane.counts.total}
+                </span>
+              </div>
+              <Progress
+                value={lanePercent}
+                className="mt-2 h-1"
+                aria-label={t("Progresso do perfil") + " " + (index + 1) + ": " + lanePercent + "%"}
+              />
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
+                {t("Ativos")}: {lane.counts.active}
+                {" · "}
+                {t("Pendentes")}: {lane.counts.pending}
+                {lane.counts.failed > 0 ? " · " + t("Falhos") + ": " + lane.counts.failed : ""}
+                {lane.reconciliationRequired > 0
+                  ? " · " + t("Reconciliação necessária") + ": " + lane.reconciliationRequired
+                  : ""}
+              </p>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2405,7 +2569,7 @@ function ProcessCompleted({
             <ResultValue
               key={field.id}
               label={field.label}
-              type={field.type}
+              shape={field.shape}
               value={output[field.key]}
               showCharacterCount
             />

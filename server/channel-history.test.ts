@@ -12,9 +12,20 @@ import type {
 import { recordBlockDeliveries, recordProcessOutputDelivery } from "../src/lib/deliveries";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
 import { createChannelHistoryRecordFields } from "../src/lib/channel-history";
+import { contentShape, controlShape } from "../src/lib/data-shape";
 import { createProcessOutputFields, getMethodConfigurationIssue } from "../src/lib/human-workflow";
 
 const now = "2026-08-22T12:00:00.000Z";
+
+function historyShape(
+  valueShape: ReturnType<typeof contentShape> | ReturnType<typeof controlShape>,
+) {
+  return {
+    kind: "record" as const,
+    cardinality: "many" as const,
+    fields: createChannelHistoryRecordFields(valueShape),
+  };
+}
 
 function project(id: string, channelId = "channel-a"): Project {
   return {
@@ -65,7 +76,7 @@ function execution({
     projectId,
     channelId,
     processType,
-    methodSnapshot: { name: "Método de teste", processType, blocks: [block] },
+    methodSnapshot: { contractVersion: 3, name: "Método de teste", processType, blocks: [block] },
     blocks: [
       {
         blockId: block.id,
@@ -95,7 +106,7 @@ const sizeBlock: ActionBlock = {
       id: "target-size-output",
       label: "Tamanho alvo",
       key: "target_chars",
-      type: "number",
+      shape: controlShape("number"),
       required: true,
     },
   ],
@@ -125,18 +136,22 @@ test("histórico do canal só pode ser configurado nos blocos ESCOLHER e CRIAR",
       {
         id: "invalid-history",
         label: "Histórico inválido",
-        type: "records",
-        source: "channel_history",
-        sourceProcessType: "script",
-        blockId: sizeBlock.id,
-        sourceKey: "target_chars",
-        recordFields: createChannelHistoryRecordFields("number"),
+        shape: historyShape(controlShape("number")),
+        binding: {
+          kind: "channel_history",
+          processType: "script",
+          blockId: sizeBlock.id,
+          outputKey: "target_chars",
+          limit: 10,
+          eligibility: "completed",
+        },
       },
     ],
   };
 
   assert.match(
     getMethodConfigurationIssue({
+      contractVersion: 3,
       name: "Método de teste",
       processType: "script",
       blocks: [invalidBlock],
@@ -146,6 +161,7 @@ test("histórico do canal só pode ser configurado nos blocos ESCOLHER e CRIAR",
 
   assert.equal(
     getMethodConfigurationIssue({
+      contractVersion: 3,
       name: "Método de teste",
       processType: "script",
       blocks: [{ ...invalidBlock, type: "CRIAR" }],
@@ -201,7 +217,7 @@ test("resolve explicitamente um layout do item escolhido para o bloco seguinte",
       {
         id: "layout-field",
         label: "Layout",
-        type: "thumbnail_layout",
+        shape: controlShape("thumbnail_layout"),
         required: true,
       },
     ],
@@ -234,10 +250,12 @@ test("resolve explicitamente um layout do item escolhido para o bloco seguinte",
       {
         id: "chosen-layout",
         label: "Layout escolhido",
-        type: "thumbnail_layout",
-        source: "previous_block",
-        blockId: chooseBlock.id,
-        sourceKey: "layout-field",
+        shape: controlShape("thumbnail_layout"),
+        binding: {
+          kind: "previous_block",
+          blockId: chooseBlock.id,
+          outputKey: "layout-field",
+        },
       },
     ],
     outputs: [
@@ -245,7 +263,7 @@ test("resolve explicitamente um layout do item escolhido para o bloco seguinte",
         id: "thumbnail-output",
         label: "Thumbnail produzida",
         key: "thumbnail",
-        type: "image",
+        shape: contentShape("image"),
         required: true,
       },
     ],
@@ -259,6 +277,7 @@ test("resolve explicitamente um layout do item escolhido para o bloco seguinte",
     channelId: currentProject.channelId,
     processType: "thumbnail",
     methodSnapshot: {
+      contractVersion: 3,
       name: "Método de thumbnail",
       processType: "thumbnail",
       blocks: [chooseBlock, createBlock],
@@ -305,14 +324,19 @@ test("CRIAR recebe os resultados finais anteriores do mesmo processo", () => {
       {
         id: "creation-history",
         label: "Histórico de criações",
-        type: "records",
-        source: "channel_history",
-        sourceProcessType: "script",
-        blockId: "__process_output__",
-        sourceKey: officialOutput.key,
-        historyLimit: 10,
-        historyEligibility: "completed",
-        recordFields: createChannelHistoryRecordFields(officialOutput.type),
+        shape: {
+          kind: "record",
+          cardinality: "many",
+          fields: createChannelHistoryRecordFields(officialOutput.shape),
+        },
+        binding: {
+          kind: "channel_history",
+          processType: "script",
+          blockId: "__process_output__",
+          outputKey: officialOutput.key,
+          limit: 10,
+          eligibility: "completed",
+        },
       },
     ],
     outputs: [officialOutput],
@@ -361,14 +385,15 @@ test("histórico consulta somente outros projetos do mesmo canal e respeita o li
   const currentBlock = choiceBlockWithHistory({
     id: "history-input",
     label: "Últimos tamanhos",
-    type: "records",
-    source: "channel_history",
-    sourceProcessType: "script",
-    blockId: sizeBlock.id,
-    sourceKey: "target_chars",
-    historyLimit: 1,
-    historyEligibility: "completed",
-    recordFields: createChannelHistoryRecordFields("number"),
+    shape: historyShape(controlShape("number")),
+    binding: {
+      kind: "channel_history",
+      processType: "script",
+      blockId: sizeBlock.id,
+      outputKey: "target_chars",
+      limit: 1,
+      eligibility: "completed",
+    },
   });
   const currentExecution = execution({
     id: "current-execution",
@@ -430,12 +455,15 @@ test("histórico vazio não bloqueia o primeiro projeto", () => {
   const block = choiceBlockWithHistory({
     id: "history-input",
     label: "Últimos tamanhos",
-    type: "records",
-    source: "channel_history",
-    sourceProcessType: "script",
-    blockId: sizeBlock.id,
-    sourceKey: "target_chars",
-    recordFields: createChannelHistoryRecordFields("number"),
+    shape: historyShape(controlShape("number")),
+    binding: {
+      kind: "channel_history",
+      processType: "script",
+      blockId: sizeBlock.id,
+      outputKey: "target_chars",
+      limit: 10,
+      eligibility: "completed",
+    },
   });
   const currentExecution = execution({
     id: "first-execution",
@@ -465,12 +493,15 @@ test("execuções de projetos excluídos deixam de contribuir para o histórico"
   const block = choiceBlockWithHistory({
     id: "history-after-deletion",
     label: "Últimos tamanhos existentes",
-    type: "records",
-    source: "channel_history",
-    sourceProcessType: "script",
-    blockId: sizeBlock.id,
-    sourceKey: "target_chars",
-    recordFields: createChannelHistoryRecordFields("number"),
+    shape: historyShape(controlShape("number")),
+    binding: {
+      kind: "channel_history",
+      processType: "script",
+      blockId: sizeBlock.id,
+      outputKey: "target_chars",
+      limit: 10,
+      eligibility: "completed",
+    },
   });
   const currentExecution = execution({
     id: "current-after-deletion-execution",
@@ -506,13 +537,15 @@ test("filtro de publicados inclui somente projetos com Publicação concluída",
   const historyBlock = choiceBlockWithHistory({
     id: "published-history",
     label: "Tamanhos publicados",
-    type: "records",
-    source: "channel_history",
-    sourceProcessType: "script",
-    blockId: sizeBlock.id,
-    sourceKey: "target_chars",
-    historyEligibility: "published",
-    recordFields: createChannelHistoryRecordFields("number"),
+    shape: historyShape(controlShape("number")),
+    binding: {
+      kind: "channel_history",
+      processType: "script",
+      blockId: sizeBlock.id,
+      outputKey: "target_chars",
+      limit: 10,
+      eligibility: "published",
+    },
   });
   const currentExecution = execution({
     id: "current-published-execution",
@@ -538,7 +571,7 @@ test("filtro de publicados inclui somente projetos com Publicação concluída",
     type: "CRIAR",
     operator: "Humano",
     inputs: [],
-    outputs: [{ id: "url", label: "URL", key: "url", type: "url", required: true }],
+    outputs: [{ id: "url", label: "URL", key: "url", shape: controlShape("url"), required: true }],
     parameters: [],
     order: 0,
   };

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, ExternalLink, PlugZap, Sparkles } from "lucide-react";
+import { Check, Copy, Download, PlugZap, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ECOSYSTEM_RESOURCES } from "@/lib/ecosystem-downloads";
+import { ECOSYSTEM_DOWNLOADS } from "@/lib/ecosystem-downloads";
 import { cn } from "@/lib/utils";
 
 type McpInfo = { available: boolean; transport: string; scope: string; config: string };
@@ -79,15 +79,15 @@ export function MethodAgentCta({
               </span>
             </Button>
             <Button asChild variant="outline" className="h-auto justify-start gap-3 px-3 py-2.5">
-              <a href={ECOSYSTEM_RESOURCES.methodDevelopmentSkill} target="_blank" rel="noreferrer">
+              <a href={ECOSYSTEM_DOWNLOADS.methodDevelopmentSkill} target="_blank" rel="noreferrer">
                 <Sparkles className="size-4 shrink-0 text-brand-soft" />
                 <span className="min-w-0 text-left">
-                  <span className="block text-xs font-semibold">Consultar skill de Métodos</span>
+                  <span className="block text-xs font-semibold">Baixar skill de Métodos</span>
                   <span className="block text-[10px] font-normal text-muted-foreground">
                     Contrato e referências atualizados
                   </span>
                 </span>
-                <ExternalLink className="ml-auto size-3.5 shrink-0" />
+                <Download className="ml-auto size-3.5 shrink-0" />
               </a>
             </Button>
           </div>

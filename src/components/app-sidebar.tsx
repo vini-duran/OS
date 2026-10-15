@@ -2,6 +2,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import {
   closestCenter,
   DndContext,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
@@ -10,6 +11,7 @@ import {
 import {
   arrayMove,
   SortableContext,
+  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
@@ -28,7 +30,6 @@ import {
   Layers3,
   LayoutDashboard,
   Plug,
-  Search,
   Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -49,6 +50,7 @@ const processSlug = (process: string) =>
   process === "editing" ? "edit" : process === "publishing" ? "publish" : process;
 
 export function AppSidebar() {
+  const { t } = useAppPreferences();
   const location = useRouterState({ select: (state) => state.location });
   const pathname = location.pathname;
   const channels = useChannels();
@@ -139,12 +141,6 @@ export function AppSidebar() {
               active={pathname === `/channel/${channel.id}/library`}
             />
             <NavItem
-              icon={Search}
-              label="Pesquisa estratégica"
-              to={`/channel/${channel.id}/research`}
-              active={pathname === `/channel/${channel.id}/research`}
-            />
-            <NavItem
               icon={FolderKanban}
               label="Projetos"
               to={`/channel/${channel.id}`}
@@ -182,28 +178,22 @@ export function AppSidebar() {
               to={`/channel/${channel.id}/library`}
               active={pathname === `/channel/${channel.id}/library`}
             />
-            <NavItem
-              icon={Search}
-              label="Pesquisa estratégica"
-              to={`/channel/${channel.id}/research`}
-              active={pathname === `/channel/${channel.id}/research`}
-            />
           </>
         )}
       </nav>
       <div className="border-t border-sidebar-border p-2 sm:p-3">
         <AppPreferencesDialog />
         <a
-          href="https://contentflow-vip.netlify.app/"
+          href="https://andremjr.github.io/contentflow/"
           target="_blank"
           rel="noreferrer"
-          title="Quer participar do desenvolvimento do ContentFlow?"
-          aria-label="Quer participar do desenvolvimento do ContentFlow? Abrir página em uma nova aba"
+          title={t("Saiba mais sobre o projeto ContentFlow")}
+          aria-label={`${t("Saiba mais sobre o projeto ContentFlow")}. ${t("Abrir página em uma nova aba")}`}
           className="group flex items-center justify-center gap-2 rounded-md px-2 py-2.5 text-muted-foreground transition hover:bg-sidebar-accent hover:text-foreground sm:justify-start sm:px-3"
         >
           <HeartHandshake className="size-4 shrink-0" />
           <span className="hidden min-w-0 flex-1 text-xs font-medium leading-snug sm:block">
-            Quer participar do desenvolvimento do ContentFlow?
+            {t("Saiba mais sobre o projeto ContentFlow")}
           </span>
           <ExternalLink className="hidden size-3.5 shrink-0 opacity-60 transition group-hover:opacity-100 sm:block" />
         </a>
@@ -230,7 +220,10 @@ function MethodsNavGroup({
   const [order, setOrder] = useState(() => effectiveProcessOrder(channel));
   const [saving, setSaving] = useState(false);
   const { t } = useAppPreferences();
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   useEffect(() => {
     if (active) setExpanded(true);
@@ -240,10 +233,10 @@ function MethodsNavGroup({
     if (!saving) setOrder(effectiveProcessOrder(channel));
   }, [channel, saving]);
 
-  const moveProcess = (source: UniversalProcess, target: UniversalProcess) => {
-    if (saving || source === target) return;
-    const from = order.indexOf(source);
-    const to = order.indexOf(target);
+  const handleDragEnd = (event: DragEndEvent) => {
+    if (saving || !event.over || event.active.id === event.over.id) return;
+    const from = order.indexOf(event.active.id as UniversalProcess);
+    const to = order.indexOf(event.over.id as UniversalProcess);
     if (from < 0 || to < 0) return;
     const next = arrayMove(order, from, to);
     if (validateProcessDependencies(next, channel.methods).length) {
@@ -264,11 +257,6 @@ function MethodsNavGroup({
         );
       })
       .finally(() => setSaving(false));
-  };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    if (event.over)
-      moveProcess(event.active.id as UniversalProcess, event.over.id as UniversalProcess);
   };
 
   return (
@@ -323,10 +311,6 @@ function MethodsNavGroup({
                     index={index}
                     active={active && (activeProcess ?? "theme") === process}
                     disabled={saving}
-                    onMove={(direction) => {
-                      const target = order[order.indexOf(process) + direction];
-                      if (target) moveProcess(process, target);
-                    }}
                   />
                 ))}
               </div>
@@ -349,14 +333,12 @@ function SortableProcessNavItem({
   index,
   active,
   disabled,
-  onMove,
 }: {
   channel: Channel;
   process: UniversalProcess;
   index: number;
   active: boolean;
   disabled: boolean;
-  onMove: (direction: -1 | 1) => void;
 }) {
   const { t } = useAppPreferences();
   const {
@@ -408,12 +390,6 @@ function SortableProcessNavItem({
         title={t("Clique, segure e arraste para reordenar")}
         {...attributes}
         {...listeners}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-            event.preventDefault();
-            onMove(event.key === "ArrowUp" ? -1 : 1);
-          }
-        }}
         aria-label={`${t("Reordenar processo")} ${t(PROCESS_META[process].label)}`}
       >
         <GripVertical className="size-3.5" />

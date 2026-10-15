@@ -1,3 +1,19 @@
+import { validateCompletedDeliveryEdit } from "./completed-delivery-edit";
+import {
+  UserDataUpgrade,
+  UpgradeError,
+  jobHasCurrentContract,
+  registerUserDataUpgradeRoutes,
+} from "./user-data-upgrade";
+import { observeExecution, observeJob } from "./dev-monitor/probes";
+import { stateEvents } from "./state-events";
+import {
+  reportSupportEvent,
+  supportRequestDiagnostics,
+  supportErrorDiagnostics,
+} from "./support-diagnostics";
+import { disposeCoreBrowserSessions } from "./plugin-runner";
+import { monitorEnabled, devProbe } from "./dev-monitor/client";
 import express, {
   type ErrorRequestHandler,
   type NextFunction,
@@ -6,12 +22,14 @@ import express, {
 } from "express";
 import { z } from "zod";
 import { executionCommands } from "./execution-commands";
+import { synchronizeExecutionMethod } from "../src/lib/execution-core/synchronize-method";
 import { createMethodPackage, readMethodPackage } from "./method-package";
+import { fetchMethodCatalog, methodCatalogCompatible, readCatalogMethod } from "./method-catalog";
 import {
   copyImportedMethods,
   parsePortableLibraryItems,
-  type PortableCollectionV2,
-  type PortableLibraryItemV2,
+  type PortableCollection,
+  type PortableLibraryItem,
 } from "../src/lib/method-file";
 import { deriveProcessOutput } from "../src/lib/process-output";
 import {
@@ -40,10 +58,7 @@ import type {
   BlockExecution,
   BlockExecutionItemValue,
   Channel,
-  ChannelResearchBrief,
-  ChannelResearchRun,
   ChannelLibraryItem,
-  HumanFieldType,
   ProcessExecution,
   ProcessMethod,
   Project,
@@ -52,9 +67,7 @@ import type {
   StrategicCollection,
   ThumbnailLayout,
   UniversalProcess,
-  PluginExternalRecoverySnapshot,
 } from "../src/lib/domain";
-import { CoreKeyStore } from "./security/core-keystore";
 import { createEmptyMethods, PROCESS_META, PROCESS_ORDER } from "../src/lib/domain";
 import {
   effectiveProcessOrder,
@@ -64,6 +77,7 @@ import {
   completedProcessProgress,
   nextExecutableProcess,
   projectProcessOrder,
+  refreshProjectProcessStrategy,
   resolveProcessOrderForMethods,
 } from "../src/lib/process-order";
 import {
@@ -83,28 +97,38 @@ import {
   type ExecutionOrchestratorStatus,
 } from "../src/lib/execution-orchestrator";
 import {
-  getCompatiblePresentationRenderers,
-  getPresentationRestrictionIssue,
-} from "../src/lib/presentation";
-import {
-  validateExternalRecoverySnapshot,
-  type PluginCapability,
-  type PluginExecutionRequest,
-  type PluginExecutionResponse,
-  type PluginFieldContract,
-  type PluginProfileSetup,
+  applyCompletedBlockTransition,
+  applyExecutionCancellation,
+  applyExecutionProjectProjection,
+  applyExecutorBlockCompletion,
+  applyValidationOutcome,
+  createCanonicalProcessExecution,
+  validationOutcomeFromValues,
+} from "../src/lib/execution-core";
+import { getPresentationRestrictionIssue } from "../src/lib/presentation";
+import type {
+  PluginCapability,
+  PluginConfigurationOption,
+  PluginExecutionRequest,
+  PluginExecutionResponse,
+  PluginFieldContract,
+  PluginProfileSetup,
 } from "../src/lib/plugin-contract";
+import { pluginConnectionRequired } from "../src/lib/plugin-contract";
+import {
+  configurationOptionsCacheKey,
+  parseConfigurationOptionsResponse,
+  PluginConfigurationOptionsCache,
+} from "./plugin-configuration-options";
 import {
   instructionCollectionKey,
   instructionVariables,
   resolveInstructionTemplate,
 } from "../src/lib/instruction-template";
-import { isChannelResearchConfig, researchOutputContract } from "../src/lib/channel-research";
 import { resolveBlockInputs } from "../src/lib/runtime-contract";
-import { attemptAfterRetryInvalidation } from "../src/lib/retry-attempt";
+import { normalizeItemReplacement } from "../src/lib/plugin-item-actions";
 import {
   activeProjectDeliveries,
-  invalidateBlockDeliveries,
   normalizeExecutionDeliveries,
   recordBlockDeliveries,
   recordProcessOutputDelivery,
@@ -115,21 +139,35 @@ import {
   initializePluginRunner,
   type RegisteredPlugin,
 } from "./plugin-runner";
-import { normalizeNetworkHostPattern } from "./remote-artifact-downloader";
+import { areValueShapesCompatible } from "../src/lib/data-shape";
+import { processMethodV3Schema } from "../src/lib/method-contract-v3";
+import { parseCanonicalExecutionCreatePayload } from "./execution-create-boundary";
+import { valueShapeSchema } from "../src/lib/value-shape-schema";
 import { composePluginPortValue, selectPluginInputPort } from "./plugin-input-values";
+import { validatePluginOutputContract } from "./plugin-output-contract";
+import { requireNormalizedPluginResponseValues } from "./plugin-response-normalization";
 import { instructionWithRetryFeedback } from "../src/lib/retry-feedback";
-import {
-  pluginConversationFallbackAttachments,
-  pluginConversationFallbackContext,
-} from "../src/lib/conversation-context";
+import { pluginConversationFallbackContext } from "../src/lib/conversation-context";
 import { collectionItemValuesForPlugin } from "../src/lib/plugin-collection";
 import {
+  captureCollectionSelection,
+  completedConsumableItemIds,
+  libraryReservation,
+  libraryValuesIssues,
+} from "../src/lib/strategic-library";
+import {
+  appendPluginDiagnostic,
   createPersistentPluginJob,
   isPluginJobTimedOut,
   type ClaimedPluginJob,
   type PersistentPluginJob,
   PluginJobStore,
 } from "./plugin-job-store";
+import { exportBrowserDiagnostics } from "./browser-diagnostics";
+import { normalizeBlockExecutionWorkUnits } from "./work-unit-normalization";
+import { materializeReceivedInputWorkUnits } from "./work-unit-materialization";
+import { workItemPolicy } from "./plugin-item-orchestration";
+import { registerDerivedWorkItems } from "./work-unit-registration";
 import {
   deletePluginConnectionSecret,
   deletePluginSecret,
@@ -138,29 +176,53 @@ import {
   setPluginConnectionSecret,
   setPluginSecret,
 } from "./credential-vault";
-import { canAdvanceProfileFallback, orderedProfileCandidates } from "./plugin-account-fallback";
+import { orderedProfileCandidates } from "./plugin-account-fallback";
+import { decideExecutionRecovery, recoveryProductMessage } from "./execution-recovery-policy";
 import {
+  aggregateCompatibilityItemOrchestration,
+  areRequiredOrchestratedItemsCompleted,
+  belongsToSameItemActionGroup,
   blockExecutionItemsForJob,
-  completedOutputs,
+  canFinalizeFromDurableOrchestratedItems,
+  claimOrchestratedItems,
+  consolidatedOrchestratedOutputs,
+  orchestratedPartialValues,
+  completeContinuousSessionClaims,
   completeCurrentOrchestratedItem,
+  continuousInvocationRequestForJob,
   declaredItemOrchestration,
   failCurrentOrchestratedItem,
   invocationRequestForJob,
+  itemActionRequestForJob,
   itemProgressForJob,
   legacyItemOrchestration,
+  deterministicAggregateMapping,
   nextPendingItemIndex,
-  requestForNextOrchestratedItem,
+  publishOrchestratedItemUpdate,
   resumedItemOrchestration,
   resumedItemOrchestrationFromItems,
+  releaseContinuousSessionClaims,
   selectedItemOrchestration,
   selectedItemOrchestrationFromItems,
   startCurrentOrchestratedItem,
+  usesContinuousItemSession,
 } from "./plugin-item-orchestration";
+import {
+  applyPluginIncrementalItemUpdates,
+  incrementalItemValues,
+  isCompatiblePluginItemValue,
+} from "./plugin-incremental-items";
 import {
   findPluginConnectionDependencies,
   findPluginMethodDependencies,
 } from "./plugin-dependencies";
-import { validatePluginDirectory } from "./plugin-validation";
+import { validatePluginDirectory, validatePluginManifest } from "./plugin-validation";
+import { registerPluginOrganizationRoutes } from "./plugin-organization";
+import {
+  runtimeInputBindings,
+  runtimeInputsReady,
+  validateRuntimeInputValues,
+} from "./runtime-input-values";
 import { PluginConnectionStore, type PluginConnection } from "./plugin-connections";
 import {
   findPluginProfileUsages,
@@ -170,6 +232,16 @@ import {
   PluginProfileStore,
   syncPluginProfilesFromMethods,
 } from "./plugin-profiles";
+import {
+  BrowserProfileStore,
+  browserProfileInventory,
+  ensureLegacyBrowserProfile,
+  PluginProfileBindingStore,
+  PluginProfileReadinessStore,
+  resolveBoundBrowserProfile,
+  resolveLegacyBrowserProfile,
+} from "./browser-profiles";
+import { BrowserProfileLeaseStore } from "./browser-profile-leases";
 import {
   normalizeConnectionSecretPatch,
   resolvePluginConnectionSecrets,
@@ -183,7 +255,12 @@ import {
   type PluginCatalog,
 } from "./plugin-catalog";
 import { migrateSiblingDataDirectory } from "./data-directory-migration";
-import { browserBridgeProfileState, stageBrowserBridge } from "./browser-profile-readiness";
+import { formatMigrationRecoveryLog, runSchemaMigrationsForStartup } from "./schema-migrations";
+import {
+  browserBridgeProfileDirectoryState,
+  browserBridgeProfileState,
+  stageBrowserBridge,
+} from "./browser-profile-readiness";
 import { fetchYouTubeChannel } from "./youtube";
 import { pluginConcurrencySlot, pluginConcurrencySlotForRequest } from "./plugin-concurrency";
 import {
@@ -191,6 +268,22 @@ import {
   validateBuilderMethods,
   type BuilderPluginContext,
 } from "./builder-methods";
+import {
+  authorizeLocalBlockCopy,
+  clearImportedProfileAssociations,
+  materializeLocalProfileExecution,
+  resolveProfileExecutionSnapshot,
+  validateLocalProfileExecution,
+} from "./profile-execution-policy";
+import { materializeProfileLanePool } from "./profile-lane-pool";
+import { profileLaneProgressForJob } from "./profile-lane-progress";
+import { executeParallelProfileLanes } from "./parallel-profile-executor";
+import { registerPluginProfileNamedUrlRoutes } from "./plugin-profile-named-urls";
+import {
+  attachProjectUrlsToSnapshot,
+  ProjectSelectionError,
+  refreshActiveProjectUrl,
+} from "./profile-project-selection";
 
 const port = Number(process.env.CONTENTFLOW_API_PORT ?? 8787);
 const applicationRoot = path.resolve(process.env.CONTENTFLOW_APP_ROOT ?? process.cwd());
@@ -207,9 +300,57 @@ const developmentLinksDirectory = path.resolve(
   process.env.CONTENTFLOW_DEVELOPMENT_LINKS_DIR ??
     path.join(dataDirectory, "plugins", "development"),
 );
-const pluginCatalogUrl = process.env.CONTENTFLOW_PLUGIN_CATALOG_URL?.trim() ?? "";
-const unavailablePluginCatalogMessage =
-  "Atualizações por catálogo indisponíveis. Você pode atualizar por pasta.";
+
+function physicalPathAllowingMissing(resolved: string): string {
+  try {
+    return realpathSync(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    let current = resolved;
+    const segments: string[] = [];
+    for (;;) {
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      segments.unshift(path.basename(current));
+      try {
+        const physicalParent = realpathSync(parent);
+        return path.join(physicalParent, ...segments);
+      } catch (parentError) {
+        if ((parentError as NodeJS.ErrnoException)?.code !== "ENOENT") throw parentError;
+        current = parent;
+      }
+    }
+  }
+}
+
+function installedPluginsPhysicalRoot() {
+  return physicalPathAllowingMissing(path.resolve(installedPluginsDirectory));
+}
+
+function isWithinInstalledPlugins(directory: string) {
+  let root: string;
+  let physical: string;
+  try {
+    root = installedPluginsPhysicalRoot();
+    physical = physicalPathAllowingMissing(path.resolve(directory));
+  } catch {
+    return false;
+  }
+  if (physical === root) return true;
+  const relative = path.relative(root, physical);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+const pluginCatalogUrl =
+  process.env.CONTENTFLOW_PLUGIN_CATALOG_URL ??
+  "https://raw.githubusercontent.com/andremjr/plugins-contentflow/main/catalog.json";
+const methodCatalogUrl =
+  process.env.CONTENTFLOW_METHOD_CATALOG_URL ??
+  "https://raw.githubusercontent.com/andremjr/methods-contentflow/main/catalog.json";
 await migrateSiblingDataDirectory(dataDirectory, process.env.APPDATA);
 const nodeMajorVersion = Number(
   process.env.CONTENTFLOW_PLUGIN_NODE_MAJOR ?? process.versions.node.split(".")[0],
@@ -250,15 +391,24 @@ const builderMcpSessionPath = path.join(dataDirectory, "builder-mcp-session.json
 const builderMcpToken = randomBytes(32).toString("base64url");
 
 function builderMcpLaunch(channelId?: string) {
-  const bundledEntry = path.join(applicationRoot, "desktop-dist", "mcp.mjs");
+  const bundledCandidates = [
+    path.join(applicationRoot, "app", "desktop-dist", "mcp.mjs"),
+    path.join(applicationRoot, "desktop-dist", "mcp.mjs"),
+  ];
   const sourceEntry = path.join(applicationRoot, "server", "mcp.ts");
   const tsxEntry = path.join(applicationRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const sourceAvailable = existsSync(sourceEntry) && existsSync(tsxEntry);
-  const bundled = !sourceAvailable && existsSync(bundledEntry);
   const command = process.env.CONTENTFLOW_PLUGIN_NODE_EXECUTABLE ?? process.execPath;
-  const args = bundled
-    ? [bundledEntry, "--session", builderMcpSessionPath]
-    : [tsxEntry, sourceEntry, "--session", builderMcpSessionPath];
+  if (sourceAvailable) {
+    const args = [tsxEntry, sourceEntry, "--session", builderMcpSessionPath];
+    if (channelId) args.push("--channel", channelId);
+    return { command, args };
+  }
+  const bundledEntry = bundledCandidates.find((candidate) => existsSync(candidate));
+  if (!bundledEntry) {
+    throw new Error("O servidor MCP empacotado não foi encontrado.");
+  }
+  const args = [bundledEntry, "--session", builderMcpSessionPath];
   if (channelId) args.push("--channel", channelId);
   return { command, args };
 }
@@ -278,9 +428,6 @@ writeFileSync(
   ),
   { encoding: "utf8", mode: 0o600 },
 );
-
-const securityDirectory = path.join(dataDirectory, "security");
-const coreKeyStore = new CoreKeyStore({ securityDirectory });
 
 const databasePath = path.join(dataDirectory, "contentflow.sqlite");
 const legacyDataDirectory = path.join(applicationRoot, "data");
@@ -326,23 +473,13 @@ const database = new Database(
 );
 database.pragma("busy_timeout = 5000");
 database.pragma("journal_mode = WAL");
-const existingDatabaseTables = new Set(
-  (
-    database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
-      name: string;
-    }>
-  ).map((row) => row.name),
-);
-if (existingDatabaseTables.has("channels") && !existingDatabaseTables.has("plugin_profiles")) {
-  const migrationBackupsDirectory = path.join(dataDirectory, "migration-backups");
-  const profileMigrationBackup = path.join(
-    migrationBackupsDirectory,
-    "contentflow-before-profile-management.sqlite",
-  );
-  if (!existsSync(profileMigrationBackup)) {
-    mkdirSync(migrationBackupsDirectory, { recursive: true });
-    await database.backup(profileMigrationBackup);
-  }
+const schemaMigration = await runSchemaMigrationsForStartup(database, undefined, {
+  backupDirectory: path.join(dataDirectory, "migration-backups"),
+});
+if (!schemaMigration.ok) {
+  console.error(formatMigrationRecoveryLog(schemaMigration.diagnostic));
+  database.close();
+  process.exit(1);
 }
 database.exec(`
   CREATE TABLE IF NOT EXISTS channels (
@@ -392,24 +529,6 @@ database.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS library_collections_channel_id ON library_collections(channel_id);
-  CREATE TABLE IF NOT EXISTS channel_research_runs (
-    id TEXT PRIMARY KEY,
-    channel_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS channel_research_runs_channel_id ON channel_research_runs(channel_id, created_at DESC);
-  CREATE TABLE IF NOT EXISTS channel_research_briefs (
-    id TEXT PRIMARY KEY,
-    channel_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS channel_research_briefs_channel_id ON channel_research_briefs(channel_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS app_preferences (
     id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
@@ -417,7 +536,6 @@ database.exec(`
     notification_sound INTEGER NOT NULL DEFAULT 0,
     system_notifications INTEGER NOT NULL DEFAULT 0,
     methods_library_view TEXT NOT NULL DEFAULT 'channels',
-    plugin_organization TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS channel_preferences (
@@ -484,11 +602,6 @@ if (!appPreferenceColumns.some((column) => column.name === "methods_library_view
     "ALTER TABLE app_preferences ADD COLUMN methods_library_view TEXT NOT NULL DEFAULT 'channels'",
   );
 }
-if (!appPreferenceColumns.some((column) => column.name === "plugin_organization")) {
-  database.exec(
-    "ALTER TABLE app_preferences ADD COLUMN plugin_organization TEXT NOT NULL DEFAULT '{}'",
-  );
-}
 
 const pluginConsentColumns = database.prepare("PRAGMA table_info(plugin_consents)").all() as Array<{
   name: string;
@@ -499,7 +612,21 @@ if (!pluginConsentColumns.some((column) => column.name === "network_hosts")) {
 const pluginJobs = new PluginJobStore(database);
 const pluginConnections = new PluginConnectionStore(database);
 const pluginProfiles = new PluginProfileStore(database);
-pluginJobs.recoverInterrupted();
+const browserProfiles = new BrowserProfileStore(database);
+const pluginProfileBindings = new PluginProfileBindingStore(database);
+const pluginProfileReadiness = new PluginProfileReadinessStore(database);
+const browserProfileLeases = new BrowserProfileLeaseStore(database);
+const pluginConfigurationOptionsCache = new PluginConfigurationOptionsCache();
+const userDataUpgrade = new UserDataUpgrade(
+  database,
+  dataDirectory,
+  () => activePluginWorkers === 0 && activePluginInvocations.size === 0,
+);
+if (userDataUpgrade.backgroundAllowed())
+  pluginJobs.recoverInterrupted(new Date(), jobHasCurrentContract);
+// Expired physical leases are operational state, independent of Method migration.
+// This does not reclaim a live lease or replay an interrupted external effect.
+browserProfileLeases.recoverExpired();
 // A database-wide sequence orders snapshots from commands and background workers.
 database.exec(
   "CREATE TABLE IF NOT EXISTS state_clock (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL); INSERT OR IGNORE INTO state_clock VALUES (1, 0)",
@@ -522,37 +649,12 @@ database.exec(
   "CREATE TABLE IF NOT EXISTS execution_commands (id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
 );
 
-type PluginSection = "generation" | "editing" | "publishing" | "utilities" | "none";
-
-type PluginItemPreference = {
-  section: PluginSection;
-  favorite: boolean;
-  hidden: boolean;
-};
-
-type PluginLibraryOrganization = {
-  items: Record<string, PluginItemPreference>;
-  sectionOrder: Record<PluginSection, string[]>;
-};
-
 type AppPreferences = {
   theme: "light" | "dark";
   language: "pt-BR" | "en" | "es";
   notificationSound: boolean;
   systemNotifications: boolean;
   methodsLibraryView: "methods" | "channels";
-  pluginOrganization: PluginLibraryOrganization;
-};
-
-const defaultPluginOrganization: PluginLibraryOrganization = {
-  items: {},
-  sectionOrder: {
-    generation: [],
-    editing: [],
-    publishing: [],
-    utilities: [],
-    none: [],
-  },
 };
 
 const defaultPreferences: AppPreferences = {
@@ -561,120 +663,14 @@ const defaultPreferences: AppPreferences = {
   notificationSound: false,
   systemNotifications: false,
   methodsLibraryView: "channels",
-  pluginOrganization: defaultPluginOrganization,
 };
-
-function normalizeServerPluginOrganization(raw: unknown): PluginLibraryOrganization {
-  const sections: PluginSection[] = ["generation", "editing", "publishing", "utilities", "none"];
-  const items: Record<string, PluginItemPreference> = {};
-  const sectionOrder: Record<PluginSection, string[]> = {
-    generation: [],
-    editing: [],
-    publishing: [],
-    utilities: [],
-    none: [],
-  };
-
-  if (!raw || typeof raw !== "object") {
-    return { items, sectionOrder };
-  }
-
-  const record = raw as Record<string, unknown>;
-
-  if (record.items && typeof record.items === "object") {
-    for (const [id, value] of Object.entries(record.items as Record<string, unknown>)) {
-      const cleanId = typeof id === "string" ? id.trim() : "";
-      if (!cleanId) continue;
-      const pref = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-      const section = sections.includes(pref.section as PluginSection)
-        ? (pref.section as PluginSection)
-        : "none";
-      const favorite = Boolean(pref.favorite);
-      const hidden = Boolean(pref.hidden);
-      items[cleanId] = { section, favorite, hidden };
-    }
-  }
-
-  if (Array.isArray(record.favorites)) {
-    for (const fav of record.favorites) {
-      const cleanId = typeof fav === "string" ? fav.trim() : "";
-      if (!cleanId) continue;
-      items[cleanId] = {
-        section: items[cleanId]?.section ?? "none",
-        favorite: true,
-        hidden: Boolean(items[cleanId]?.hidden),
-      };
-    }
-  }
-
-  if (Array.isArray(record.hidden)) {
-    for (const hid of record.hidden) {
-      const cleanId = typeof hid === "string" ? hid.trim() : "";
-      if (!cleanId) continue;
-      items[cleanId] = {
-        section: items[cleanId]?.section ?? "none",
-        favorite: Boolean(items[cleanId]?.favorite),
-        hidden: true,
-      };
-    }
-  }
-
-  if (record.sections && typeof record.sections === "object") {
-    const sectionsObj = record.sections as Record<string, unknown>;
-    for (const s of sections) {
-      const secArray: unknown = sectionsObj[s];
-      if (Array.isArray(secArray)) {
-        for (const entry of secArray) {
-          const cleanId = typeof entry === "string" ? entry.trim() : "";
-          if (!cleanId) continue;
-          items[cleanId] = {
-            section: s,
-            favorite: Boolean(items[cleanId]?.favorite),
-            hidden: Boolean(items[cleanId]?.hidden),
-          };
-        }
-      }
-    }
-  }
-
-  const rawOrder = (
-    record.sectionOrder && typeof record.sectionOrder === "object"
-      ? record.sectionOrder
-      : record.sections && typeof record.sections === "object"
-        ? record.sections
-        : {}
-  ) as Record<string, unknown>;
-
-  for (const s of sections) {
-    const list = Array.isArray(rawOrder[s]) ? rawOrder[s] : [];
-    for (const id of list) {
-      const cleanId = typeof id === "string" ? id.trim() : "";
-      if (!cleanId) continue;
-      if (!items[cleanId]) {
-        items[cleanId] = { section: s, favorite: false, hidden: false };
-      }
-      if (items[cleanId].section === s && !sectionOrder[s].includes(cleanId)) {
-        sectionOrder[s].push(cleanId);
-      }
-    }
-  }
-
-  for (const [id, item] of Object.entries(items)) {
-    if (!sectionOrder[item.section].includes(id)) {
-      sectionOrder[item.section].push(id);
-    }
-  }
-
-  return { items, sectionOrder };
-}
 
 function readPreferences(): AppPreferences {
   const row = database
     .prepare(
       `SELECT theme, language, notification_sound AS notificationSound,
               system_notifications AS systemNotifications,
-              methods_library_view AS methodsLibraryView,
-              plugin_organization AS pluginOrganization
+              methods_library_view AS methodsLibraryView
        FROM app_preferences WHERE id = 'global'`,
     )
     .get() as
@@ -684,26 +680,17 @@ function readPreferences(): AppPreferences {
         notificationSound: number;
         systemNotifications: number;
         methodsLibraryView: AppPreferences["methodsLibraryView"];
-        pluginOrganization?: string;
       }
     | undefined;
-  if (!row) return defaultPreferences;
-  let parsedOrg: unknown = undefined;
-  if (row.pluginOrganization) {
-    try {
-      parsedOrg = JSON.parse(row.pluginOrganization);
-    } catch {
-      parsedOrg = undefined;
-    }
-  }
-  return {
-    theme: row.theme,
-    language: row.language,
-    notificationSound: Boolean(row.notificationSound),
-    systemNotifications: Boolean(row.systemNotifications),
-    methodsLibraryView: row.methodsLibraryView === "methods" ? "methods" : "channels",
-    pluginOrganization: normalizeServerPluginOrganization(parsedOrg),
-  };
+  return row
+    ? {
+        theme: row.theme,
+        language: row.language,
+        notificationSound: Boolean(row.notificationSound),
+        systemNotifications: Boolean(row.systemNotifications),
+        methodsLibraryView: row.methodsLibraryView === "methods" ? "methods" : "channels",
+      }
+    : defaultPreferences;
 }
 
 type StoredPayload = {
@@ -717,6 +704,7 @@ type StoredPayload = {
   collection?: string;
   collectionId?: string;
   name?: string;
+  usage?: "fixed" | "consumable";
   fields?: unknown[];
   values?: Record<string, unknown>;
 };
@@ -725,8 +713,23 @@ function parseRows(rows: { payload: string }[]) {
   return rows.map((row) => JSON.parse(row.payload));
 }
 
+function parseStoredExecution(payload: string): ProcessExecution {
+  return JSON.parse(payload) as ProcessExecution;
+}
+
+function serializeStoredExecution(execution: ProcessExecution) {
+  return JSON.stringify(execution);
+}
+
 function readPayload<T>(table: string, id: string): T | undefined {
-  const allowedTables = new Set(["channels", "projects", "process_executions"]);
+  const allowedTables = new Set([
+    "channels",
+    "projects",
+    "process_executions",
+    "library_collections",
+    "library_items",
+    "execution_commands",
+  ]);
   if (!allowedTables.has(table)) throw new Error("Tabela de leitura não permitida.");
   const row = database.prepare(`SELECT payload FROM ${table} WHERE id = ?`).get(id) as
     { payload: string } | undefined;
@@ -749,37 +752,7 @@ function reconcileStoredProjectTitles() {
   })();
 }
 
-reconcileStoredProjectTitles();
-
-function capabilityWithDeterministicItemMapping(
-  capability: PluginCapability,
-  request: PluginExecutionRequest,
-  values: Record<string, RuntimeValue>,
-) {
-  if (capability.execution.itemOrchestration) return capability;
-  const inputCandidates = Object.entries(request.inputs).filter(
-    ([, value]) => Array.isArray(value) && value.length >= 2,
-  );
-  if (inputCandidates.length !== 1) return capability;
-  const [inputPort, inputItems] = inputCandidates[0];
-  if (!Array.isArray(inputItems)) return capability;
-  const outputCandidates = request.outputContract.filter((field) => {
-    const output = values[field.key];
-    return Array.isArray(output) && output.length > 0 && output.length <= inputItems.length;
-  });
-  if (outputCandidates.length !== 1) return capability;
-  return {
-    ...capability,
-    execution: {
-      ...capability.execution,
-      itemOrchestration: {
-        mode: "sequential" as const,
-        inputPort,
-        outputPort: outputCandidates[0].portKey,
-      },
-    },
-  } satisfies PluginCapability;
-}
+if (userDataUpgrade.backgroundAllowed()) reconcileStoredProjectTitles();
 
 function reconcileStoredExecutionItems() {
   const executionRows = database
@@ -808,12 +781,9 @@ function reconcileStoredExecutionItems() {
             (candidate) => candidate.id === job.capabilityId,
           );
           if (!capability) continue;
-          const effectiveCapability = capabilityWithDeterministicItemMapping(
-            capability,
-            job.request,
-            blockExecution.values,
-          );
-          const policy = effectiveCapability.execution.itemOrchestration;
+          const policy =
+            capability.execution.itemOrchestration ??
+            deterministicAggregateMapping(capability, job.request, blockExecution.values);
           if (!policy) continue;
           const inputItems = job.request.inputs[policy.inputPort];
           if (!Array.isArray(inputItems) || inputItems.length < 2) continue;
@@ -822,12 +792,19 @@ function reconcileStoredExecutionItems() {
             policy.outputPort;
           const outputs = blockExecution.values[outputKey];
           if (!Array.isArray(outputs) || outputs.length > inputItems.length) continue;
-          const migrated = legacyItemOrchestration(
-            effectiveCapability,
-            job.request,
-            structuredClone(outputs) as RuntimeValue[],
-            blockExecution.completedAt,
-          );
+          const migrated = capability.execution.itemOrchestration
+            ? legacyItemOrchestration(
+                capability,
+                job.request,
+                structuredClone(outputs) as RuntimeValue[],
+                blockExecution.completedAt,
+              )
+            : aggregateCompatibilityItemOrchestration(
+                capability,
+                job.request,
+                blockExecution.values,
+                blockExecution.completedAt,
+              );
           if (!migrated?.workItems?.length) continue;
           blockExecution.items = structuredClone(migrated.workItems);
           blockExecution.itemProgress = {
@@ -840,7 +817,46 @@ function reconcileStoredExecutionItems() {
           break;
         }
       }
-      if (changed) updateExecution.run(JSON.stringify(execution), execution.id);
+      if (changed) updateExecution.run(serializeStoredExecution(execution), execution.id);
+    }
+  })();
+}
+
+function normalizeStoredExecutionWorkUnits() {
+  const executionRows = database
+    .prepare("SELECT id, payload FROM process_executions")
+    .all() as Array<{ id: string; payload: string }>;
+  const jobsForBlock = database.prepare(
+    "SELECT payload FROM plugin_jobs WHERE execution_id = ? AND block_id = ? ORDER BY attempt ASC, updated_at ASC",
+  );
+  const updateExecution = database.prepare(
+    "UPDATE process_executions SET payload = ? WHERE id = ?",
+  );
+
+  database.transaction(() => {
+    for (const row of executionRows) {
+      const execution = JSON.parse(row.payload) as ProcessExecution;
+      let changed = false;
+      for (const blockExecution of execution.blocks) {
+        const jobs = (
+          jobsForBlock.all(execution.id, blockExecution.blockId) as Array<{ payload: string }>
+        ).map((jobRow) => JSON.parse(jobRow.payload) as PersistentPluginJob);
+        const normalized = normalizeBlockExecutionWorkUnits(blockExecution, jobs);
+        if (!normalized.length && !blockExecution.items?.length) continue;
+        if (JSON.stringify(normalized) === JSON.stringify(blockExecution.items ?? [])) continue;
+        blockExecution.items = normalized;
+        if (normalized.length && !blockExecution.itemProgress) {
+          const roots = normalized.filter((item) => !item.parentItemId);
+          const completed = roots.filter((item) => item.status === "completed").length;
+          blockExecution.itemProgress = {
+            total: roots.length,
+            completed,
+            pending: Math.max(0, roots.length - completed),
+          };
+        }
+        changed = true;
+      }
+      if (changed) updateExecution.run(serializeStoredExecution(execution), execution.id);
     }
   })();
 }
@@ -877,6 +893,7 @@ function pluginConsentIsCurrent(plugin: {
   const consent = readPluginConsent(plugin.id);
   return (
     consent?.enabled === true &&
+    consent.version === plugin.manifest.version &&
     JSON.stringify(consent.permissions) === JSON.stringify(plugin.manifest.permissions) &&
     JSON.stringify(consent.networkHosts) === JSON.stringify(plugin.manifest.networkHosts ?? [])
   );
@@ -897,84 +914,272 @@ function executionWorkspaceForPlugin(plugin: { id: string; manifest: { profileSe
   return path.join(dataDirectory, "plugin-workspaces", "profiles", safePluginId);
 }
 
+function executionProfileForPluginRequest(
+  plugin: { id: string; manifest: { profileSetup?: PluginProfileSetup } },
+  request: PluginExecutionRequest,
+) {
+  return executionBrowserProfileForPluginRequest(plugin, request)?.profileDirectory;
+}
+
+function executionBrowserProfileForPluginRequest(
+  plugin: { id: string; manifest: { profileSetup?: PluginProfileSetup } },
+  request: PluginExecutionRequest,
+) {
+  const configurationKey = plugin.manifest.profileSetup?.configurationKey;
+  if (!configurationKey) return undefined;
+  const alias = String(request.configuration[configurationKey] ?? "").trim();
+  if (!alias) return undefined;
+  return resolveLegacyBrowserProfile(database, {
+    pluginId: plugin.id,
+    alias,
+    dataDirectory,
+  });
+}
+
+function portableProfileSetupForPlugin(pluginId: string) {
+  const plugin = getRegisteredPlugin(pluginId);
+  if (!plugin) return undefined;
+  return plugin.manifest.profileSetup ?? null;
+}
+
+function persistLocalProfileExecution(blocks: ActionBlock[]) {
+  initializePluginRunner();
+  const materialized = materializeLocalProfileExecution({
+    blocks,
+    profileSetupForPlugin: portableProfileSetupForPlugin,
+    resolveAlias: (pluginId, alias) => {
+      try {
+        return {
+          profileId: resolveLegacyBrowserProfile(database, { pluginId, alias, dataDirectory })
+            .profile.id,
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  const errors: string[] = [];
+  const validated = materialized.map((block) => {
+    if (!block.plugin || block.plugin.profileExecution === undefined) return block;
+    const plugin = getRegisteredPlugin(block.plugin.pluginId);
+    const validation = validateLocalProfileExecution({
+      policy: block.plugin.profileExecution,
+      profileSetup: plugin?.manifest.profileSetup,
+      isBoundProfile: (profileId) =>
+        Boolean(pluginProfileBindings.get(block.plugin!.pluginId, profileId)),
+    });
+    if (validation.error) {
+      errors.push(`${block.name ?? block.type}: ${validation.error}`);
+      return block;
+    }
+    return validation.policy
+      ? { ...block, plugin: { ...block.plugin, profileExecution: validation.policy } }
+      : block;
+  });
+  return { blocks: validated, errors };
+}
+
+function resolvedProfileExecutionForBlock(plugin: RegisteredPlugin, block: ActionBlock) {
+  const policy = block.plugin?.profileExecution;
+  if (!policy) return undefined;
+  const setup = plugin.manifest.profileSetup;
+  if (!setup)
+    throw new Error("Este plugin não declara perfis de navegador para esta política local.");
+  const projectKey = setup.namedUrls?.configurationKey?.trim() || undefined;
+  const snapshot = resolveProfileExecutionSnapshot({
+    policy,
+    configurationKey: setup.configurationKey,
+    ...(projectKey
+      ? { projectConfigurationKey: projectKey, projectSelections: policy.projectSelections }
+      : {}),
+    resolveProfile: (profileId) => {
+      try {
+        const resolved = resolveBoundBrowserProfile(database, {
+          pluginId: plugin.id,
+          profileId,
+          dataDirectory,
+        });
+        return {
+          profileId: resolved.profile.id,
+          alias: resolved.profile.alias,
+          readinessState: pluginProfileReadiness.get(plugin.id, resolved.profile.id)?.state,
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  return attachProjectUrlsToSnapshot({
+    database,
+    plugin,
+    snapshot,
+    isBoundProfile: (profileId) => Boolean(pluginProfileBindings.get(plugin.id, profileId)),
+  });
+}
+
+function activeProfileAliasForJob(plugin: RegisteredPlugin, job: PersistentPluginJob) {
+  const configurationKey = plugin.manifest.profileSetup?.configurationKey;
+  if (!configurationKey) return undefined;
+  if (job.profileExecution) {
+    const index = job.profileFallback?.activeIndex ?? 0;
+    return job.profileExecution.profiles[index]?.alias;
+  }
+  if (job.profileFallback)
+    return job.profileFallback.candidates[job.profileFallback.activeIndex]?.trim() || undefined;
+  return String(job.request.configuration[configurationKey] ?? "").trim() || undefined;
+}
+
+function browserProfileForJob(plugin: RegisteredPlugin, job: PersistentPluginJob) {
+  if (job.profileExecution) {
+    const index = job.profileFallback?.activeIndex ?? 0;
+    const snapshot = job.profileExecution.profiles[index];
+    if (!snapshot) throw new Error("O perfil ativo não existe no snapshot desta tentativa.");
+    const resolved = resolveBoundBrowserProfile(database, {
+      pluginId: plugin.id,
+      profileId: snapshot.profileId,
+      dataDirectory,
+    });
+    if (resolved.profile.alias !== snapshot.alias) {
+      throw new Error("O alias do perfil físico mudou desde que a tentativa foi criada.");
+    }
+    if (job.browserProfile?.profileId && job.browserProfile.profileId !== snapshot.profileId) {
+      throw new Error("O perfil físico deste job divergiu do snapshot da política local.");
+    }
+    return resolved;
+  }
+  const alias = activeProfileAliasForJob(plugin, job);
+  if (!alias) return undefined;
+  const resolved = resolveLegacyBrowserProfile(database, {
+    pluginId: plugin.id,
+    alias,
+    dataDirectory,
+  });
+  if (job.browserProfile) {
+    if (job.browserProfile.profileId !== resolved.profile.id)
+      throw new Error("O perfil físico deste job mudou desde que a tentativa foi criada.");
+  } else {
+    job.browserProfile = { profileId: resolved.profile.id, alias };
+  }
+  return resolved;
+}
+
+function browserProfileSnapshot(plugin: RegisteredPlugin, alias: string | undefined) {
+  if (!alias) return undefined;
+  const resolved = resolveLegacyBrowserProfile(database, {
+    pluginId: plugin.id,
+    alias,
+    dataDirectory,
+  });
+  return { profileId: resolved.profile.id, alias: resolved.alias };
+}
+
+const BROWSER_PROFILE_LEASE_TTL_MS = 30_000;
+const BROWSER_PROFILE_LEASE_HEARTBEAT_MS = 10_000;
+const activeJobProfileLeases = new Map<
+  string,
+  { profileId: string; leaseToken: string; timer: ReturnType<typeof setInterval> }
+>();
+const activePluginInvocations = new Map<
+  string,
+  { executionId: string; controller: AbortController }
+>();
+
+async function runActivePluginInvocation<T>(
+  job: PersistentPluginJob,
+  invoke: (signal: AbortSignal) => Promise<T>,
+) {
+  const controller = new AbortController();
+  activePluginInvocations.set(job.id, { executionId: job.executionId, controller });
+  if (pluginJobs.get(job.id)?.status === "cancel_requested") controller.abort();
+  try {
+    return await invoke(controller.signal);
+  } finally {
+    if (activePluginInvocations.get(job.id)?.controller === controller) {
+      activePluginInvocations.delete(job.id);
+    }
+  }
+}
+
+async function executeActivePlugin(
+  job: PersistentPluginJob,
+  ...args: Parameters<typeof executeRegisteredPlugin>
+) {
+  return runActivePluginInvocation(job, (signal) => {
+    const [plugin, request, timeoutMs, secrets, options] = args;
+    return executeRegisteredPlugin(plugin, request, timeoutMs, secrets, { ...options, signal });
+  });
+}
+
+function abortActivePluginInvocations(executionId: string) {
+  for (const active of activePluginInvocations.values()) {
+    if (active.executionId === executionId) active.controller.abort();
+  }
+}
+
+function requestPluginExecutionCancellation(executionId: string) {
+  const changed = pluginJobs.requestCancellation(executionId);
+  abortActivePluginInvocations(executionId);
+  return changed;
+}
+
+function releaseJobProfileLease(jobId: string) {
+  const active = activeJobProfileLeases.get(jobId);
+  if (active) {
+    clearInterval(active.timer);
+    browserProfileLeases.release(active.profileId, active.leaseToken);
+    activeJobProfileLeases.delete(jobId);
+    return;
+  }
+  browserProfileLeases.releaseByOwner("job", jobId);
+}
+
+function ensureJobProfileLease(plugin: RegisteredPlugin, job: PersistentPluginJob) {
+  const resolved = browserProfileForJob(plugin, job);
+  const active = activeJobProfileLeases.get(job.id);
+  if (!resolved) {
+    if (active) releaseJobProfileLease(job.id);
+    return true;
+  }
+  if (active && active.profileId !== resolved.profile.id) releaseJobProfileLease(job.id);
+
+  const acquired = browserProfileLeases.acquire({
+    profileId: resolved.profile.id,
+    ownerType: "job",
+    ownerId: job.id,
+    pluginId: plugin.id,
+    ttlMs: BROWSER_PROFILE_LEASE_TTL_MS,
+  });
+  if (!acquired.acquired) return false;
+
+  const current = activeJobProfileLeases.get(job.id);
+  if (current?.leaseToken === acquired.lease.leaseToken) return true;
+  if (current) clearInterval(current.timer);
+  const timer = setInterval(() => {
+    const renewed = browserProfileLeases.heartbeat(
+      resolved.profile.id,
+      acquired.lease.leaseToken,
+      new Date(),
+      BROWSER_PROFILE_LEASE_TTL_MS,
+    );
+    if (!renewed) {
+      clearInterval(timer);
+      activeJobProfileLeases.delete(job.id);
+    }
+  }, BROWSER_PROFILE_LEASE_HEARTBEAT_MS);
+  timer.unref();
+  activeJobProfileLeases.set(job.id, {
+    profileId: resolved.profile.id,
+    leaseToken: acquired.lease.leaseToken,
+    timer,
+  });
+  return true;
+}
+
 function executionFor(projectId: string, processType: string) {
   const row = database
     .prepare("SELECT payload FROM process_executions WHERE project_id = ? AND process_type = ?")
     .get(projectId, processType) as { payload: string } | undefined;
-  return row ? (JSON.parse(row.payload) as ProcessExecution) : undefined;
-}
-
-function normalizePluginListValue(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => (typeof item === "string" ? item.trim() : String(item).trim()))
-      .filter(Boolean);
-  }
-  if (typeof value === "string") {
-    return value
-      .split(/\r?\n/)
-      .map((line) => {
-        const cleaned = line
-          .trim()
-          .replace(/^[-*•\s]+/, "")
-          .replace(/^\d+[.)]\s*/, "")
-          .trim();
-        return cleaned || line.trim();
-      })
-      .filter(Boolean);
-  }
-  return [];
-}
-
-function valuesForPluginResponse(
-  block: ActionBlock,
-  responseValues: Record<string, RuntimeValue>,
-  outputContract: PluginFieldContract[],
-) {
-  const values: Record<string, RuntimeValue> = {};
-  for (const field of block.outputs ?? []) {
-    const contract = outputContract.find((item) => item.key === field.key);
-    let value =
-      responseValues[field.key] ??
-      (contract ? responseValues[contract.portKey] : undefined) ??
-      responseValues.result;
-    if (value !== undefined) {
-      if (field.type === "list" && (typeof value === "string" || Array.isArray(value))) {
-        value = normalizePluginListValue(value);
-      }
-      values[field.key] = value;
-    }
-  }
-  return values;
-}
-
-function updateProjectAfterPluginBlock(project: Project, execution: ProcessExecution) {
-  project.currentStage = execution.processType;
-  project.state =
-    execution.status === "cancelled"
-      ? "not_started"
-      : execution.status === "awaiting_human"
-        ? "awaiting_human"
-        : execution.status === "failed"
-          ? "error"
-          : execution.status === "completed"
-            ? "done"
-            : execution.status === "blocked_executor"
-              ? "blocked"
-              : "processing";
-  project.stages = { ...project.stages, [execution.processType]: project.state };
-  if (execution.status === "completed") {
-    project.progress = completedProcessProgress(project.stages);
-    const next = nextExecutableProcess(
-      projectProcessOrder(project),
-      project.stages,
-      project.runFrom,
-      project.runThrough,
-    );
-    project.currentStage = next ?? execution.processType;
-    project.state = next ? project.stages[next] : "done";
-  }
-  project.updatedAt = "Agora";
+  return row ? parseStoredExecution(row.payload) : undefined;
 }
 
 function finishPluginBlock(
@@ -984,135 +1189,177 @@ function finishPluginBlock(
   values: Record<string, RuntimeValue>,
 ) {
   const now = new Date().toISOString();
+  if (block.type === "ESCOLHER" && block.operator !== "Humano") {
+    const collection = readPayload<StrategicCollection>(
+      "library_collections",
+      block.collectionId ?? "",
+    );
+    const item = readPayload<ChannelLibraryItem>("library_items", String(values.selectedItemId));
+    if (!collection || !item) throw new Error("Item de biblioteca inválido.");
+    captureCollectionSelection(execution, block.id, item, collection, storedLibraryExecutions());
+  }
   if (block.operator === "Humano") {
     blockExecution.status = "awaiting_human";
     blockExecution.error = undefined;
+    blockExecution.errorCode = undefined;
     blockExecution.progress = undefined;
     blockExecution.progressMessage = undefined;
     execution.status = "awaiting_human";
     execution.updatedAt = now;
     return;
   }
-  blockExecution.values = values;
-  blockExecution.status = "completed";
-  blockExecution.completedAt = now;
-  blockExecution.error = undefined;
+  const completion = applyExecutorBlockCompletion(execution, {
+    type: "executor_block_completed",
+    blockId: blockExecution.blockId,
+    values,
+    now,
+  });
+  if (!completion.ok) {
+    throw new Error(
+      `Execution Core blocked executor completion: ${completion.decision.reason} (${completion.diagnostics
+        .map((diagnostic) => diagnostic.code)
+        .join(", ")})`,
+    );
+  }
   recordBlockDeliveries(execution, block, values, "completed", now);
-  const completedIndex = execution.blocks.indexOf(blockExecution);
-  const rejected =
-    block.type === "VALIDAR" &&
-    (block.outputs ?? []).some(
-      (output) => output.type === "approval" && values[output.key] === "rejected",
+  if (block.type === "VALIDAR") {
+    const validation = applyValidationOutcome(
+      execution,
+      block.id,
+      validationOutcomeFromValues(block, values),
+      now,
     );
-  if (rejected && block.validation?.onReject === "retry_target") {
-    const targetIndex = execution.methodSnapshot.blocks.findIndex(
-      (candidate) => candidate.id === block.validation?.targetBlockId,
-    );
-    const maxAttempts = Math.max(1, block.validation.maxAttempts ?? 3);
-    const targetExecution = execution.blocks[targetIndex];
-    const targetBlock = execution.methodSnapshot.blocks[targetIndex];
-    if (targetIndex >= 0 && targetIndex < completedIndex && targetExecution && targetBlock) {
-      if ((targetExecution.attempt ?? 1) >= maxAttempts) {
-        execution.status = "awaiting_human";
-        blockExecution.status = "awaiting_human";
-        blockExecution.error = `O limite de ${maxAttempts} tentativas foi atingido.`;
-      } else {
-        const retryMode = block.validation.retryMode ?? "full";
-        const retryConversationContext = pluginConversationFallbackContext(
-          targetBlock,
-          targetExecution.values,
-        );
-        const retryConversationAttachments = pluginConversationFallbackAttachments(
-          targetExecution.values,
-        );
-        for (let index = targetIndex; index < execution.blocks.length; index += 1) {
-          const item = execution.blocks[index];
-          const preserveConversation =
-            index === targetIndex && retryMode === "conversation_feedback";
-          item.attempt = attemptAfterRetryInvalidation(item);
-          item.values = {};
-          item.error = undefined;
-          item.logs = undefined;
-          item.completedAt = undefined;
-          item.jobId = undefined;
-          item.progress = undefined;
-          item.progressMessage = undefined;
-          item.retryFeedback = undefined;
-          item.retryMode = undefined;
-          item.retryConversationContext = undefined;
-          item.retryConversationAttachments = undefined;
-          if (!preserveConversation) item.pluginConversation = undefined;
-          item.status = "pending";
-        }
-        targetExecution.retryFeedback = structuredClone(values);
-        targetExecution.retryMode = retryMode;
-        targetExecution.retryConversationContext = retryConversationContext;
-        targetExecution.retryConversationAttachments = retryConversationAttachments;
-        targetExecution.startedAt = now;
-        targetExecution.status =
-          targetBlock.operator === "Humano" && !targetBlock.plugin
-            ? "awaiting_human"
-            : "blocked_executor";
-        invalidateBlockDeliveries(
-          execution,
-          execution.methodSnapshot.blocks.slice(targetIndex).map((candidate) => candidate.id),
-        );
-        execution.status =
-          targetExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
-      }
+    if (!validation.ok || validation.outcome !== "approved") {
       execution.updatedAt = now;
       return;
     }
   }
-  const nextExecution = execution.blocks[completedIndex + 1];
-  const nextBlock = execution.methodSnapshot.blocks[completedIndex + 1];
-
-  if (nextExecution && nextBlock) {
-    nextExecution.status =
-      nextBlock.operator === "Humano" && !nextBlock.plugin ? "awaiting_human" : "blocked_executor";
-    nextExecution.startedAt = now;
-    execution.status =
-      nextExecution.status === "awaiting_human" ? "awaiting_human" : "blocked_executor";
-  } else {
-    const output = deriveProcessOutput(execution);
-    if (output) {
-      execution.output = output;
-      recordProcessOutputDelivery(execution, execution.output.values, now);
-      execution.outputStatus = "completed";
-      execution.status = "completed";
-    } else {
-      execution.outputStatus = "awaiting_human";
-      execution.status = "awaiting_output";
-    }
+  const transition = applyCompletedBlockTransition(execution, blockExecution.blockId, now, {
+    deriveProcessOutput,
+    recordProcessOutputDelivery,
+  });
+  if (!transition.ok) {
+    throw new Error(
+      `Execution Core blocked transition: ${transition.decision.reason} (${transition.diagnostics
+        .map((diagnostic) => diagnostic.code)
+        .join(", ")})`,
+    );
   }
   execution.updatedAt = now;
+}
+
+function observeCommittedExecution(execution: ProcessExecution) {
+  if (!monitorEnabled()) return;
+  try {
+    observeExecution(execution);
+    for (const job of pluginJobs.listForExecution(execution.id)) observeJob(job);
+  } catch {
+    devProbe("core", "execution-persistence").emit({
+      kind: "instrumentation.invalid",
+      entity: { type: "execution", id: execution.id },
+      correlation: { executionId: execution.id },
+    });
+  }
 }
 
 function executionById(executionId: string) {
   const row = database
     .prepare("SELECT payload FROM process_executions WHERE id = ?")
     .get(executionId) as { payload: string } | undefined;
-  return row ? (JSON.parse(row.payload) as ProcessExecution) : undefined;
+  return row ? parseStoredExecution(row.payload) : undefined;
+}
+
+function storedLibraryExecutions() {
+  return (
+    database.prepare("SELECT payload FROM process_executions").all() as { payload: string }[]
+  ).map((row) => parseStoredExecution(row.payload));
+}
+
+/** Called inside the same transaction that commits the successful Process. Files stay in snapshots. */
+function commitLibraryConsumption(execution: ProcessExecution) {
+  for (const id of completedConsumableItemIds(execution)) {
+    database.prepare("DELETE FROM library_items WHERE id = ?").run(id);
+  }
+}
+
+function hasLibraryReservation(itemId: string) {
+  return Boolean(libraryReservation(itemId, storedLibraryExecutions()));
+}
+
+class PersistenceCommitError extends Error {
+  constructor(cause: unknown) {
+    super("A transição não pôde ser persistida.", { cause });
+  }
 }
 
 function persistPluginExecution(execution: ProcessExecution, project: Project) {
   const latestProject = readPayload<Project>("projects", project.id);
   if (latestProject) Object.assign(project, latestProject);
+  const currentChannel = readPayload<Channel>("channels", execution.channelId);
+  const currentMethod = currentChannel?.methods?.[execution.processType];
+  if (currentMethod) synchronizeExecutionMethod(execution, currentMethod, new Date().toISOString());
   execution.revision = (executionById(execution.id)?.revision ?? 0) + 1;
   execution.updatedAt = new Date().toISOString();
-  updateProjectAfterPluginBlock(project, execution);
+  applyExecutionProjectProjection(project, execution);
+  project.updatedAt = "Agora";
   applyGeneratedProjectTitle(project, execution);
   const persist = () => {
+    commitLibraryConsumption(execution);
     database
       .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(execution), execution.updatedAt, execution.id);
+      .run(serializeStoredExecution(execution), execution.updatedAt, execution.id);
     database
       .prepare("UPDATE projects SET payload = ? WHERE id = ?")
       .run(JSON.stringify(project), project.id);
   };
-  if (database.inTransaction) persist();
-  else database.transaction(persist)();
-  queueOrchestratorReconciliationForProject(execution.projectId);
+  try {
+    if (database.inTransaction) persist();
+    else database.transaction(persist)();
+  } catch (error) {
+    throw new PersistenceCommitError(error);
+  }
+  // An outer PluginJobStore.save() owns the commit when called from onSaved.
+  // Its caller queues reconciliation only after that commit succeeds.
+  if (!database.inTransaction) observeCommittedExecution(execution);
+  if (!database.inTransaction) queueOrchestratorReconciliationForProject(execution.projectId);
+}
+
+function savePluginJob(
+  claim: ClaimedPluginJob,
+  job: PersistentPluginJob,
+  onSaved?: (saved: PersistentPluginJob) => void,
+) {
+  let saved: PersistentPluginJob;
+  try {
+    saved = pluginJobs.save(claim, job, onSaved);
+  } catch (error) {
+    throw new PersistenceCommitError(error);
+  }
+  if (onSaved && !database.inTransaction) {
+    const execution = executionById(saved.executionId);
+    if (execution) {
+      observeCommittedExecution(execution);
+      queueOrchestratorReconciliationForProject(execution.projectId);
+    }
+  }
+  return saved;
+}
+
+function commitPluginJobTransition<T>(projectId: string, apply: () => T): T {
+  let result: T;
+  try {
+    result = database.transaction(apply)();
+  } catch (error) {
+    throw new PersistenceCommitError(error);
+  }
+  if (monitorEnabled()) {
+    for (const row of database
+      .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
+      .all(projectId) as { payload: string }[])
+      observeCommittedExecution(parseStoredExecution(row.payload));
+  }
+  queueOrchestratorReconciliationForProject(projectId);
+  return result;
 }
 
 function failAutomaticPluginStart(executionId: string, blockId: string, message: string) {
@@ -1124,19 +1371,29 @@ function failAutomaticPluginStart(executionId: string, blockId: string, message:
   }
   blockExecution.status = "failed";
   blockExecution.error = message;
+  blockExecution.errorCode = undefined;
   blockExecution.logs = [...(blockExecution.logs ?? []), message];
   execution.status = "failed";
   execution.error = message;
+  execution.errorCode = undefined;
   persistPluginExecution(execution, project);
 }
 
-function automaticPluginBlockReady(block?: ActionBlock) {
+function automaticPluginBlockReady(block?: ActionBlock, blockExecution?: BlockExecution) {
   if (!block?.plugin) return false;
   const plugin = getRegisteredPlugin(block.plugin.pluginId);
-  return Boolean(plugin?.executable && pluginConsentIsCurrent(plugin));
+  return Boolean(
+    plugin?.executable &&
+    pluginConsentIsCurrent(plugin) &&
+    runtimeInputsReady(block.inputs, blockExecution?.runtimeInputs),
+  );
 }
 
 function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
+  // Historical jobs are preserved for inspection and are excluded by the
+  // compatible-job claim path. A newly scheduled attempt still has the
+  // current contract and must be allowed to continue the execution.
+  if (!userDataUpgrade.backgroundAllowed()) return;
   if (execution.status !== "blocked_executor") return;
   const blockExecution = execution.blocks.find((item) => item.status !== "completed");
   const block = blockExecution
@@ -1145,7 +1402,7 @@ function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
   if (!blockExecution || blockExecution.status !== "blocked_executor" || !block || !block.plugin) {
     return;
   }
-  if (!automaticPluginBlockReady(block)) return;
+  if (!automaticPluginBlockReady(block, blockExecution)) return;
 
   const executionId = execution.id;
   const blockId = block.id;
@@ -1157,21 +1414,22 @@ function scheduleAutomaticPluginBlock(execution: ProcessExecution) {
     parameters: {},
   };
   setTimeout(() => {
-    void fetch(`http://127.0.0.1:${port}/api/execute-block`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    })
-      .then(async (response) => {
-        if (response.ok) return;
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
+    void executePluginBlockInternal(requestBody)
+      .then((result) => {
+        if (result.status >= 200 && result.status < 300) return;
         failAutomaticPluginStart(
           executionId,
           blockId,
-          body.error ?? "Não foi possível iniciar automaticamente o plugin.",
+          typeof result.body.error === "string"
+            ? result.body.error
+            : "Não foi possível iniciar automaticamente o plugin.",
         );
       })
       .catch((error) => {
+        if (error instanceof PersistenceCommitError) {
+          console.error("Falha interna de persistência ao iniciar plugin automaticamente:", error);
+          return;
+        }
         failAutomaticPluginStart(
           executionId,
           blockId,
@@ -1334,52 +1592,35 @@ function startOrchestratedProcess(
     ),
   );
   const savedMethod =
-    project.strategySnapshot?.methods[processType] ?? channel.methods?.[processType];
-  const method = savedMethod
+    channel.methods?.[processType] ?? project.strategySnapshot?.methods[processType];
+  const parsedMethod = savedMethod ? processMethodV3Schema.safeParse(savedMethod) : undefined;
+  const method = parsedMethod?.success
     ? {
-        name: savedMethod.name || `Método de ${PROCESS_META[processType].label}`,
-        imageUrl: savedMethod.imageUrl,
+        contractVersion: parsedMethod.data.contractVersion,
+        name: parsedMethod.data.name || `Método de ${PROCESS_META[processType].label}`,
+        imageUrl: parsedMethod.data.imageUrl,
         processType,
-        blocks: normalizeMethodBlocks(savedMethod.blocks ?? [], processType),
+        blocks: normalizeMethodBlocks(parsedMethod.data.blocks, processType),
       }
     : undefined;
-  const issue = getMethodConfigurationIssue(method);
+  const issue =
+    parsedMethod && !parsedMethod.success
+      ? parsedMethod.error.issues[0]?.message
+      : getMethodConfigurationIssue(method);
   if (!method || issue) return { issue: issue ?? "O método deste processo não está disponível." };
 
   const now = new Date().toISOString();
-  const methodSnapshot = structuredClone(method);
-  const execution: ProcessExecution = {
-    id: randomUUID(),
+  const creation = createCanonicalProcessExecution({
+    executionId: randomUUID(),
     projectId: project.id,
     channelId: channel.id,
     processType,
-    methodSnapshot,
-    blocks: methodSnapshot.blocks.map((block, index) => ({
-      blockId: block.id,
-      status:
-        index === 0
-          ? block.operator === "Humano" && !block.plugin
-            ? "awaiting_human"
-            : "blocked_executor"
-          : "pending",
-      values: {},
-      attempt: 1,
-      startedAt: index === 0 ? now : undefined,
-    })),
-    status:
-      methodSnapshot.blocks[0].operator === "Humano" && !methodSnapshot.blocks[0].plugin
-        ? "awaiting_human"
-        : "blocked_executor",
-    outputStatus: "pending",
-    createdAt: now,
-    updatedAt: now,
-  };
-  project.stages = {
-    ...project.stages,
-    [processType]: execution.status === "awaiting_human" ? "awaiting_human" : "processing",
-  };
-  project.currentStage = processType;
-  project.state = project.stages[processType];
+    methodSnapshot: method,
+    now,
+  });
+  if (!creation.ok) return { issue: "O método deste processo não está disponível." };
+  const execution = creation.execution;
+  applyExecutionProjectProjection(project, execution);
   project.updatedAt = "Agora";
 
   database.transaction(() => {
@@ -1388,7 +1629,13 @@ function startOrchestratedProcess(
         `INSERT INTO process_executions (id, project_id, process_type, payload, updated_at)
          VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(execution.id, execution.projectId, processType, JSON.stringify(execution), now);
+      .run(
+        execution.id,
+        execution.projectId,
+        processType,
+        serializeStoredExecution(execution),
+        now,
+      );
     database
       .prepare("UPDATE projects SET payload = ? WHERE id = ?")
       .run(JSON.stringify(project), project.id);
@@ -1425,7 +1672,16 @@ function executionSlotState(execution: ProcessExecution) {
     const activeBlock = activeBlockExecution
       ? execution.methodSnapshot.blocks.find((item) => item.id === activeBlockExecution.blockId)
       : undefined;
-    return automaticPluginBlockReady(activeBlock) ? ("running" as const) : ("blocked" as const);
+    if (
+      activeBlock &&
+      runtimeInputBindings(activeBlock.inputs).length &&
+      !runtimeInputsReady(activeBlock.inputs, activeBlockExecution?.runtimeInputs)
+    ) {
+      return "awaiting_human" as const;
+    }
+    return automaticPluginBlockReady(activeBlock, activeBlockExecution)
+      ? ("running" as const)
+      : ("blocked" as const);
   }
   return "running" as const;
 }
@@ -1597,6 +1853,7 @@ function reconcileEligibleSlotOrchestrator(orchestrator: ExecutionOrchestrator, 
 }
 
 function reconcileExecutionOrchestrator(id: string) {
+  if (!userDataUpgrade.backgroundAllowed()) return;
   if (orchestratorReconciliationLocks.has(id)) return;
   orchestratorReconciliationLocks.add(id);
   try {
@@ -1667,20 +1924,7 @@ function reconcileExecutionOrchestrator(id: string) {
             });
             return;
           }
-          const activeBlockExecution = execution.blocks.find((item) => item.status !== "completed");
-          const activeBlock = activeBlockExecution
-            ? execution.methodSnapshot.blocks.find(
-                (item) => item.id === activeBlockExecution.blockId,
-              )
-            : undefined;
-          const status: ExecutionOrchestratorStatus =
-            execution.status === "awaiting_human" || execution.status === "awaiting_output"
-              ? "awaiting_human"
-              : execution.status === "failed"
-                ? "failed"
-                : execution.status === "blocked_executor" && !automaticPluginBlockReady(activeBlock)
-                  ? "blocked"
-                  : "running";
+          const status = executionSlotState(execution) as ExecutionOrchestratorStatus;
           setExecutionOrchestratorState(orchestrator, {
             status,
             currentProjectId: projectId,
@@ -1733,18 +1977,7 @@ function reconcileExecutionOrchestrator(id: string) {
         return;
       }
 
-      const activeBlockExecution = execution.blocks.find((item) => item.status !== "completed");
-      const activeBlock = activeBlockExecution
-        ? execution.methodSnapshot.blocks.find((item) => item.id === activeBlockExecution.blockId)
-        : undefined;
-      const status: ExecutionOrchestratorStatus =
-        execution.status === "awaiting_human" || execution.status === "awaiting_output"
-          ? "awaiting_human"
-          : execution.status === "failed"
-            ? "failed"
-            : execution.status === "blocked_executor" && !automaticPluginBlockReady(activeBlock)
-              ? "blocked"
-              : "running";
+      const status = executionSlotState(execution) as ExecutionOrchestratorStatus;
       setExecutionOrchestratorState(orchestrator, {
         status,
         currentProjectId: step.projectId,
@@ -1788,28 +2021,30 @@ function queueOrchestratorReconciliationForProject(projectId: string) {
 }
 
 function cancelStoredProcessExecution(execution: ProcessExecution, project: Project) {
+  const cancellation = applyExecutionCancellation(execution, {
+    type: "execution_cancellation_requested",
+  });
+  if (!cancellation.ok || cancellation.outcome === "already_cancelled") return cancellation;
+
   delete project.runThrough;
   delete project.runFrom;
   execution.revision = (execution.revision ?? 0) + 1;
-  pluginJobs.requestCancellation(execution.id);
-  execution.status = "cancelled";
-  execution.blocks = execution.blocks.map((item) =>
-    item.status === "completed" ? item : { ...item, status: "cancelled" },
-  );
   execution.updatedAt = new Date().toISOString();
-  project.stages = { ...project.stages, [execution.processType]: "not_started" };
-  project.currentStage = execution.processType;
-  project.state = "not_started";
+  applyExecutionProjectProjection(project, execution);
   project.updatedAt = "Agora";
   database.transaction(() => {
+    pluginJobs.requestCancellation(execution.id);
     database
       .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(execution), execution.updatedAt, execution.id);
+      .run(serializeStoredExecution(execution), execution.updatedAt, execution.id);
     database
       .prepare("UPDATE projects SET payload = ? WHERE id = ?")
       .run(JSON.stringify(project), project.id);
   })();
+  abortActivePluginInvocations(execution.id);
+  observeCommittedExecution(execution);
   void processDuePluginJobs();
+  return cancellation;
 }
 
 function resumeExecutionOrchestrators() {
@@ -1831,14 +2066,159 @@ function publicPluginJob(job: PersistentPluginJob) {
   return publicState;
 }
 
-function mappedPluginValues(
+// Saving a Method and updating open executions is one transaction, on every write surface.
+function persistChannelDefinition(channel: Channel) {
+  return database.transaction(() => {
+    const now = new Date().toISOString();
+    const projects = (
+      database.prepare("SELECT payload FROM projects WHERE channel_id = ?").all(channel.id) as {
+        payload: string;
+      }[]
+    ).map((row) => JSON.parse(row.payload) as Project);
+    const projectIds = new Set(projects.map((project) => project.id));
+    const executions = (
+      database.prepare("SELECT payload FROM process_executions").all() as { payload: string }[]
+    )
+      .map((row) => parseStoredExecution(row.payload))
+      .filter((execution) => projectIds.has(execution.projectId));
+    for (const execution of executions) {
+      const method = channel.methods[execution.processType];
+      if (!method || !synchronizeExecutionMethod(execution, method, now)) continue;
+      database
+        .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(execution), execution.updatedAt, execution.id);
+    }
+    for (const project of projects) {
+      if (!project.strategySnapshot) continue;
+      for (const processType of PROCESS_ORDER) {
+        if (["done", "approved"].includes(project.stages[processType])) continue;
+        project.strategySnapshot.methods[processType] = structuredClone(
+          channel.methods[processType],
+        );
+      }
+      project.strategySnapshot.definitionRevision = channel.definitionRevision ?? 0;
+      database
+        .prepare("UPDATE projects SET payload = ? WHERE id = ?")
+        .run(JSON.stringify(project), project.id);
+    }
+    return database
+      .prepare("UPDATE channels SET payload = ? WHERE id = ?")
+      .run(JSON.stringify(channel), channel.id);
+  })();
+}
+
+function normalizedPluginValues(
   block: ActionBlock,
-  responseValues: Record<string, RuntimeValue>,
+  responseValues: unknown,
   outputContract: PluginFieldContract[],
+  completion: "partial" | "final",
+  valueShape: "snapshot" | "item" = "snapshot",
+  existingValues?: Record<string, RuntimeValue>,
+  inputDeliveries?: PluginExecutionRequest["inputDeliveries"],
 ) {
-  return block.type === "ESCOLHER"
-    ? { selectedItemId: responseValues.selectedItemId ?? responseValues.result }
-    : valuesForPluginResponse(block, responseValues, outputContract);
+  return requireNormalizedPluginResponseValues({
+    block,
+    responseValues,
+    outputContract,
+    completion,
+    valueShape,
+    existingValues,
+    inputDeliveries,
+  }).values;
+}
+
+function liveJobOutputContract(block: ActionBlock, capability: PluginCapability) {
+  const validation = validatePluginOutputContract(block.outputs ?? [], capability.outputPorts);
+  if (validation.unsupportedFields.length) {
+    throw new Error("Revise o vínculo da entrega no painel do plugin.");
+  }
+  return validation.outputContract;
+}
+
+function declaredItemActionForBlock(block: ActionBlock, action: string) {
+  if (!block.plugin) return undefined;
+  initializePluginRunner();
+  const plugin = getRegisteredPlugin(block.plugin.pluginId);
+  const capability = plugin?.manifest.capabilities.find(
+    (candidate) => candidate.id === block.plugin?.capabilityId,
+  );
+  const declaration = capability?.itemActions?.find((candidate) => candidate.action === action);
+  return plugin && capability && declaration ? { plugin, capability, declaration } : undefined;
+}
+
+function persistCompletedPluginJob(job: PersistentPluginJob, now: string) {
+  job.updatedAt = now;
+  database
+    .prepare(
+      `UPDATE plugin_jobs SET payload = ?, updated_at = ?
+       WHERE id = ? AND status NOT IN ('starting', 'pending', 'cancel_requested')`,
+    )
+    .run(JSON.stringify(job), now, job.id);
+}
+
+function synchronizeExecutionItems(
+  block: ActionBlock,
+  blockExecution: BlockExecution,
+  executionItems: NonNullable<BlockExecution["items"]>,
+  job: PersistentPluginJob | undefined,
+  now: string,
+) {
+  const nextValues = structuredClone(blockExecution.values);
+  if (job?.itemOrchestration) {
+    const outputKey = job.request.outputContract.find(
+      (field) => field.portKey === job.itemOrchestration!.outputPort,
+    )?.key;
+    const combinedOutputKey = job.itemOrchestration.combinedOutputPort
+      ? job.request.outputContract.find(
+          (field) => field.portKey === job.itemOrchestration!.combinedOutputPort,
+        )?.key
+      : undefined;
+    const rootIds = new Set(job.itemOrchestration.itemIds);
+    const registeredIds = new Set((job.registeredItems ?? []).map((item) => item.id));
+    job.itemOrchestration.workItems = executionItems
+      .filter((item) => rootIds.has(item.id))
+      .map((item) => structuredClone(item));
+    job.registeredItems = executionItems
+      .filter((item) => registeredIds.has(item.id))
+      .map((item) => structuredClone(item));
+    const accumulatedItems = consolidatedOrchestratedOutputs(job).outputs;
+    if (outputKey) nextValues[outputKey] = accumulatedItems as RuntimeValue;
+    if (combinedOutputKey) {
+      nextValues[combinedOutputKey] = accumulatedItems
+        .filter((value): value is string => typeof value === "string")
+        .join(job.itemOrchestration.separator ?? "\n\n");
+    }
+    job.itemOrchestration.accumulatedItems = structuredClone(accumulatedItems);
+  } else if (job && executionItems.some((item) => item.pluginCorrelation)) {
+    job.incrementalItems = structuredClone(executionItems);
+    const values = incrementalItemValues(executionItems, job.request.outputContract);
+    for (const contract of job.request.outputContract) {
+      if (values[contract.key] === undefined) delete nextValues[contract.key];
+    }
+    Object.assign(nextValues, values);
+  } else {
+    for (const field of block.outputs ?? []) {
+      const correlated = executionItems.filter(
+        (item) => item.pluginCorrelation?.outputKey === field.key,
+      );
+      if (!correlated.length) continue;
+      const outputs = correlated
+        .filter((item) => item.status === "completed" && item.output !== undefined)
+        .sort((left, right) => left.order - right.order)
+        .map((item) => structuredClone(item.output!));
+      nextValues[field.key] = outputs as RuntimeValue;
+    }
+  }
+  if (job) {
+    // O job é a autoridade persistente das unidades. A alteração proposta pela
+    // interface só vira projeção da execução depois que o snapshot autoritativo
+    // foi gravado com sucesso.
+    job.partialValues = structuredClone(nextValues);
+    persistCompletedPluginJob(job, now);
+    blockExecution.items = blockExecutionItemsForJob(job, executionItems);
+    blockExecution.itemProgress = itemProgressForJob(job);
+  }
+  blockExecution.values = nextValues;
 }
 
 function markPluginJobFailed(
@@ -1847,11 +2227,15 @@ function markPluginJobFailed(
   project: Project | undefined,
   message: string,
   status: "failed" | "abandoned" = "failed",
-  recoverySnapshot?: PluginExternalRecoverySnapshot,
+  reasonCode?: string,
 ) {
-  const failedJob = failCurrentOrchestratedItem(claim.job, message);
+  const failedJob = appendPluginDiagnostic(failCurrentOrchestratedItem(claim.job, message), {
+    code: "JOB_FAILED",
+    ...(reasonCode ? { reasonCode } : {}),
+    attempt: claim.job.attempt,
+  });
   claim.job = failedJob;
-  return pluginJobs.save(
+  return savePluginJob(
     claim,
     {
       ...failedJob,
@@ -1870,13 +2254,15 @@ function markPluginJobFailed(
           if (block) recordBlockDeliveries(execution, block, saved.partialValues, "partial");
         }
         blockExecution.itemProgress = itemProgressForJob(saved);
-        blockExecution.items = blockExecutionItemsForJob(saved);
+        blockExecution.profileLaneProgress = profileLaneProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved, blockExecution.items);
         blockExecution.status = "failed";
         blockExecution.error = message;
+        blockExecution.errorCode = reasonCode;
         blockExecution.progressMessage = message;
-        blockExecution.recoverySnapshot = recoverySnapshot;
         execution.status = "failed";
         execution.error = message;
+        execution.errorCode = reasonCode;
         persistPluginExecution(execution, project);
       }
     },
@@ -1889,10 +2275,13 @@ function markPluginJobCancelled(
   project: Project | undefined,
   message = "Execução cancelada.",
 ) {
-  return pluginJobs.save(
+  return savePluginJob(
     claim,
     {
-      ...claim.job,
+      ...appendPluginDiagnostic(claim.job, {
+        code: "JOB_CANCELLED",
+        attempt: claim.job.attempt,
+      }),
       status: "cancelled",
       cancelRequested: true,
       message,
@@ -1900,13 +2289,10 @@ function markPluginJobCancelled(
     },
     () => {
       if (!execution || !project) return;
-      execution.status = "cancelled";
-      execution.blocks = execution.blocks.map((item) =>
-        item.status === "completed" ? item : { ...item, status: "cancelled" },
-      );
-      project.stages = { ...project.stages, [execution.processType]: "not_started" };
-      project.currentStage = execution.processType;
-      project.state = "not_started";
+      const cancellation = applyExecutionCancellation(execution, {
+        type: "execution_cancellation_requested",
+      });
+      if (!cancellation.ok || cancellation.outcome === "already_cancelled") return;
       persistPluginExecution(execution, project);
     },
   );
@@ -1922,7 +2308,7 @@ async function resolvePluginConnection(plugin: RegisteredPlugin, requestedConnec
   });
 }
 
-async function processPluginJob(
+async function processPluginJobClaimed(
   jobId: string,
   transientSecrets: Record<string, string> = {},
   existingClaim?: ClaimedPluginJob,
@@ -2017,6 +2403,116 @@ async function processPluginJob(
       "abandoned",
     );
   }
+  if (!job.profileLanePool && !ensureJobProfileLease(plugin, job)) {
+    const fallback = job.profileFallback;
+    const recoveryDecision = decideExecutionRecovery({
+      job,
+      failure: {
+        code: "PROFILE_BUSY",
+        message: "Os perfis selecionados estão sendo usados por outra execução.",
+        retryable: true,
+        recovery: { externalEffect: "none", stage: "before_effect" },
+      },
+    });
+    if (fallback && recoveryDecision.action === "switch_profile") {
+      const currentProfile = fallback.candidates[fallback.activeIndex];
+      const nextIndex = fallback.activeIndex + 1;
+      const nextProfile = fallback.candidates[nextIndex];
+      const resolvedNextProfile = job.profileExecution?.profiles[nextIndex];
+      const nextBrowserProfile = resolvedNextProfile
+        ? { profileId: resolvedNextProfile.profileId, alias: resolvedNextProfile.alias }
+        : browserProfileSnapshot(plugin, nextProfile);
+      return commitPluginJobTransition(project.id, () => {
+        const saved = savePluginJob(claim, {
+          ...appendPluginDiagnostic(job, {
+            code: "PROFILE_SWITCH",
+            reasonCode: "PROFILE_BUSY",
+            previousProfileId: job.browserProfile?.profileId,
+            profileId: nextBrowserProfile?.profileId,
+            attempt: job.attempt,
+          }),
+          status: "starting",
+          profileFallback: {
+            ...fallback,
+            activeIndex: nextIndex,
+            history: [
+              ...fallback.history,
+              {
+                profile: currentProfile,
+                code: "PROFILE_BUSY",
+                message: "Os perfis selecionados estão sendo usados por outra execução.",
+              },
+            ],
+          },
+          browserProfile: nextBrowserProfile,
+          message: recoveryProductMessage({
+            decision: recoveryDecision,
+            failureMessage: "Os perfis selecionados estão sendo usados por outra execução.",
+            currentProfile,
+            nextProfile,
+            preservedCount: itemProgressForJob(job)?.completed,
+          }),
+          nextPollAt: new Date().toISOString(),
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution!.status = "in_progress";
+        blockExecution!.progressMessage = saved.message;
+        execution!.status = "running";
+        persistPluginExecution(execution!, project!);
+        return saved;
+      });
+    }
+    if (recoveryDecision.action === "retry" || recoveryDecision.action === "reload_and_retry") {
+      return commitPluginJobTransition(project.id, () => {
+        const saved = savePluginJob(claim, {
+          ...appendPluginDiagnostic(job, {
+            code: "PLUGIN_RETRY_SCHEDULED",
+            reasonCode: "PROFILE_BUSY",
+            profileId: job.browserProfile?.profileId,
+            attempt: job.attempt,
+          }),
+          status: "starting",
+          request:
+            recoveryDecision.action === "reload_and_retry"
+              ? {
+                  ...job.request,
+                  recoveryDirective: {
+                    action: "reload_page",
+                    reasonCode: recoveryDecision.reasonCode,
+                  },
+                }
+              : job.request,
+          retryCount: job.retryCount + 1,
+          message: recoveryProductMessage({
+            decision: recoveryDecision,
+            failureMessage: "Os perfis selecionados estão sendo usados por outra execução.",
+            currentProfile: activeProfileAliasForJob(plugin, job),
+            preservedCount: itemProgressForJob(job)?.completed,
+          }),
+          nextPollAt: new Date(Date.now() + recoveryDecision.delayMs).toISOString(),
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution!.status = "in_progress";
+        blockExecution!.progressMessage = saved.message;
+        execution!.status = "running";
+        persistPluginExecution(execution!, project!);
+        return saved;
+      });
+    }
+    return markPluginJobFailed(
+      claim,
+      execution,
+      project,
+      recoveryProductMessage({
+        decision: recoveryDecision,
+        failureMessage: "Os perfis selecionados estão sendo usados por outra execução.",
+        currentProfile: activeProfileAliasForJob(plugin, job),
+        preservedCount: itemProgressForJob(job)?.completed,
+      }),
+      "failed",
+      "PROFILE_BUSY",
+    );
+  }
 
   const remainingMs = new Date(job.deadlineAt).getTime() - Date.now();
   let storedSecrets: Record<string, string> = {};
@@ -2031,6 +2527,11 @@ async function processPluginJob(
   );
 
   try {
+    job = {
+      ...job,
+      request: { ...job.request, outputContract: liveJobOutputContract(block, capability) },
+    };
+    claim.job = job;
     const requestedConnectionId =
       typeof job.request.settings.connectionId === "string"
         ? job.request.settings.connectionId
@@ -2038,18 +2539,17 @@ async function processPluginJob(
     const resolvedConnection = await resolvePluginConnection(plugin, requestedConnectionId);
     storedSecrets = resolvedConnection.secrets;
     secrets = { ...storedSecrets, ...transientSecrets };
-    if ((plugin.manifest.secretKeys?.length ?? 0) > 0 && !Object.keys(secrets).length) {
+    if (pluginConnectionRequired(plugin.manifest) && !Object.keys(secrets).length) {
       throw new Error("Crie ou associe uma conta local válida a este bloco antes de executar.");
     }
     if (isPluginJobTimedOut(job)) {
       if (job.jobId && capability.execution.supportsCancellation) {
-        await executeRegisteredPlugin(
-          plugin,
-          { ...job.request, invocation: { mode: "cancel", jobId: job.jobId } },
-          30_000,
-          secrets,
-          { workspaceDirectory, existingArtifacts: job.partialArtifacts },
-        ).catch(() => undefined);
+        const cancelRequest = invocationRequestForJob(job, { mode: "cancel", jobId: job.jobId });
+        await executeRegisteredPlugin(plugin, cancelRequest, 30_000, secrets, {
+          workspaceDirectory,
+          profileDirectory: browserProfileForJob(plugin, job)?.profileDirectory,
+          existingArtifacts: job.partialArtifacts,
+        }).catch(() => undefined);
       }
       return markPluginJobFailed(
         claim,
@@ -2061,15 +2561,20 @@ async function processPluginJob(
 
     if (job.status === "cancel_requested") {
       if (job.jobId && capability.execution.supportsCancellation) {
+        const cancelRequest = invocationRequestForJob(job, { mode: "cancel", jobId: job.jobId });
         const cancelResponse = await executeRegisteredPlugin(
           plugin,
-          { ...job.request, invocation: { mode: "cancel", jobId: job.jobId } },
+          cancelRequest,
           invocationTimeout,
           secrets,
-          { workspaceDirectory, existingArtifacts: job.partialArtifacts },
+          {
+            workspaceDirectory,
+            profileDirectory: browserProfileForJob(plugin, job)?.profileDirectory,
+            existingArtifacts: job.partialArtifacts,
+          },
         );
         if (cancelResponse.status === "pending") {
-          return pluginJobs.save(claim, {
+          return savePluginJob(claim, {
             ...job,
             status: "cancel_requested",
             cancelRequested: true,
@@ -2103,22 +2608,261 @@ async function processPluginJob(
       job.status === "starting"
         ? ({ mode: "start" } as const)
         : ({ mode: "resume", jobId: job.jobId! } as const);
-    const startedItemJob = startCurrentOrchestratedItem(job);
-    if (startedItemJob !== job) {
-      job = pluginJobs.updateClaimed(claim, startedItemJob);
-      claim.job = job;
-      blockExecution.items = blockExecutionItemsForJob(job);
-      blockExecution.itemProgress = itemProgressForJob(job);
-      persistPluginExecution(execution, project);
+    // Frozen-destination guard for EXISTING jobs before any provider/browser
+    // effect. Deleted/foreign/unbound/invalid selections block here with a
+    // setup diagnostic; a stable catalog-ID rename (same URL) passes; a catalog
+    // URL edit for the same ID blocks with PROJECT_DESTINATION_CHANGED and
+    // never rewrites projectUrls in the active job (NEW jobs use the new URL).
+    // Completed media/workunits are preserved by markPluginJobFailed partials.
+    if (job.profileExecution?.projectConfigurationKey) {
+      try {
+        refreshActiveProjectUrl({
+          database,
+          plugin,
+          snapshot: job.profileExecution,
+          activeIndex: job.profileFallback?.activeIndex ?? 0,
+          isBoundProfile: (profileId) => Boolean(pluginProfileBindings.get(plugin.id, profileId)),
+        });
+      } catch (error) {
+        return markPluginJobFailed(
+          claim,
+          execution,
+          project,
+          error instanceof Error ? error.message : "Selecione um projeto nomeado para este perfil.",
+          "failed",
+          error instanceof ProjectSelectionError ? error.code : "PROJECT_SELECTION_REQUIRED",
+        );
+      }
     }
-    const pluginResponse = await executeRegisteredPlugin(
-      plugin,
-      invocationRequestForJob(job, invocation),
-      invocationTimeout,
-      secrets,
-      {
+    const parallelExecution = Boolean(job.profileLanePool);
+    const parallelResult = parallelExecution
+      ? await runActivePluginInvocation(job, (signal) =>
+          executeParallelProfileLanes({
+            plugin,
+            capability,
+            job,
+            timeoutMs: invocationTimeout,
+            secrets,
+            workspaceDirectory,
+            signal,
+            dependencies: {
+              pluginJobs,
+              browserProfileLeases,
+              resolveProfile: (pluginId, profileId) =>
+                resolveBoundBrowserProfile(database, {
+                  pluginId,
+                  profileId,
+                  dataDirectory,
+                }),
+              executePlugin: executeRegisteredPlugin,
+              leaseTtlMs: BROWSER_PROFILE_LEASE_TTL_MS,
+              leaseHeartbeatMs: BROWSER_PROFILE_LEASE_HEARTBEAT_MS,
+            },
+          }),
+        )
+      : undefined;
+    if (parallelResult) {
+      job = parallelResult.job;
+      claim.job = job;
+    }
+    const continuousSession = Boolean(
+      !parallelExecution && job.itemOrchestration && usesContinuousItemSession(capability),
+    );
+    const continuousInvocationId = continuousSession ? randomUUID() : undefined;
+    const startedItemJob =
+      parallelExecution || continuousSession ? job : startCurrentOrchestratedItem(job);
+    if (startedItemJob !== job) {
+      commitPluginJobTransition(project.id, () => {
+        job = pluginJobs.updateClaimed(claim, startedItemJob);
+        claim.job = job;
+        blockExecution!.items = blockExecutionItemsForJob(job, blockExecution!.items);
+        blockExecution!.itemProgress = itemProgressForJob(job);
+        blockExecution!.profileLaneProgress = profileLaneProgressForJob(job);
+        persistPluginExecution(execution!, project!);
+      });
+    }
+    const invocationRequest = continuousSession
+      ? continuousInvocationRequestForJob(job, invocation)
+      : invocationRequestForJob(job, invocation);
+    const parallelConsolidation = parallelResult
+      ? consolidatedOrchestratedOutputs(parallelResult.job)
+      : undefined;
+    const parallelCompletionResponse: Awaited<ReturnType<typeof executeActivePlugin>> | undefined =
+      parallelConsolidation?.complete && job.itemOrchestration
+        ? {
+            status: "success" as const,
+            values: {
+              [job.itemOrchestration.outputPort]: parallelConsolidation.outputs as RuntimeValue,
+              ...(job.itemOrchestration.combinedOutputPort
+                ? {
+                    [job.itemOrchestration.combinedOutputPort]: parallelConsolidation.outputs
+                      .filter((value): value is string => typeof value === "string")
+                      .join(job.itemOrchestration.separator ?? "\n\n"),
+                  }
+                : {}),
+            },
+          }
+        : undefined;
+    const pluginResponse =
+      parallelCompletionResponse ??
+      parallelResult?.response ??
+      (await executeActivePlugin(job, plugin, invocationRequest, invocationTimeout, secrets, {
         workspaceDirectory,
+        profileDirectory: browserProfileForJob(plugin, job)?.profileDirectory,
+        monitorCorrelation: { profileId: job.browserProfile?.profileId, pluginJobId: job.id },
         existingArtifacts: job.partialArtifacts,
+        onRegisterItems: async (parentItemId, plannedItems) => {
+          const latestExecution = executionById(job.executionId);
+          const latestProject = latestExecution
+            ? readPayload<Project>("projects", latestExecution.projectId)
+            : undefined;
+          const latestBlockExecution = latestExecution?.blocks.find(
+            (item) => item.blockId === job.blockId,
+          );
+          if (
+            !latestExecution ||
+            !latestProject ||
+            !latestBlockExecution ||
+            latestExecution.status === "cancelled" ||
+            (latestBlockExecution.attempt ?? 1) !== job.attempt
+          ) {
+            throw new Error("A tentativa do bloco não está mais ativa.");
+          }
+          const registered = registerDerivedWorkItems({
+            job,
+            existingItems: latestBlockExecution.items,
+            parentItemId,
+            plannedItems,
+          });
+          commitPluginJobTransition(latestProject.id, () => {
+            job = pluginJobs.updateClaimed(claim, registered.job);
+            claim.job = job;
+            latestBlockExecution.items = blockExecutionItemsForJob(job, latestBlockExecution.items);
+            persistPluginExecution(latestExecution, latestProject);
+          });
+          return registered.claimed;
+        },
+        ...(continuousInvocationId
+          ? {
+              onClaimItems: async (limit: number) => {
+                const latestExecution = executionById(job.executionId);
+                const latestProject = latestExecution
+                  ? readPayload<Project>("projects", latestExecution.projectId)
+                  : undefined;
+                const latestBlockExecution = latestExecution?.blocks.find(
+                  (item) => item.blockId === job.blockId,
+                );
+                if (
+                  !latestExecution ||
+                  !latestProject ||
+                  !latestBlockExecution ||
+                  latestExecution.status === "cancelled" ||
+                  (latestBlockExecution.attempt ?? 1) !== job.attempt
+                ) {
+                  return [];
+                }
+                const claimed = claimOrchestratedItems({
+                  job,
+                  limit,
+                  invocationId: continuousInvocationId,
+                  profileId: job.browserProfile?.profileId,
+                  expiresAt: job.deadlineAt,
+                });
+                commitPluginJobTransition(latestProject.id, () => {
+                  job = pluginJobs.updateClaimed(claim, claimed.job);
+                  claim.job = job;
+                  latestBlockExecution.items = blockExecutionItemsForJob(
+                    job,
+                    latestBlockExecution.items,
+                  );
+                  latestBlockExecution.itemProgress = itemProgressForJob(job);
+                  latestBlockExecution.profileLaneProgress = profileLaneProgressForJob(job);
+                  persistPluginExecution(latestExecution, latestProject);
+                });
+                return claimed.claimed;
+              },
+              onPublishItemUpdate: async (update, storedArtifacts) => {
+                const latestExecution = executionById(job.executionId);
+                const latestProject = latestExecution
+                  ? readPayload<Project>("projects", latestExecution.projectId)
+                  : undefined;
+                const latestBlock = latestExecution?.methodSnapshot.blocks.find(
+                  (item) => item.id === job.blockId,
+                );
+                const latestBlockExecution = latestExecution?.blocks.find(
+                  (item) => item.blockId === job.blockId,
+                );
+                if (
+                  !latestExecution ||
+                  !latestProject ||
+                  !latestBlock ||
+                  !latestBlockExecution ||
+                  latestExecution.status === "cancelled" ||
+                  (latestBlockExecution.attempt ?? 1) !== job.attempt
+                ) {
+                  throw new Error("A tentativa do bloco não está mais ativa.");
+                }
+                const published = publishOrchestratedItemUpdate({
+                  job,
+                  invocationId: continuousInvocationId,
+                  update,
+                  storedArtifacts,
+                });
+                const nextJob = published.job;
+                const orchestration = nextJob.itemOrchestration!;
+                const consolidation = consolidatedOrchestratedOutputs(nextJob);
+                const accumulatedItems = consolidation.outputs;
+                const partialValues = { ...nextJob.partialValues };
+                const outputKey = nextJob.request.outputContract.find(
+                  (field) => field.portKey === orchestration.outputPort,
+                )?.key;
+                const combinedOutputKey = orchestration.combinedOutputPort
+                  ? nextJob.request.outputContract.find(
+                      (field) => field.portKey === orchestration.combinedOutputPort,
+                    )?.key
+                  : undefined;
+                if (outputKey) partialValues[outputKey] = accumulatedItems as RuntimeValue;
+                if (combinedOutputKey) {
+                  partialValues[combinedOutputKey] = accumulatedItems
+                    .filter((item): item is string => typeof item === "string")
+                    .join(orchestration.separator ?? "\\n\\n");
+                }
+                commitPluginJobTransition(latestProject.id, () => {
+                  job = pluginJobs.updateClaimed(claim, {
+                    ...nextJob,
+                    partialValues,
+                    partialArtifacts: mergeStoredArtifacts(
+                      nextJob.partialArtifacts,
+                      storedArtifacts,
+                    ),
+                    progress:
+                      consolidation.requiredItems.filter((item) => item.status === "completed")
+                        .length / Math.max(1, consolidation.requiredItems.length),
+                    message: update.message ?? nextJob.message,
+                  });
+                  claim.job = job;
+                  latestBlockExecution.status = "in_progress";
+                  latestBlockExecution.error = undefined;
+                  latestBlockExecution.errorCode = undefined;
+                  latestBlockExecution.values = structuredClone(partialValues);
+                  latestBlockExecution.progress = job.progress;
+                  latestBlockExecution.progressMessage = job.message;
+                  latestBlockExecution.itemProgress = itemProgressForJob(job);
+                  latestBlockExecution.profileLaneProgress = profileLaneProgressForJob(job);
+                  latestBlockExecution.items = blockExecutionItemsForJob(
+                    job,
+                    latestBlockExecution.items,
+                  );
+                  latestExecution.status = "running";
+                  latestExecution.error = undefined;
+                  latestExecution.errorCode = undefined;
+                  recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
+                  persistPluginExecution(latestExecution, latestProject);
+                });
+                return published.receipt;
+              },
+            }
+          : {}),
         onPartial: async (update) => {
           const latestExecution = executionById(job.executionId);
           const latestProject = latestExecution
@@ -2140,14 +2884,31 @@ async function processPluginJob(
           ) {
             return;
           }
-          const mappedUpdate = mappedPluginValues(
+          job = {
+            ...job,
+            request: {
+              ...job.request,
+              outputContract: liveJobOutputContract(latestBlock, capability),
+            },
+          };
+          const mappedUpdate = normalizedPluginValues(
             latestBlock,
             update.values,
             job.request.outputContract,
+            "partial",
+            job.itemOrchestration ? "item" : "snapshot",
+            undefined,
+            job.request.inputDeliveries,
           );
+          const incremental = applyPluginIncrementalItemUpdates({
+            job,
+            updates: update.itemUpdates,
+            outputContract: job.request.outputContract,
+          });
           const partialValues: Record<string, RuntimeValue> = {
             ...job.partialValues,
             ...mappedUpdate,
+            ...incremental.values,
           };
           if (job.itemOrchestration) {
             const orchestration = job.itemOrchestration;
@@ -2173,30 +2934,52 @@ async function processPluginJob(
                 .join(orchestration.separator ?? "\n\n");
             }
           }
-          job = pluginJobs.updateClaimed(claim, {
-            ...job,
-            partialValues,
-            partialArtifacts: mergeStoredArtifacts(job.partialArtifacts, update.storedArtifacts),
-            progress: Number.isFinite(update.progress)
-              ? Math.max(job.progress ?? 0, Math.min(1, Math.max(0, update.progress!)))
-              : job.progress,
-            message: update.message ?? job.message,
+          commitPluginJobTransition(latestProject.id, () => {
+            job = pluginJobs.updateClaimed(claim, {
+              ...job,
+              incrementalItems: incremental.items,
+              partialValues,
+              partialArtifacts: mergeStoredArtifacts(job.partialArtifacts, update.storedArtifacts),
+              progress: Number.isFinite(update.progress)
+                ? Math.max(job.progress ?? 0, Math.min(1, Math.max(0, update.progress!)))
+                : job.progress,
+              message: update.message ?? job.message,
+            });
+            claim.job = job;
+            latestBlockExecution.status = "in_progress";
+            latestBlockExecution.error = undefined;
+            latestBlockExecution.errorCode = undefined;
+            latestBlockExecution.values = structuredClone(partialValues);
+            latestBlockExecution.progress = job.progress;
+            latestBlockExecution.progressMessage = job.message;
+            latestBlockExecution.itemProgress = itemProgressForJob(job);
+            latestBlockExecution.profileLaneProgress = profileLaneProgressForJob(job);
+            latestBlockExecution.items = blockExecutionItemsForJob(job, latestBlockExecution.items);
+            latestBlockExecution.logs = update.logs ?? latestBlockExecution.logs;
+            latestExecution.status = "running";
+            latestExecution.error = undefined;
+            latestExecution.errorCode = undefined;
+            recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
+            persistPluginExecution(latestExecution, latestProject);
           });
-          claim.job = job;
-          latestBlockExecution.status = "in_progress";
-          latestBlockExecution.values = structuredClone(partialValues);
-          latestBlockExecution.progress = job.progress;
-          latestBlockExecution.progressMessage = job.message;
-          latestBlockExecution.itemProgress = itemProgressForJob(job);
-          latestBlockExecution.items = blockExecutionItemsForJob(job);
-          latestBlockExecution.logs = update.logs ?? latestBlockExecution.logs;
-          latestExecution.status = "running";
-          latestExecution.error = undefined;
-          recordBlockDeliveries(latestExecution, latestBlock, partialValues, "partial");
-          persistPluginExecution(latestExecution, latestProject);
         },
-      },
-    );
+      }));
+    for (const event of pluginResponse.bridgeDiagnostics ?? []) {
+      job = appendPluginDiagnostic(job, {
+        code: event.code,
+        profileId: job.browserProfile?.profileId,
+        attempt: job.attempt,
+      });
+    }
+    claim.job = job;
+
+    if (continuousInvocationId && pluginResponse.status !== "success") {
+      job = pluginJobs.updateClaimed(
+        claim,
+        releaseContinuousSessionClaims(job, continuousInvocationId),
+      );
+      claim.job = job;
+    }
 
     // No object captured before an external await is allowed to overwrite newer state.
     execution = executionById(job.executionId);
@@ -2219,6 +3002,11 @@ async function processPluginJob(
       );
     }
 
+    job = {
+      ...job,
+      request: { ...job.request, outputContract: liveJobOutputContract(block, capability) },
+    };
+    claim.job = job;
     if (pluginResponse.status === "pending") {
       if (capability.execution.mode !== "async") {
         throw new Error("Uma capacidade immediate não pode devolver pending.");
@@ -2240,181 +3028,274 @@ async function processPluginJob(
           "Jobs persistentes exigem que a credencial seja salva na Central de Plugins.",
         );
       }
-      const partialValues = {
-        ...job.partialValues,
-        ...mappedPluginValues(
+      const partialValues = orchestratedPartialValues(job, {
+        ...normalizedPluginValues(
           block,
           pluginResponse.partialValues ?? {},
           job.request.outputContract,
+          "partial",
+          job.itemOrchestration ? "item" : "snapshot",
+          undefined,
+          job.request.inputDeliveries,
         ),
-      };
+      });
       const progress = Number.isFinite(pluginResponse.progress)
         ? Math.max(job.progress ?? 0, Math.min(1, Math.max(0, pluginResponse.progress!)))
         : job.progress;
       const pollAfterMs = Number.isFinite(pluginResponse.pollAfterMs)
         ? Math.max(500, Math.min(30_000, pluginResponse.pollAfterMs))
         : 5_000;
-      const saved = pluginJobs.save(claim, {
-        ...job,
-        jobId: pluginResponse.jobId,
-        status: "pending",
-        nextPollAt: new Date(Date.now() + pollAfterMs).toISOString(),
-        progress,
-        message: pluginResponse.message,
-        partialValues,
-        partialArtifacts: mergeStoredArtifacts(
-          job.partialArtifacts,
-          pluginResponse.storedArtifacts,
-        ),
-        error: undefined,
+      return commitPluginJobTransition(project.id, () => {
+        const saved = savePluginJob(claim, {
+          ...job,
+          jobId: pluginResponse.jobId,
+          status: "pending",
+          nextPollAt: new Date(Date.now() + pollAfterMs).toISOString(),
+          progress,
+          message: pluginResponse.message,
+          partialValues,
+          partialArtifacts: mergeStoredArtifacts(
+            job.partialArtifacts,
+            pluginResponse.storedArtifacts,
+          ),
+          error: undefined,
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution!.status = "in_progress";
+        blockExecution!.error = undefined;
+        blockExecution!.errorCode = undefined;
+        blockExecution!.values = structuredClone(partialValues);
+        blockExecution!.jobId = saved.jobId;
+        blockExecution!.traceId = saved.traceId;
+        blockExecution!.progress = saved.progress;
+        blockExecution!.progressMessage = saved.message;
+        blockExecution!.itemProgress = itemProgressForJob(saved);
+        blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+        blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+        blockExecution!.logs = pluginResponse.logs;
+        execution!.status = "running";
+        execution!.error = undefined;
+        execution!.errorCode = undefined;
+        recordBlockDeliveries(execution!, block!, partialValues, "partial");
+        persistPluginExecution(execution!, project!);
+        return saved;
       });
-      if (saved.status === "cancel_requested") return saved;
-      blockExecution.status = "in_progress";
-      blockExecution.values = structuredClone(partialValues);
-      blockExecution.jobId = saved.jobId;
-      blockExecution.traceId = saved.traceId;
-      blockExecution.progress = saved.progress;
-      blockExecution.progressMessage = saved.message;
-      blockExecution.itemProgress = itemProgressForJob(saved);
-      blockExecution.items = blockExecutionItemsForJob(saved);
-      blockExecution.logs = pluginResponse.logs;
-      execution.status = "running";
-      execution.error = undefined;
-      recordBlockDeliveries(execution, block, partialValues, "partial");
-      persistPluginExecution(execution, project);
-      return saved;
     }
 
     if (pluginResponse.status === "error") {
-      const partialValues = {
-        ...job.partialValues,
-        ...mappedPluginValues(
+      const partialValues = orchestratedPartialValues(job, {
+        ...normalizedPluginValues(
           block,
           pluginResponse.partialValues ?? {},
           job.request.outputContract,
+          "partial",
+          job.itemOrchestration ? "item" : "snapshot",
+          undefined,
+          job.request.inputDeliveries,
         ),
-      };
+      });
       const partialArtifacts = mergeStoredArtifacts(
         job.partialArtifacts,
         pluginResponse.storedArtifacts,
       );
       const fallback = job.profileFallback;
-      if (fallback && canAdvanceProfileFallback(job, pluginResponse)) {
+      const recoveryDecision = decideExecutionRecovery({ job, failure: pluginResponse });
+      if (fallback && recoveryDecision.action === "switch_profile") {
         const currentProfile = fallback.candidates[fallback.activeIndex];
         const nextIndex = fallback.activeIndex + 1;
         const nextProfile = fallback.candidates[nextIndex];
-        const saved = pluginJobs.save(claim, {
-          ...job,
-          status: "starting",
-          retryCount: job.retryCount + 1,
-          profileFallback: {
-            ...fallback,
-            activeIndex: nextIndex,
-            history: [
-              ...fallback.history,
-              {
-                profile: currentProfile,
-                code: pluginResponse.code,
-                message: pluginResponse.message,
-              },
-            ],
-          },
-          partialValues,
-          partialArtifacts,
-          error: pluginResponse.message,
-          message: `Falha em ${currentProfile}; continuando com ${nextProfile}.`,
-          nextPollAt: new Date().toISOString(),
+        const nextBrowserProfile = browserProfileSnapshot(plugin, nextProfile);
+        const saved = commitPluginJobTransition(project.id, () => {
+          const saved = savePluginJob(claim, {
+            ...appendPluginDiagnostic(job, {
+              code: "PROFILE_SWITCH",
+              reasonCode: pluginResponse.code,
+              previousProfileId: job.browserProfile?.profileId,
+              profileId: nextBrowserProfile?.profileId,
+              attempt: job.attempt,
+            }),
+            status: "starting",
+            retryCount: job.retryCount + 1,
+            profileFallback: {
+              ...fallback,
+              activeIndex: nextIndex,
+              history: [
+                ...fallback.history,
+                {
+                  profile: currentProfile,
+                  code: pluginResponse.code,
+                  message: pluginResponse.message,
+                },
+              ],
+            },
+            browserProfile: nextBrowserProfile,
+            partialValues,
+            partialArtifacts,
+            error: pluginResponse.message,
+            message: recoveryProductMessage({
+              decision: recoveryDecision,
+              failureMessage: pluginResponse.message,
+              currentProfile,
+              nextProfile,
+              preservedCount: itemProgressForJob(job)?.completed,
+            }),
+            nextPollAt: new Date().toISOString(),
+          });
+          if (saved.status === "cancel_requested") return saved;
+          blockExecution!.status = "in_progress";
+          blockExecution!.error = undefined;
+          blockExecution!.errorCode = undefined;
+          blockExecution!.values = structuredClone(partialValues);
+          blockExecution!.progressMessage = saved.message;
+          blockExecution!.itemProgress = itemProgressForJob(saved);
+          blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+          blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+          blockExecution!.logs = pluginResponse.logs;
+          execution!.status = "running";
+          execution!.error = undefined;
+          execution!.errorCode = undefined;
+          recordBlockDeliveries(execution!, block!, partialValues, "partial");
+          persistPluginExecution(execution!, project!);
+          return saved;
         });
-        if (saved.status === "cancel_requested") return saved;
-        blockExecution.status = "in_progress";
-        blockExecution.values = structuredClone(partialValues);
-        blockExecution.progressMessage = saved.message;
-        blockExecution.itemProgress = itemProgressForJob(saved);
-        blockExecution.items = blockExecutionItemsForJob(saved);
-        blockExecution.logs = pluginResponse.logs;
-        execution.status = "running";
-        recordBlockDeliveries(execution, block, partialValues, "partial");
-        persistPluginExecution(execution, project);
+        releaseJobProfileLease(job.id);
         return saved;
       }
-      if (
-        pluginResponse.retryable &&
-        job.retryCount < 2 &&
-        Date.now() + 1_000 < new Date(job.deadlineAt).getTime()
-      ) {
+      if (recoveryDecision.action === "retry" || recoveryDecision.action === "reload_and_retry") {
         const retryCount = job.retryCount + 1;
-        const retryAfterMs = Math.max(
-          1_000,
-          Math.min(30_000, pluginResponse.retryAfterMs ?? 1_000 * 2 ** retryCount),
-        );
-        const saved = pluginJobs.save(claim, {
-          ...job,
-          status: job.jobId ? "pending" : "starting",
-          retryCount,
-          partialValues,
-          partialArtifacts,
-          error: pluginResponse.message,
-          message: `Tentativa ${retryCount + 1}: ${pluginResponse.message}`,
-          nextPollAt: new Date(Date.now() + retryAfterMs).toISOString(),
+        return commitPluginJobTransition(project.id, () => {
+          const saved = savePluginJob(claim, {
+            ...appendPluginDiagnostic(job, {
+              code: "PLUGIN_RETRY_SCHEDULED",
+              reasonCode: pluginResponse.code,
+              profileId: job.browserProfile?.profileId,
+              attempt: job.attempt,
+            }),
+            status: job.jobId ? "pending" : "starting",
+            request:
+              recoveryDecision.action === "reload_and_retry"
+                ? {
+                    ...job.request,
+                    recoveryDirective: {
+                      action: "reload_page",
+                      reasonCode: recoveryDecision.reasonCode,
+                    },
+                  }
+                : job.request,
+            retryCount,
+            partialValues,
+            partialArtifacts,
+            error: pluginResponse.message,
+            message: recoveryProductMessage({
+              decision: recoveryDecision,
+              failureMessage: pluginResponse.message,
+              currentProfile: activeProfileAliasForJob(plugin, job),
+              preservedCount: itemProgressForJob(job)?.completed,
+            }),
+            nextPollAt: new Date(Date.now() + recoveryDecision.delayMs).toISOString(),
+          });
+          if (saved.status === "cancel_requested") return saved;
+          blockExecution!.status = "in_progress";
+          blockExecution!.values = structuredClone(partialValues);
+          blockExecution!.progressMessage = saved.message;
+          blockExecution!.itemProgress = itemProgressForJob(saved);
+          blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+          blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+          blockExecution!.logs = pluginResponse.logs;
+          execution!.status = "running";
+          recordBlockDeliveries(execution!, block!, partialValues, "partial");
+          persistPluginExecution(execution!, project!);
+          return saved;
         });
-        if (saved.status === "cancel_requested") return saved;
-        blockExecution.status = "in_progress";
-        blockExecution.values = structuredClone(partialValues);
-        blockExecution.progressMessage = saved.message;
-        blockExecution.itemProgress = itemProgressForJob(saved);
-        blockExecution.items = blockExecutionItemsForJob(saved);
-        blockExecution.logs = pluginResponse.logs;
-        execution.status = "running";
-        recordBlockDeliveries(execution, block, partialValues, "partial");
-        persistPluginExecution(execution, project);
-        return saved;
       }
-      const validatedSnapshot = validateExternalRecoverySnapshot(pluginResponse.recoverySnapshot);
+      const terminalMessage = recoveryProductMessage({
+        decision: recoveryDecision,
+        failureMessage: pluginResponse.message,
+        currentProfile: activeProfileAliasForJob(plugin, job),
+        preservedCount: itemProgressForJob(job)?.completed,
+      });
+      job = { ...job, partialValues, partialArtifacts };
+      claim.job = job;
       return markPluginJobFailed(
         claim,
         execution,
         project,
-        pluginResponse.message,
+        terminalMessage,
         "failed",
-        validatedSnapshot,
+        pluginResponse.code,
       );
     }
 
     const values = {
       ...job.partialValues,
-      ...mappedPluginValues(block, pluginResponse.values, job.request.outputContract),
-    };
-    const completedConversationId = pluginResponse.conversation?.id
-      ? normalizePluginConversationId(pluginResponse.conversation.id)
-      : undefined;
-    const itemOrchestration = job.itemOrchestration;
-    if (itemOrchestration) {
-      const outputKey =
-        job.request.outputContract.find((field) => field.portKey === itemOrchestration.outputPort)
-          ?.key ?? itemOrchestration.outputPort;
-      const combinedOutputKey = itemOrchestration.combinedOutputPort
-        ? (job.request.outputContract.find(
-            (field) => field.portKey === itemOrchestration.combinedOutputPort,
-          )?.key ?? itemOrchestration.combinedOutputPort)
-        : undefined;
-      const mappedValues = mappedPluginValues(
+      ...normalizedPluginValues(
         block,
         pluginResponse.values,
         job.request.outputContract,
-      );
+        "final",
+        job.itemOrchestration ? "item" : "snapshot",
+        job.partialValues,
+        job.request.inputDeliveries,
+      ),
+    };
+    const itemOrchestration = job.itemOrchestration;
+    if (itemOrchestration) {
+      const outputKey = job.request.outputContract.find(
+        (field) => field.portKey === itemOrchestration.outputPort,
+      )?.key;
+      const combinedOutputKey = itemOrchestration.combinedOutputPort
+        ? job.request.outputContract.find(
+            (field) => field.portKey === itemOrchestration.combinedOutputPort,
+          )?.key
+        : undefined;
       const rawIncoming = pluginResponse.values[itemOrchestration.outputPort];
+      const finalizesFromDurableItems = canFinalizeFromDurableOrchestratedItems(job, rawIncoming);
+      const mappedValues = normalizedPluginValues(
+        block,
+        pluginResponse.values,
+        job.request.outputContract,
+        finalizesFromDurableItems ? "partial" : "final",
+        "item",
+        undefined,
+        job.request.inputDeliveries,
+      );
       const incomingItems = Array.isArray(rawIncoming)
         ? rawIncoming
         : rawIncoming === undefined
           ? []
           : [rawIncoming];
-      const completedItemJob = completeCurrentOrchestratedItem(
-        job,
-        structuredClone(rawIncoming) as BlockExecutionItemValue,
-      );
+      const ownedClaimCount = continuousInvocationId
+        ? (itemOrchestration.claims ?? []).filter(
+            (claim) => claim.invocationId === continuousInvocationId,
+          ).length
+        : 0;
+      const completedItemJob = finalizesFromDurableItems
+        ? job
+        : parallelExecution
+          ? job
+          : continuousInvocationId
+            ? completeContinuousSessionClaims(
+                job,
+                continuousInvocationId,
+                structuredClone(
+                  ownedClaimCount === 1 && !Array.isArray(rawIncoming)
+                    ? [rawIncoming]
+                    : incomingItems,
+                ) as BlockExecutionItemValue[],
+              )
+            : completeCurrentOrchestratedItem(
+                job,
+                structuredClone(rawIncoming) as BlockExecutionItemValue,
+              );
       const completedItemOrchestration = completedItemJob.itemOrchestration!;
-      const accumulatedItems = completedItemOrchestration.workItems
-        ? completedOutputs(completedItemOrchestration.workItems)
+      const consolidation = consolidatedOrchestratedOutputs(completedItemJob);
+      if ((parallelExecution || continuousInvocationId) && !consolidation.complete) {
+        throw new Error(
+          "A sessão contínua encerrou antes de confirmar duravelmente todas as unidades concedidas.",
+        );
+      }
+      const accumulatedItems = consolidation.requiredItems.length
+        ? consolidation.outputs
         : ([...(itemOrchestration.accumulatedItems ?? []), ...incomingItems] as RuntimeValue[]);
       const accumulated = { ...job.partialValues, ...mappedValues };
       if (outputKey) accumulated[outputKey] = accumulatedItems as RuntimeValue;
@@ -2426,47 +3307,40 @@ async function processPluginJob(
       const nextItemOrchestration = { ...completedItemOrchestration, accumulatedItems };
       const nextIndex = nextPendingItemIndex(completedItemJob);
       if (nextIndex !== undefined) {
-        const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
-        const activeProfile = job.profileFallback
-          ? job.profileFallback.candidates[job.profileFallback.activeIndex]
-          : profileConfigurationKey
-            ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
-            : undefined;
-        const nextRequest = requestForNextOrchestratedItem(completedItemJob, {
-          conversationId: completedConversationId,
-          sourceProfile: activeProfile,
-          fallbackContext: pluginConversationFallbackContext(block, accumulated),
+        return commitPluginJobTransition(project.id, () => {
+          const saved = savePluginJob(claim, {
+            ...completedItemJob,
+            status: "starting",
+            nextPollAt: new Date().toISOString(),
+            retryCount: 0,
+            partialValues: accumulated,
+            partialArtifacts: mergeStoredArtifacts(
+              job.partialArtifacts,
+              pluginResponse.storedArtifacts,
+            ),
+            itemOrchestration: { ...nextItemOrchestration, currentIndex: nextIndex },
+            progress:
+              consolidation.requiredItems.filter((item) => item.status === "completed").length /
+              Math.max(1, consolidation.requiredItems.length || itemOrchestration.items.length),
+            message: continuousInvocationId
+              ? job.message
+              : `Item ${itemOrchestration.currentIndex + 1} de ${itemOrchestration.items.length} concluído.`,
+            error: undefined,
+          });
+          if (saved.status === "cancel_requested") return saved;
+          blockExecution!.status = "in_progress";
+          blockExecution!.values = structuredClone(accumulated);
+          blockExecution!.progress = saved.progress;
+          blockExecution!.progressMessage = saved.message;
+          blockExecution!.itemProgress = itemProgressForJob(saved);
+          blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+          blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+          blockExecution!.logs = pluginResponse.logs;
+          execution!.status = "running";
+          recordBlockDeliveries(execution!, block!, accumulated, "partial");
+          persistPluginExecution(execution!, project!);
+          return saved;
         });
-        const saved = pluginJobs.save(claim, {
-          ...completedItemJob,
-          request: nextRequest,
-          status: "starting",
-          nextPollAt: new Date().toISOString(),
-          retryCount: 0,
-          partialValues: accumulated,
-          partialArtifacts: mergeStoredArtifacts(
-            job.partialArtifacts,
-            pluginResponse.storedArtifacts,
-          ),
-          itemOrchestration: { ...nextItemOrchestration, currentIndex: nextIndex },
-          progress:
-            (completedItemOrchestration.workItems?.filter((item) => item.status === "completed")
-              .length ?? nextIndex) / itemOrchestration.items.length,
-          message: `Item ${itemOrchestration.currentIndex + 1} de ${itemOrchestration.items.length} concluído.`,
-          error: undefined,
-        });
-        if (saved.status === "cancel_requested") return saved;
-        blockExecution.status = "in_progress";
-        blockExecution.values = structuredClone(accumulated);
-        blockExecution.progress = saved.progress;
-        blockExecution.progressMessage = saved.message;
-        blockExecution.itemProgress = itemProgressForJob(saved);
-        blockExecution.items = blockExecutionItemsForJob(saved);
-        blockExecution.logs = pluginResponse.logs;
-        execution.status = "running";
-        recordBlockDeliveries(execution, block, accumulated, "partial");
-        persistPluginExecution(execution, project);
-        return saved;
       }
       Object.assign(values, accumulated);
       job = { ...completedItemJob, itemOrchestration: nextItemOrchestration };
@@ -2480,54 +3354,29 @@ async function processPluginJob(
     ) {
       throw new Error("O plugin não escolheu um item válido da coleção vinculada.");
     }
-    const missingOutputs = (block.outputs ?? [])
-      .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
-      .map((field) => field.label);
-    if (missingOutputs.length)
-      throw new Error(`O plugin não entregou: ${missingOutputs.join(", ")}.`);
-    const restrictionIssues = (block.outputs ?? []).flatMap((field) => {
-      const issue = getPresentationRestrictionIssue(field.presentation, values[field.key]);
-      return issue ? [`${field.label}: ${issue}`] : [];
-    });
-    if (restrictionIssues.length) {
-      throw new Error(`O plugin entregou valores incompatíveis: ${restrictionIssues.join("; ")}.`);
-    }
     if (!job.itemOrchestration) {
-      const inferredCapability = capabilityWithDeterministicItemMapping(
-        capability,
-        job.request,
-        values,
-      );
-      const inferredPolicy = inferredCapability.execution.itemOrchestration;
-      const inferredOutputKey = inferredPolicy
-        ? job.request.outputContract.find((field) => field.portKey === inferredPolicy.outputPort)
-            ?.key
-        : undefined;
-      const inferredInputs = inferredPolicy
-        ? job.request.inputs[inferredPolicy.inputPort]
-        : undefined;
-      const inferredOutputs = inferredOutputKey ? values[inferredOutputKey] : undefined;
-      if (
-        inferredPolicy &&
-        Array.isArray(inferredInputs) &&
-        Array.isArray(inferredOutputs) &&
-        inferredInputs.length === inferredOutputs.length
-      ) {
-        const materialized = legacyItemOrchestration(
-          inferredCapability,
-          job.request,
-          structuredClone(inferredOutputs) as RuntimeValue[],
-        );
-        if (materialized) {
-          job = { ...job, itemOrchestration: materialized };
-          claim.job = job;
-        }
+      const materialized = aggregateCompatibilityItemOrchestration(capability, job.request, values);
+      if (materialized) {
+        job = { ...job, itemOrchestration: materialized };
+        claim.job = job;
       }
     }
-    const saved = pluginJobs.save(
+    if (job.itemOrchestration && !areRequiredOrchestratedItemsCompleted(job)) {
+      throw new Error(
+        "O plugin encerrou a execução antes de todas as unidades obrigatórias chegarem ao estado concluído.",
+      );
+    }
+    const completedConversationId = pluginResponse.conversation?.id
+      ? normalizePluginConversationId(pluginResponse.conversation.id)
+      : undefined;
+    const saved = savePluginJob(
       claim,
       {
-        ...job,
+        ...appendPluginDiagnostic(job, {
+          code: "JOB_COMPLETED",
+          profileId: job.browserProfile?.profileId,
+          attempt: job.attempt,
+        }),
         status: "completed",
         progress: 1,
         partialValues: values,
@@ -2542,17 +3391,15 @@ async function processPluginJob(
         if (saved.status === "cancel_requested") return;
         if (!execution || !project || !block || !blockExecution) return;
         finishPluginBlock(execution, block, blockExecution, values);
+        execution.error = undefined;
+        execution.errorCode = undefined;
         if (completedConversationId) {
-          const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
-          const activeProfile = job.profileFallback
-            ? job.profileFallback.candidates[job.profileFallback.activeIndex]
-            : profileConfigurationKey
-              ? String(job.request.configuration[profileConfigurationKey] ?? "").trim() || undefined
-              : undefined;
+          const activeProfile = activeProfileAliasForJob(plugin, job);
           blockExecution.pluginConversation = {
             pluginId: plugin.id,
             connectionId: block.plugin?.connectionId,
             profile: activeProfile,
+            profileId: job.browserProfile?.profileId,
             id: completedConversationId,
             fallbackContext: pluginConversationFallbackContext(block, values),
           };
@@ -2564,7 +3411,8 @@ async function processPluginJob(
         blockExecution.progress = 1;
         blockExecution.progressMessage = undefined;
         blockExecution.itemProgress = itemProgressForJob(saved);
-        blockExecution.items = blockExecutionItemsForJob(saved);
+        blockExecution.profileLaneProgress = profileLaneProgressForJob(saved);
+        blockExecution.items = blockExecutionItemsForJob(saved, blockExecution.items);
         blockExecution.itemRetryScope = undefined;
         persistPluginExecution(execution, project);
       },
@@ -2572,6 +3420,9 @@ async function processPluginJob(
     scheduleAutomaticPluginBlock(execution);
     return saved;
   } catch (error) {
+    // A failed local commit is not a plugin failure: keep the durable snapshots
+    // unchanged and let the worker boundary report the persistence error.
+    if (error instanceof PersistenceCommitError) throw error;
     const message = error instanceof Error ? error.message : "Não foi possível executar o plugin.";
     execution = executionById(job.executionId);
     project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
@@ -2592,67 +3443,149 @@ async function processPluginJob(
     }
     const errorCode = (error as { code?: string })?.code || "JOB_FAILED";
     const fallback = job.profileFallback;
-    if (fallback && canAdvanceProfileFallback(job, { code: errorCode, message, status: "error" })) {
+    const recoveryDecision = decideExecutionRecovery({
+      job,
+      failure: {
+        code: errorCode,
+        message,
+        retryable: errorCode === "JOB_FAILED",
+        recovery: (error as { recovery?: import("../src/lib/plugin-contract").PluginRecoveryFacts })
+          .recovery,
+      },
+    });
+    if (fallback && recoveryDecision.action === "switch_profile") {
       const currentProfile = fallback.candidates[fallback.activeIndex];
       const nextIndex = fallback.activeIndex + 1;
       const nextProfile = fallback.candidates[nextIndex];
-      const saved = pluginJobs.save(claim, {
-        ...job,
-        status: "starting",
-        retryCount: job.retryCount + 1,
-        profileFallback: {
-          ...fallback,
-          activeIndex: nextIndex,
-          history: [
-            ...fallback.history,
-            {
-              profile: currentProfile,
-              code: errorCode,
-              message,
-            },
-          ],
-        },
-        error: message,
-        message: `Falha em ${currentProfile}; continuando com ${nextProfile}.`,
-        nextPollAt: new Date().toISOString(),
+      const resolvedNextProfile = job.profileExecution?.profiles[nextIndex];
+      const nextBrowserProfile = resolvedNextProfile
+        ? { profileId: resolvedNextProfile.profileId, alias: resolvedNextProfile.alias }
+        : browserProfileSnapshot(plugin, nextProfile);
+      const saved = commitPluginJobTransition(project.id, () => {
+        const saved = savePluginJob(claim, {
+          ...appendPluginDiagnostic(job, {
+            code: "PROFILE_SWITCH",
+            reasonCode: errorCode,
+            previousProfileId: job.browserProfile?.profileId,
+            profileId: nextBrowserProfile?.profileId,
+            attempt: job.attempt,
+          }),
+          status: "starting",
+          retryCount: job.retryCount + 1,
+          profileFallback: {
+            ...fallback,
+            activeIndex: nextIndex,
+            history: [
+              ...fallback.history,
+              {
+                profile: currentProfile,
+                code: errorCode,
+                message,
+              },
+            ],
+          },
+          browserProfile: nextBrowserProfile,
+          error: message,
+          message: recoveryProductMessage({
+            decision: recoveryDecision,
+            failureMessage: message,
+            currentProfile,
+            nextProfile,
+            preservedCount: itemProgressForJob(job)?.completed,
+          }),
+          nextPollAt: new Date().toISOString(),
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution!.status = "in_progress";
+        blockExecution!.progressMessage = saved.message;
+        blockExecution!.itemProgress = itemProgressForJob(saved);
+        blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+        blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+        execution!.status = "running";
+        persistPluginExecution(execution!, project!);
+        return saved;
       });
-      if (saved.status === "cancel_requested") return saved;
-      blockExecution.status = "in_progress";
-      blockExecution.progressMessage = saved.message;
-      blockExecution.itemProgress = itemProgressForJob(saved);
-      blockExecution.items = blockExecutionItemsForJob(saved);
-      execution.status = "running";
-      persistPluginExecution(execution, project);
+      releaseJobProfileLease(job.id);
       return saved;
     }
-    if (job.retryCount < 2 && Date.now() + 1_000 < new Date(job.deadlineAt).getTime()) {
+    if (recoveryDecision.action === "retry" || recoveryDecision.action === "reload_and_retry") {
       const retryCount = job.retryCount + 1;
-      const saved = pluginJobs.save(claim, {
-        ...job,
-        status: job.jobId ? "pending" : "starting",
-        retryCount,
-        error: message,
-        message: `Tentativa ${retryCount + 1}: ${message}`,
-        nextPollAt: new Date(Date.now() + Math.min(30_000, 1_000 * 2 ** retryCount)).toISOString(),
+      return commitPluginJobTransition(project.id, () => {
+        const saved = savePluginJob(claim, {
+          ...appendPluginDiagnostic(job, {
+            code: "PLUGIN_RETRY_SCHEDULED",
+            reasonCode: errorCode,
+            profileId: job.browserProfile?.profileId,
+            attempt: job.attempt,
+          }),
+          status: job.jobId ? "pending" : "starting",
+          request:
+            recoveryDecision.action === "reload_and_retry"
+              ? {
+                  ...job.request,
+                  recoveryDirective: {
+                    action: "reload_page",
+                    reasonCode: recoveryDecision.reasonCode,
+                  },
+                }
+              : job.request,
+          retryCount,
+          error: message,
+          message: recoveryProductMessage({
+            decision: recoveryDecision,
+            failureMessage: message,
+            currentProfile: activeProfileAliasForJob(plugin, job),
+            preservedCount: itemProgressForJob(job)?.completed,
+          }),
+          nextPollAt: new Date(Date.now() + recoveryDecision.delayMs).toISOString(),
+        });
+        if (saved.status === "cancel_requested") return saved;
+        blockExecution!.status = "in_progress";
+        blockExecution!.progressMessage = saved.message;
+        blockExecution!.itemProgress = itemProgressForJob(saved);
+        blockExecution!.profileLaneProgress = profileLaneProgressForJob(saved);
+        blockExecution!.items = blockExecutionItemsForJob(saved, blockExecution!.items);
+        execution!.status = "running";
+        persistPluginExecution(execution!, project!);
+        return saved;
       });
-      if (saved.status === "cancel_requested") return saved;
-      blockExecution.status = "in_progress";
-      blockExecution.progressMessage = saved.message;
-      blockExecution.itemProgress = itemProgressForJob(saved);
-      blockExecution.items = blockExecutionItemsForJob(saved);
-      execution.status = "running";
-      persistPluginExecution(execution, project);
-      return saved;
     }
-    return markPluginJobFailed(claim, execution, project, message);
+    return markPluginJobFailed(
+      claim,
+      execution,
+      project,
+      recoveryProductMessage({
+        decision: recoveryDecision,
+        failureMessage: message,
+        currentProfile: activeProfileAliasForJob(plugin, job),
+        preservedCount: itemProgressForJob(job)?.completed,
+      }),
+      "failed",
+      errorCode,
+    );
+  }
+}
+async function processPluginJob(
+  jobId: string,
+  transientSecrets: Record<string, string> = {},
+  existingClaim?: ClaimedPluginJob,
+) {
+  try {
+    return await processPluginJobClaimed(jobId, transientSecrets, existingClaim);
+  } finally {
+    const current = pluginJobs.get(jobId);
+    if (!current || ["completed", "failed", "cancelled", "abandoned"].includes(current.status)) {
+      releaseJobProfileLease(jobId);
+    }
   }
 }
 
 let activePluginWorkers = 0;
 const activePluginConcurrencySlots = new Map<string, number>();
 async function processDuePluginJobs() {
+  if (!userDataUpgrade.backgroundAllowed()) return;
   while (activePluginWorkers < 4) {
-    const claim = pluginJobs.claimNext();
+    const claim = userDataUpgrade.claimCompatibleJob(pluginJobs);
     if (!claim) break;
     const slot = pluginConcurrencySlot(getRegisteredPlugin(claim.job.pluginId), claim.job);
     const activeInSlot = activePluginConcurrencySlots.get(slot.key) ?? 0;
@@ -2674,10 +3607,14 @@ async function processDuePluginJobs() {
 }
 
 initializePluginRunner();
-reconcileStoredExecutionItems();
+if (userDataUpgrade.backgroundAllowed() && !userDataUpgrade.hasHistoricalJobs()) {
+  reconcileStoredExecutionItems();
+  normalizeStoredExecutionWorkUnits();
+}
 const pluginJobScheduler = setInterval(() => void processDuePluginJobs(), 500);
 pluginJobScheduler.unref();
 function cleanupAbandonedPluginJobs() {
+  if (!userDataUpgrade.backgroundAllowed() || userDataUpgrade.hasHistoricalJobs()) return;
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000);
   const expired = pluginJobs.terminalBefore(cutoff);
   for (const job of expired) {
@@ -2710,284 +3647,24 @@ pluginJobCleanup.unref();
 cleanupAbandonedPluginJobs();
 void processDuePluginJobs();
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+const { comparePluginVersions, pluginCatalogCompatibility } = await import("./plugin-catalog");
+type ManagedPlugin = RegisteredPlugin | import("./plugin-runner").AdministrativePlugin;
 
-function isUniqueStringArray(value: unknown, allowed?: readonly string[]): value is string[] {
+function getAdministrativePlugin(pluginId: string): ManagedPlugin | undefined {
+  const registry = initializePluginRunner();
   return (
-    Array.isArray(value) &&
-    value.every((item) => isNonEmptyString(item) && (!allowed || allowed.includes(item))) &&
-    new Set(value).size === value.length
+    registry.plugins.find((plugin) => plugin.id === pluginId) ??
+    registry.administrativePlugins.find((plugin) => plugin.id === pluginId)
   );
-}
-
-function isOptionalHttpsUrl(value: unknown) {
-  if (value === undefined) return true;
-  if (!isNonEmptyString(value)) return false;
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 function isPluginManifest(manifest: Record<string, unknown>) {
-  const runtime = manifest.runtime as Record<string, unknown> | undefined;
-  const capabilities = manifest.capabilities;
-  const profileSetup = manifest.profileSetup as Record<string, unknown> | undefined;
-  const permissions = [
-    "network",
-    "filesystem:read",
-    "filesystem:write",
-    "process",
-    "worker",
-    "native",
-  ] as const;
-  const blockTypes = ["BUSCAR", "ESCOLHER", "CRIAR", "VALIDAR"] as const;
-  const processTypes = [
-    "theme",
-    "title",
-    "thumbnail",
-    "script",
-    "narration",
-    "assets",
-    "editing",
-    "publishing",
-  ] as const;
-  const dataTypes = [
-    "text",
-    "textarea",
-    "number",
-    "boolean",
-    "list",
-    "records",
-    "select",
-    "multiselect",
-    "datetime",
-    "url",
-    "file",
-    "files",
-    "image",
-    "audio",
-    "video",
-    "approval",
-    "thumbnail_layout",
-  ] as const;
-  const presentationRenderers = [
-    "auto",
-    "text-short",
-    "text-long",
-    "list",
-    "tags",
-    "table",
-    "cards",
-    "file-list",
-    "image-gallery",
-    "audio-player",
-    "video-player",
-    "decision",
-  ] as const;
-  const presentationItemTypes = ["text", "record", "file", "image", "audio", "video"] as const;
-  const sideEffects = [
-    "external_read",
-    "external_write",
-    "public_publish",
-    "local_artifact",
-    "subprocess",
-  ] as const;
-
-  const manifestPermissions = isUniqueStringArray(manifest.permissions, permissions)
-    ? manifest.permissions
-    : [];
-  let networkHostsAreValid = manifest.networkHosts === undefined;
-  if (
-    Array.isArray(manifest.networkHosts) &&
-    manifest.networkHosts.length <= 100 &&
-    manifest.networkHosts.every((host) => typeof host === "string")
-  ) {
-    try {
-      const normalizedHosts = manifest.networkHosts.map(normalizeNetworkHostPattern);
-      networkHostsAreValid =
-        manifestPermissions.includes("network") &&
-        normalizedHosts.length > 0 &&
-        new Set(normalizedHosts).size === normalizedHosts.length;
-    } catch {
-      networkHostsAreValid = false;
-    }
+  try {
+    validatePluginManifest(manifest);
+    return true;
+  } catch {
+    return false;
   }
-
-  return Boolean(
-    manifest.apiVersion === "1" &&
-    isNonEmptyString(manifest.id) &&
-    isNonEmptyString(manifest.name) &&
-    isNonEmptyString(manifest.version) &&
-    isNonEmptyString(manifest.description) &&
-    isNonEmptyString(manifest.author) &&
-    isNonEmptyString(manifest.license) &&
-    isOptionalHttpsUrl(manifest.homepage) &&
-    isOptionalHttpsUrl(manifest.repository) &&
-    isNonEmptyString(manifest.entrypoint) &&
-    !path.isAbsolute(manifest.entrypoint) &&
-    !manifest.entrypoint.includes("..") &&
-    isUniqueStringArray(manifest.permissions, permissions) &&
-    networkHostsAreValid &&
-    (profileSetup === undefined ||
-      (isNonEmptyString(profileSetup.configurationKey) &&
-        (profileSetup.fallbackConfigurationKey === undefined ||
-          isNonEmptyString(profileSetup.fallbackConfigurationKey)) &&
-        isNonEmptyString(profileSetup.label) &&
-        (profileSetup.description === undefined || typeof profileSetup.description === "string") &&
-        (profileSetup.prepareTimeoutMs === undefined ||
-          (Number.isInteger(profileSetup.prepareTimeoutMs) &&
-            Number(profileSetup.prepareTimeoutMs) >= 30_000 &&
-            Number(profileSetup.prepareTimeoutMs) <= 900_000)) &&
-        Object.keys(profileSetup).every((key) =>
-          [
-            "configurationKey",
-            "fallbackConfigurationKey",
-            "label",
-            "description",
-            "prepareTimeoutMs",
-          ].includes(key),
-        ))) &&
-    (manifest.secretKeys === undefined || isUniqueStringArray(manifest.secretKeys)) &&
-    runtime?.kind === "node" &&
-    runtime.module === "esm" &&
-    isNonEmptyString(runtime.version) &&
-    Array.isArray(capabilities) &&
-    capabilities.length > 0 &&
-    capabilities.every((value) => {
-      if (!value || typeof value !== "object") return false;
-      const capability = value as Record<string, unknown>;
-      const execution = capability.execution as Record<string, unknown> | undefined;
-      const itemOrchestration = execution?.itemOrchestration as Record<string, unknown> | undefined;
-      const cost = capability.cost as Record<string, unknown> | undefined;
-      const dataPolicy = capability.dataPolicy as Record<string, unknown> | undefined;
-      const capabilitySideEffects = capability.sideEffects;
-      const portsAreValid = (ports: unknown, typeKey: "acceptedTypes" | "producedTypes") =>
-        Array.isArray(ports) &&
-        ports.every((portValue) => {
-          if (!portValue || typeof portValue !== "object") return false;
-          const port = portValue as Record<string, unknown>;
-          const presentation = port.presentation as Record<string, unknown> | undefined;
-          const allowedPortKeys =
-            typeKey === "acceptedTypes"
-              ? [
-                  "key",
-                  "label",
-                  "description",
-                  "acceptedTypes",
-                  "required",
-                  "multiple",
-                  "presentation",
-                ]
-              : ["key", "label", "description", "producedTypes", "required", "presentation"];
-          const declaredTypes = Array.isArray(port[typeKey])
-            ? (port[typeKey] as HumanFieldType[])
-            : [];
-          const presentationIsValid =
-            presentation === undefined ||
-            (presentation !== null &&
-              typeof presentation === "object" &&
-              presentationRenderers.includes(
-                String(presentation.renderer) as (typeof presentationRenderers)[number],
-              ) &&
-              declaredTypes.some(
-                (type) =>
-                  dataTypes.includes(type) &&
-                  getCompatiblePresentationRenderers(type).includes(
-                    String(presentation.renderer) as (typeof presentationRenderers)[number],
-                  ),
-              ) &&
-              (presentation.itemType === undefined ||
-                presentationItemTypes.includes(
-                  String(presentation.itemType) as (typeof presentationItemTypes)[number],
-                )) &&
-              (presentation.acceptedMimeTypes === undefined ||
-                (isUniqueStringArray(presentation.acceptedMimeTypes) &&
-                  presentation.acceptedMimeTypes.every((mime) =>
-                    /^[-\w.+]+\/[-\w.+*]+$/.test(mime),
-                  ))) &&
-              Object.keys(presentation).every((key) =>
-                ["renderer", "itemType", "acceptedMimeTypes"].includes(key),
-              ));
-          return (
-            isNonEmptyString(port.key) &&
-            isNonEmptyString(port.label) &&
-            typeof port.required === "boolean" &&
-            (port.description === undefined || typeof port.description === "string") &&
-            (typeKey !== "acceptedTypes" ||
-              port.multiple === undefined ||
-              typeof port.multiple === "boolean") &&
-            Object.keys(port).every((key) => allowedPortKeys.includes(key)) &&
-            isUniqueStringArray(port[typeKey], dataTypes) &&
-            presentationIsValid
-          );
-        }) &&
-        new Set(ports.map((port) => String((port as Record<string, unknown>).key))).size ===
-          ports.length;
-      const sendsData = dataPolicy?.sendsDataToThirdParties === true;
-      const usesNetwork =
-        Array.isArray(capabilitySideEffects) &&
-        capabilitySideEffects.some((effect) =>
-          ["external_read", "external_write", "public_publish"].includes(String(effect)),
-        );
-
-      return (
-        isNonEmptyString(capability.id) &&
-        ["Humano", "IA", "Código"].includes(String(capability.operator)) &&
-        isUniqueStringArray(capability.blockTypes, blockTypes) &&
-        capability.blockTypes.length > 0 &&
-        (capability.processTypes === undefined ||
-          isUniqueStringArray(capability.processTypes, processTypes)) &&
-        portsAreValid(capability.inputPorts, "acceptedTypes") &&
-        portsAreValid(capability.outputPorts, "producedTypes") &&
-        (capability.outputPorts as unknown[]).length > 0 &&
-        ["immediate", "async"].includes(String(execution?.mode)) &&
-        (execution?.maxConcurrency === undefined ||
-          (Number.isInteger(execution.maxConcurrency) &&
-            Number(execution.maxConcurrency) >= 1 &&
-            Number(execution.maxConcurrency) <= 100)) &&
-        (itemOrchestration === undefined ||
-          (itemOrchestration.mode === "sequential" &&
-            isNonEmptyString(itemOrchestration.inputPort) &&
-            isNonEmptyString(itemOrchestration.outputPort) &&
-            (capability.inputPorts as Array<Record<string, unknown>>).some(
-              (port) => port.key === itemOrchestration.inputPort,
-            ) &&
-            (capability.outputPorts as Array<Record<string, unknown>>).some(
-              (port) => port.key === itemOrchestration.outputPort,
-            ) &&
-            (itemOrchestration.combinedOutputPort === undefined ||
-              (isNonEmptyString(itemOrchestration.combinedOutputPort) &&
-                (capability.outputPorts as Array<Record<string, unknown>>).some(
-                  (port) => port.key === itemOrchestration.combinedOutputPort,
-                ))) &&
-            (itemOrchestration.separator === undefined ||
-              (typeof itemOrchestration.separator === "string" &&
-                itemOrchestration.separator.length <= 20)))) &&
-        isUniqueStringArray(capabilitySideEffects, sideEffects) &&
-        (!usesNetwork || manifestPermissions.includes("network")) &&
-        (!capabilitySideEffects.includes("local_artifact") ||
-          manifestPermissions.includes("filesystem:write")) &&
-        (!capabilitySideEffects.includes("subprocess") ||
-          manifestPermissions.includes("process")) &&
-        ["free", "metered", "unknown"].includes(String(cost?.model)) &&
-        typeof cost?.estimateSupported === "boolean" &&
-        typeof dataPolicy?.sendsDataToThirdParties === "boolean" &&
-        (!sendsData || isUniqueStringArray(dataPolicy?.providers)) &&
-        isOptionalHttpsUrl(dataPolicy?.retentionPolicyUrl) &&
-        isOptionalHttpsUrl(dataPolicy?.trainingPolicyUrl) &&
-        capability.blockConfigSchema !== null &&
-        typeof capability.blockConfigSchema === "object" &&
-        capability.outputSchema !== null &&
-        typeof capability.outputSchema === "object"
-      );
-    }) &&
-    new Set(capabilities.map((capability) => String((capability as Record<string, unknown>).id)))
-      .size === capabilities.length,
-  );
 }
 
 function migrateLegacyLibraryItems() {
@@ -3019,9 +3696,39 @@ function migrateLegacyLibraryItems() {
       );
       if (!collection) {
         const fields = [
-          { id: randomUUID(), label: "Nome", type: "text", required: true },
-          { id: randomUUID(), label: "Conteúdo", type: "textarea", required: true },
-          { id: randomUUID(), label: "Descrição", type: "textarea", required: false },
+          {
+            id: randomUUID(),
+            label: "Nome",
+            shape: {
+              kind: "content",
+              family: "text",
+              cardinality: "one",
+              representation: "inline",
+            },
+            required: true,
+          },
+          {
+            id: randomUUID(),
+            label: "Conteúdo",
+            shape: {
+              kind: "content",
+              family: "text",
+              cardinality: "one",
+              representation: "inline",
+            },
+            required: true,
+          },
+          {
+            id: randomUUID(),
+            label: "Descrição",
+            shape: {
+              kind: "content",
+              family: "text",
+              cardinality: "one",
+              representation: "inline",
+            },
+            required: false,
+          },
         ];
         collection = {
           id: randomUUID(),
@@ -3070,6 +3777,7 @@ function migrateLegacyLibraryItems() {
 migrateLegacyLibraryItems();
 
 const app = express();
+app.use(supportRequestDiagnostics);
 app.use(express.json({ limit: "20mb" }));
 app.use(
   "/api/files",
@@ -3137,11 +3845,15 @@ app.post("/api/method-packages/export", async (request, response) => {
       response.status(400).json({ error: "Manifesto ausente." });
       return;
     }
-    const archive = await createMethodPackage(request.body.manifest, (url) => {
-      const storedName = url.slice("/api/files/".length);
-      if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Capa local inválida.");
-      return readFileSync(path.join(uploadsDirectory, storedName));
-    });
+    const archive = await createMethodPackage(
+      request.body.manifest,
+      (url) => {
+        const storedName = url.slice("/api/files/".length);
+        if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Capa local inválida.");
+        return readFileSync(path.join(uploadsDirectory, storedName));
+      },
+      portableProfileSetupForPlugin,
+    );
     response.type("application/zip").send(archive);
   } catch (error) {
     response.status(400).json({
@@ -3161,7 +3873,12 @@ app.post(
       }
       // Abrir um pacote serve apenas para pré-visualização. Os assets permanecem
       // embutidos no manifesto como data URLs até a aplicação/importação efetiva.
-      const manifest = await readMethodPackage(request.body);
+      // IDs forjados e URLs gerenciadas são descartados aqui via metadados reais.
+      const manifest = await readMethodPackage(
+        request.body,
+        undefined,
+        portableProfileSetupForPlugin,
+      );
       response.json({ manifest });
     } catch (error) {
       response.status(400).json({
@@ -3182,10 +3899,6 @@ app.put("/api/preferences", (request, response) => {
   const notificationSound = request.body?.notificationSound;
   const systemNotifications = request.body?.systemNotifications;
   const methodsLibraryView = request.body?.methodsLibraryView ?? current.methodsLibraryView;
-  const pluginOrganization =
-    request.body?.pluginOrganization !== undefined
-      ? normalizeServerPluginOrganization(request.body.pluginOrganization)
-      : current.pluginOrganization;
   if (
     !(["light", "dark"] as const).includes(theme) ||
     !(["pt-BR", "en", "es"] as const).includes(language) ||
@@ -3200,16 +3913,15 @@ app.put("/api/preferences", (request, response) => {
     .prepare(
       `INSERT INTO app_preferences (
           id, theme, language, notification_sound, system_notifications, methods_library_view,
-          plugin_organization, updated_at
+          updated_at
         )
-        VALUES ('global', ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('global', ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           theme = excluded.theme,
           language = excluded.language,
           notification_sound = excluded.notification_sound,
           system_notifications = excluded.system_notifications,
           methods_library_view = excluded.methods_library_view,
-          plugin_organization = excluded.plugin_organization,
           updated_at = excluded.updated_at`,
     )
     .run(
@@ -3218,7 +3930,6 @@ app.put("/api/preferences", (request, response) => {
       Number(notificationSound),
       Number(systemNotifications),
       methodsLibraryView,
-      JSON.stringify(pluginOrganization),
       new Date().toISOString(),
     );
   response.json(readPreferences());
@@ -3226,13 +3937,8 @@ app.put("/api/preferences", (request, response) => {
 
 app.get("/api/plugins", (_request, response) => {
   const registry = initializePluginRunner();
-  const channelRows = database.prepare("SELECT payload FROM channels").all() as {
-    payload: string;
-  }[];
-  const allChannels = parseRows(channelRows);
   const plugins = registry.plugins.map((plugin) => {
     const enabled = pluginConsentIsCurrent(plugin);
-    const methodDependencyCount = findPluginMethodDependencies(allChannels, plugin.id).length;
     return {
       id: plugin.id,
       source: plugin.source,
@@ -3243,14 +3949,29 @@ app.get("/api/plugins", (_request, response) => {
       sandboxed: true,
       networkIsolation: communitySandboxAvailable,
       profileCount: plugin.manifest.profileSetup ? profileInventory(plugin).length : undefined,
-      methodDependencyCount,
     };
   });
   response.json({
-    plugins,
+    plugins: [
+      ...plugins.map((plugin) => ({ ...plugin, compatibility: { status: "compatible" } })),
+      ...registry.administrativePlugins.map(
+        ({ absoluteDirectory: _absoluteDirectory, ...plugin }) => ({
+          ...plugin,
+          enabled: false,
+          executable: false,
+          sandboxed: true,
+          networkIsolation: communitySandboxAvailable,
+        }),
+      ),
+    ],
     issues: registry.issues,
   });
 });
+
+// Organização local da biblioteca (Interface 3): preferência separada do
+// contrato /api/preferences, registrada antes das rotas dinâmicas para não
+// colidir com :pluginId.
+registerPluginOrganizationRoutes(app, database);
 
 app.get("/api/plugins/:pluginId/icon", (request, response) => {
   initializePluginRunner();
@@ -3284,6 +4005,9 @@ function profileInventory(plugin: RegisteredPlugin) {
   database.transaction(() =>
     syncPluginProfilesFromMethods(pluginProfiles, channels, plugin.id, setup, randomUUID),
   )();
+  for (const profile of pluginProfiles.list(plugin.id)) {
+    ensureLegacyBrowserProfile(database, profile);
+  }
   const usages = findPluginProfileUsages(channels, plugin.id, setup);
   return pluginProfiles.list(plugin.id).map((profile) => ({
     ...profile,
@@ -3298,6 +4022,11 @@ function registeredProfilePlugin(pluginId: string) {
   return plugin;
 }
 
+registerPluginProfileNamedUrlRoutes(app, {
+  database,
+  resolveProfilePlugin: (pluginId) => registeredProfilePlugin(pluginId),
+});
+
 app.get("/api/plugins/:pluginId/profiles", (request, response) => {
   const plugin = registeredProfilePlugin(request.params.pluginId);
   if (!plugin) {
@@ -3305,6 +4034,250 @@ app.get("/api/plugins/:pluginId/profiles", (request, response) => {
     return;
   }
   response.json({ profiles: profileInventory(plugin), browserBridgeDirectory });
+});
+
+app.get("/api/plugins/:pluginId/profile-inventory", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  const channels = storedChannels();
+  profileInventory(plugin);
+  const inventory = browserProfileInventory(
+    browserProfiles,
+    pluginProfileBindings,
+    pluginProfileReadiness,
+    plugin.id,
+    (binding, profile) => {
+      const boundPlugin = getRegisteredPlugin(binding.pluginId);
+      const setup = boundPlugin?.manifest.profileSetup;
+      if (!setup) return [];
+      return (
+        findPluginProfileUsages(channels, binding.pluginId, setup).get(
+          profile.alias.toLocaleLowerCase(),
+        ) ?? []
+      );
+    },
+  );
+  response.json({
+    ...inventory,
+    linked: inventory.linked.map((entry) => {
+      const lease = browserProfileLeases.get(entry.profile.id);
+      return {
+        ...entry,
+        occupied: Boolean(lease && Date.parse(lease.expiresAt) > Date.now()),
+      };
+    }),
+  });
+});
+
+function linkedBrowserProfileAliasExists(
+  pluginId: string,
+  alias: string,
+  exceptProfileId?: string,
+) {
+  return pluginProfileBindings.listForPlugin(pluginId).some((binding) => {
+    if (binding.profileId === exceptProfileId) return false;
+    return (
+      browserProfiles.get(binding.profileId)?.alias.toLocaleLowerCase() ===
+      alias.toLocaleLowerCase()
+    );
+  });
+}
+
+function staleBrowserProfileRevision(expected: unknown, actual: string) {
+  return typeof expected !== "string" || expected !== actual;
+}
+
+app.post("/api/plugins/:pluginId/profile-bindings", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  try {
+    const name = normalizePluginProfileName(request.body?.name);
+    const profileId = randomUUID();
+    const aliasBase =
+      request.body?.alias === undefined
+        ? pluginProfileAliasFromName(name) || `perfil-${profileId.slice(0, 8)}`
+        : normalizePluginProfileAlias(request.body.alias);
+    let alias = aliasBase;
+    let suffix = 2;
+    while (linkedBrowserProfileAliasExists(plugin.id, alias)) {
+      const suffixText = `-${suffix++}`;
+      alias = `${aliasBase.slice(0, 48 - suffixText.length).replace(/-+$/, "")}${suffixText}`;
+    }
+    const result = database
+      .transaction(() => {
+        const profile = browserProfiles.create({
+          id: profileId,
+          name,
+          alias,
+          storageKind: "managed",
+          storageKey: `browser-profiles/${profileId}`,
+        });
+        const binding = pluginProfileBindings.link(plugin.id, profileId);
+        return { profile, binding };
+      })
+      .immediate();
+    response.status(201).json(result);
+  } catch (error) {
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível criar o perfil.",
+    });
+  }
+});
+
+app.post("/api/plugins/:pluginId/profile-bindings/:profileId", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  const profile = browserProfiles.get(request.params.profileId);
+  if (!profile) {
+    response.status(404).json({ error: "Perfil de navegador não encontrado." });
+    return;
+  }
+  if (request.body?.sharedSessionConsent !== true) {
+    response.status(422).json({
+      error:
+        "Confirme explicitamente o uso da sessão local compartilhada antes de vincular o perfil.",
+    });
+    return;
+  }
+  if (staleBrowserProfileRevision(request.body?.profileUpdatedAt, profile.updatedAt)) {
+    response
+      .status(409)
+      .json({ error: "O perfil mudou. Recarregue o inventário antes de vinculá-lo." });
+    return;
+  }
+  if (pluginProfileBindings.get(plugin.id, profile.id)) {
+    response.status(409).json({ error: "Este perfil já está vinculado ao plugin." });
+    return;
+  }
+  if (linkedBrowserProfileAliasExists(plugin.id, profile.alias)) {
+    response.status(409).json({
+      error: "Já existe um perfil vinculado a este plugin com o mesmo alias.",
+    });
+    return;
+  }
+  try {
+    const binding = database
+      .transaction(() => {
+        const latest = browserProfiles.get(profile.id);
+        if (
+          !latest ||
+          staleBrowserProfileRevision(request.body?.profileUpdatedAt, latest.updatedAt)
+        ) {
+          throw new Error("PROFILE_REVISION_CONFLICT");
+        }
+        return pluginProfileBindings.link(plugin.id, profile.id);
+      })
+      .immediate();
+    response.status(201).json({ profile, binding });
+  } catch (error) {
+    if (error instanceof Error && error.message === "PROFILE_REVISION_CONFLICT") {
+      response
+        .status(409)
+        .json({ error: "O perfil mudou. Recarregue o inventário antes de vinculá-lo." });
+      return;
+    }
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível vincular o perfil.",
+    });
+  }
+});
+
+app.patch("/api/plugins/:pluginId/profile-bindings/:profileId", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  const binding = pluginProfileBindings.get(plugin.id, request.params.profileId);
+  const profile = browserProfiles.get(request.params.profileId);
+  if (!binding || !profile) {
+    response.status(404).json({ error: "Vínculo de perfil não encontrado." });
+    return;
+  }
+  if (staleBrowserProfileRevision(request.body?.profileUpdatedAt, profile.updatedAt)) {
+    response
+      .status(409)
+      .json({ error: "O perfil mudou. Recarregue o inventário antes de renomeá-lo." });
+    return;
+  }
+  try {
+    const name = normalizePluginProfileName(request.body?.name);
+    const renamed = database
+      .transaction(() => {
+        const latest = browserProfiles.get(profile.id);
+        if (
+          !latest ||
+          staleBrowserProfileRevision(request.body?.profileUpdatedAt, latest.updatedAt)
+        ) {
+          throw new Error("PROFILE_REVISION_CONFLICT");
+        }
+        return browserProfiles.rename(profile.id, name)!;
+      })
+      .immediate();
+    response.json({ profile: renamed, binding: pluginProfileBindings.get(plugin.id, profile.id) });
+  } catch (error) {
+    if (error instanceof Error && error.message === "PROFILE_REVISION_CONFLICT") {
+      response
+        .status(409)
+        .json({ error: "O perfil mudou. Recarregue o inventário antes de renomeá-lo." });
+      return;
+    }
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível renomear o perfil.",
+    });
+  }
+});
+
+app.delete("/api/plugins/:pluginId/profile-bindings/:profileId", (request, response) => {
+  const plugin = registeredProfilePlugin(request.params.pluginId);
+  if (!plugin) {
+    response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+    return;
+  }
+  const binding = pluginProfileBindings.get(plugin.id, request.params.profileId);
+  const profile = browserProfiles.get(request.params.profileId);
+  if (!binding || !profile) {
+    response.status(404).json({ error: "Vínculo de perfil não encontrado." });
+    return;
+  }
+  if (request.body?.bindingUpdatedAt !== binding.updatedAt) {
+    response
+      .status(409)
+      .json({ error: "O vínculo mudou. Recarregue o inventário antes de desvinculá-lo." });
+    return;
+  }
+  try {
+    const remainingBindings = database
+      .transaction(() => {
+        const latest = pluginProfileBindings.get(plugin.id, profile.id);
+        if (!latest || request.body?.bindingUpdatedAt !== latest.updatedAt) {
+          throw new Error("BINDING_REVISION_CONFLICT");
+        }
+        pluginProfileBindings.unlink(plugin.id, profile.id);
+        return pluginProfileBindings.listForProfile(profile.id).length;
+      })
+      .immediate();
+    response.json({ profileId: profile.id, remainingBindings, profilePreserved: true });
+  } catch (error) {
+    if (error instanceof Error && error.message === "BINDING_REVISION_CONFLICT") {
+      response
+        .status(409)
+        .json({ error: "O vínculo mudou. Recarregue o inventário antes de desvinculá-lo." });
+      return;
+    }
+    response.status(422).json({
+      error: error instanceof Error ? error.message : "Não foi possível desvincular o perfil.",
+    });
+  }
 });
 
 app.post("/api/plugins/:pluginId/profiles", (request, response) => {
@@ -3326,7 +4299,11 @@ app.post("/api/plugins/:pluginId/profiles", (request, response) => {
       const suffixText = `-${suffix++}`;
       alias = `${aliasBase.slice(0, 48 - suffixText.length).replace(/-+$/, "")}${suffixText}`;
     }
-    const profile = pluginProfiles.create({ id: profileId, pluginId: plugin.id, name, alias });
+    const profile = database.transaction(() => {
+      const created = pluginProfiles.create({ id: profileId, pluginId: plugin.id, name, alias });
+      ensureLegacyBrowserProfile(database, created);
+      return created;
+    })();
     response.status(201).json({ ...profile, usages: [] });
   } catch (error) {
     response.status(422).json({
@@ -3375,16 +4352,9 @@ app.delete("/api/plugins/:pluginId/profiles/:profileId", (request, response) => 
     response.status(404).json({ error: "Perfil não encontrado." });
     return;
   }
-  const usages =
-    findPluginProfileUsages(storedChannels(), plugin.id, plugin.manifest.profileSetup!).get(
-      profile.alias.toLocaleLowerCase(),
-    ) ?? [];
-  if (usages.length) {
-    response.status(409).json({
-      error: "Este perfil ainda é usado por Métodos. Troque essas referências antes de removê-lo.",
-      usages,
-    });
-    return;
+  const migratedProfileId = `legacy:${profile.id}`;
+  if (pluginProfileBindings.get(plugin.id, migratedProfileId)) {
+    pluginProfileBindings.unlink(plugin.id, migratedProfileId);
   }
   pluginProfiles.remove(plugin.id, profile.id);
   response.status(204).end();
@@ -3394,6 +4364,7 @@ async function executePluginProfileAction(
   plugin: RegisteredPlugin,
   action: "status" | "prepare",
   profileName: string,
+  profileDirectory?: string,
 ) {
   const setup = plugin.manifest.profileSetup as PluginProfileSetup;
   const profileKey = setup.configurationKey;
@@ -3432,8 +4403,160 @@ async function executePluginProfileAction(
   const timeoutMs = action === "prepare" ? undefined : 30_000;
   return executeRegisteredPlugin(plugin, pluginRequest, timeoutMs, pluginSecrets, {
     workspaceDirectory: executionWorkspaceForPlugin(plugin),
+    profileDirectory: profileDirectory ?? executionProfileForPluginRequest(plugin, pluginRequest),
   });
 }
+
+function updateBoundProfileReadiness(input: {
+  pluginId: string;
+  profileId: string;
+  action: "status" | "prepare";
+  ready: boolean;
+  bridgeState: "installed" | "missing" | "unknown";
+}) {
+  const now = new Date().toISOString();
+  const previous = pluginProfileReadiness.get(input.pluginId, input.profileId);
+  return pluginProfileReadiness.set({
+    pluginId: input.pluginId,
+    profileId: input.profileId,
+    state: input.ready ? "ready" : "not_ready",
+    checkedAt: now,
+    preparedAt: input.action === "prepare" && input.ready ? now : previous?.preparedAt,
+    metadata: { bridgeState: input.bridgeState },
+  });
+}
+
+const configurationOptionsRequestSchema = z
+  .object({
+    configuration: z.record(z.union([z.string(), z.number().finite(), z.boolean()])).default({}),
+    connectionId: z.string().min(1).max(200).optional(),
+    refresh: z.boolean().optional(),
+  })
+  .strict();
+
+async function executePluginConfigurationOptions(input: {
+  plugin: RegisteredPlugin;
+  capability: PluginCapability;
+  property: string;
+  configuration: Record<string, string | number | boolean>;
+  connectionId?: string;
+  refresh: boolean;
+}) {
+  const provider = input.capability.configurationOptions?.find(
+    (candidate) => candidate.property === input.property,
+  );
+  if (!provider) throw new Error("Este campo não possui opções dinâmicas declaradas.");
+
+  const profileKey = input.plugin.manifest.profileSetup?.configurationKey;
+  const profileAlias = profileKey ? String(input.configuration[profileKey] ?? "").trim() : "";
+  if (profileKey && provider.dependsOn?.includes(profileKey) && !profileAlias) {
+    throw new Error("Selecione um perfil preparado antes de carregar estas opções.");
+  }
+  if (profileAlias && !pluginProfiles.findByAlias(input.plugin.id, profileAlias)) {
+    throw new Error("O perfil selecionado não pertence a este plugin.");
+  }
+
+  const cacheKey = configurationOptionsCacheKey({
+    pluginId: input.plugin.id,
+    pluginVersion: input.plugin.manifest.version,
+    capabilityId: input.capability.id,
+    provider,
+    configuration: input.configuration,
+    profileConfigurationKey: profileKey,
+    connectionId: input.connectionId,
+  });
+  if (!input.refresh) {
+    const cached = pluginConfigurationOptionsCache.get(cacheKey);
+    if (cached) return { options: cached, cached: true };
+  }
+
+  const pluginSecrets = (await resolvePluginConnection(input.plugin, input.connectionId)).secrets;
+  const pluginRequest: PluginExecutionRequest = {
+    executionId: `configuration-options-${randomUUID()}`,
+    traceId: randomUUID(),
+    blockId: "configuration-options",
+    capabilityId: input.capability.id,
+    attempt: 1,
+    invocation: {
+      mode: "configure",
+      action: "options",
+      providerId: provider.providerId,
+      property: provider.property,
+    },
+    configuration: input.configuration,
+    settings: {},
+    inputs: {},
+    inputContract: [],
+    outputContract: [],
+    context: {
+      locale: "pt-BR",
+      timeZone: "America/Sao_Paulo",
+      channel: { id: "configuration-options", name: "", language: "", niche: "" },
+      project: { id: "configuration-options", title: "" },
+      processType: "theme",
+      block: { type: "CRIAR", name: "", instructions: "" },
+    },
+  };
+  const result = await executeRegisteredPlugin(input.plugin, pluginRequest, 60_000, pluginSecrets, {
+    workspaceDirectory: executionWorkspaceForPlugin(input.plugin),
+    profileDirectory: executionProfileForPluginRequest(input.plugin, pluginRequest),
+  });
+  const options = parseConfigurationOptionsResponse(result);
+  pluginConfigurationOptionsCache.set(cacheKey, options, provider.cacheTtlMs ?? 300_000);
+  return { options, cached: false };
+}
+
+app.post(
+  "/api/plugins/:pluginId/capabilities/:capabilityId/configuration-options/:property",
+  async (request, response) => {
+    initializePluginRunner();
+    const plugin = getRegisteredPlugin(request.params.pluginId);
+    if (!plugin) {
+      response.status(404).json({ error: "Plugin não encontrado." });
+      return;
+    }
+    if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+      response.status(403).json({
+        error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+      });
+      return;
+    }
+    const capability = plugin.manifest.capabilities.find(
+      (candidate) => candidate.id === request.params.capabilityId,
+    );
+    if (!capability) {
+      response.status(404).json({ error: "Capacidade do plugin não encontrada." });
+      return;
+    }
+    const provider = capability.configurationOptions?.find(
+      (candidate) => candidate.property === request.params.property,
+    );
+    if (!provider) {
+      response.status(404).json({ error: "Este campo não oferece opções dinâmicas." });
+      return;
+    }
+    const parsed = configurationOptionsRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      response.status(400).json({ error: "Configuração inválida para descoberta de opções." });
+      return;
+    }
+    try {
+      const result = await executePluginConfigurationOptions({
+        plugin,
+        capability,
+        property: provider.property,
+        configuration: parsed.data.configuration,
+        connectionId: parsed.data.connectionId,
+        refresh: parsed.data.refresh === true,
+      });
+      response.json(result satisfies { options: PluginConfigurationOption[]; cached: boolean });
+    } catch (error) {
+      response.status(422).json({
+        error: error instanceof Error ? error.message : "Não foi possível carregar as opções.",
+      });
+    }
+  },
+);
 
 app.post("/api/plugins/:pluginId/profiles/:profileId/:action", async (request, response) => {
   const plugin = registeredProfilePlugin(request.params.pluginId);
@@ -3489,6 +4612,118 @@ app.post("/api/plugins/:pluginId/profiles/:profileId/:action", async (request, r
     });
   }
 });
+
+app.post(
+  "/api/plugins/:pluginId/profile-bindings/:profileId/:action",
+  async (request, response) => {
+    const plugin = registeredProfilePlugin(request.params.pluginId);
+    const action = request.params.action;
+    if (!plugin) {
+      response.status(404).json({ error: "Este plugin não oferece gerenciamento de perfis." });
+      return;
+    }
+    if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
+      response.status(403).json({
+        error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+      });
+      return;
+    }
+    if (action !== "status" && action !== "prepare") {
+      response.status(400).json({ error: "Ação de perfil inválida." });
+      return;
+    }
+
+    let resolved;
+    try {
+      resolved = resolveBoundBrowserProfile(database, {
+        pluginId: plugin.id,
+        profileId: request.params.profileId,
+        dataDirectory,
+      });
+    } catch (error) {
+      response.status(404).json({
+        ready: false,
+        error: error instanceof Error ? error.message : "Vínculo de perfil não encontrado.",
+      });
+      return;
+    }
+
+    try {
+      const result = await executePluginProfileAction(
+        plugin,
+        action,
+        resolved.profile.alias,
+        resolved.profileDirectory,
+      );
+      if (result.status === "error") {
+        const readiness = updateBoundProfileReadiness({
+          pluginId: plugin.id,
+          profileId: resolved.profile.id,
+          action,
+          ready: false,
+          bridgeState: browserBridgeProfileDirectoryState(resolved.profileDirectory),
+        });
+        response.status(action === "status" ? 200 : 422).json({
+          ready: false,
+          readiness: {
+            state: readiness.state,
+            checkedAt: readiness.checkedAt,
+            preparedAt: readiness.preparedAt,
+          },
+          error: result.message,
+        });
+        return;
+      }
+
+      const markerReady = result.status === "success" && result.values.ready === true;
+      const bridgeState = markerReady
+        ? browserBridgeProfileDirectoryState(resolved.profileDirectory)
+        : "unknown";
+      const ready = markerReady && bridgeState !== "missing";
+      const readiness = updateBoundProfileReadiness({
+        pluginId: plugin.id,
+        profileId: resolved.profile.id,
+        action,
+        ready,
+        bridgeState,
+      });
+      response.json({
+        ready,
+        bridgeState,
+        readiness: {
+          state: readiness.state,
+          checkedAt: readiness.checkedAt,
+          preparedAt: readiness.preparedAt,
+        },
+        error:
+          markerReady && bridgeState === "missing"
+            ? `A ContentFlow Browser Bridge não permaneceu instalada neste perfil. Em chrome://extensions, carregue uma única vez a pasta estável ${browserBridgeDirectory ?? "indicada na Central de Plugins"} e prepare novamente.`
+            : undefined,
+        message:
+          result.status === "success" && typeof result.values.message === "string"
+            ? result.values.message
+            : undefined,
+      });
+    } catch (error) {
+      const readiness = updateBoundProfileReadiness({
+        pluginId: plugin.id,
+        profileId: resolved.profile.id,
+        action,
+        ready: false,
+        bridgeState: browserBridgeProfileDirectoryState(resolved.profileDirectory),
+      });
+      response.status(422).json({
+        ready: false,
+        readiness: {
+          state: readiness.state,
+          checkedAt: readiness.checkedAt,
+          preparedAt: readiness.preparedAt,
+        },
+        error: error instanceof Error ? error.message : "Não foi possível preparar o perfil.",
+      });
+    }
+  },
+);
 
 app.post("/api/plugins/:pluginId/profile", async (request, response) => {
   initializePluginRunner();
@@ -3549,17 +4784,10 @@ app.post("/api/plugins/:pluginId/profile", async (request, response) => {
   }
 });
 
-app.post("/api/plugins/install-from-folder", (request, response) => {
-  const requestedPath =
-    typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
-  if (!requestedPath) {
-    response.status(400).json({ error: "Informe a pasta de um plugin ou do pacote extraído." });
-    return;
-  }
+function installPluginDirectories(pluginDirectories: string[]) {
   const temporaryDestinations: string[] = [];
   const installedDestinations: string[] = [];
   try {
-    const pluginDirectories = discoverPluginDirectories(requestedPath);
     const candidates = pluginDirectories.map((sourceDirectory) => {
       const validated = validatePluginDirectory(sourceDirectory, true);
       const pluginId = validated.manifest.id;
@@ -3608,17 +4836,26 @@ app.post("/api/plugins/install-from-folder", (request, response) => {
       installedDestinations.push(candidate.destination);
     }
     initializePluginRunner();
-    response.status(staged.length ? 201 : 200).json({
-      installed: staged.map((candidate) => candidate.pluginId),
-      skipped,
-    });
+    return { installed: staged.map((candidate) => candidate.pluginId), skipped };
   } catch (error) {
     for (const destination of [...temporaryDestinations, ...installedDestinations])
       if (existsSync(destination)) rmSync(destination, { recursive: true, force: true });
     initializePluginRunner();
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível instalar os plugins.",
-    });
+    throw error;
+  }
+}
+
+app.post("/api/plugins/install-from-folder", (request, response) => {
+  try {
+    const requestedPath =
+      typeof request.body?.path === "string" ? normalizeUserProvidedPath(request.body.path) : "";
+    if (!requestedPath) throw new Error("Informe a pasta de um plugin ou do pacote extraído.");
+    const result = installPluginDirectories(discoverPluginDirectories(requestedPath));
+    response.status(result.installed.length ? 201 : 200).json(result);
+  } catch (error) {
+    response
+      .status(422)
+      .json({ error: error instanceof Error ? error.message : "PLUGIN_INSTALL_FAILED" });
   }
 });
 
@@ -3667,28 +4904,8 @@ app.post("/api/plugins/link-development-folder", (request, response) => {
   }
 });
 
-function semverCore(version: string) {
-  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
-  if (!match) return undefined;
-  return {
-    numbers: [Number(match[1]), Number(match[2]), Number(match[3])] as const,
-    prerelease: match[4],
-  };
-}
-
 function isNewerPluginVersion(candidate: string, current: string) {
-  const next = semverCore(candidate);
-  const previous = semverCore(current);
-  if (!next || !previous) return false;
-  for (let index = 0; index < next.numbers.length; index += 1) {
-    if (next.numbers[index] !== previous.numbers[index]) {
-      return next.numbers[index] > previous.numbers[index];
-    }
-  }
-  if (next.prerelease === previous.prerelease) return false;
-  if (!next.prerelease) return true;
-  if (!previous.prerelease) return false;
-  return next.prerelease.localeCompare(previous.prerelease, undefined, { numeric: true }) > 0;
+  return comparePluginVersions(candidate, current) > 0;
 }
 
 let pluginCatalogCache: { catalog: PluginCatalog; loadedAt: number } | undefined;
@@ -3701,24 +4918,117 @@ async function currentPluginCatalog(force = false) {
   return catalog;
 }
 
-app.get("/api/plugins/updates", async (request, response) => {
-  if (!pluginCatalogUrl) {
-    response.status(503).json({ error: unavailablePluginCatalogMessage });
-    return;
+app.get("/api/plugins/catalog", async (_request, response) => {
+  try {
+    const catalog = await currentPluginCatalog(true);
+    const registry = initializePluginRunner();
+    response.json({
+      plugins: catalog.plugins.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        description: entry.description,
+        version: entry.version,
+        compatible: pluginCatalogCompatibility(entry).status === "compatible",
+        installed: [...registry.plugins, ...registry.administrativePlugins].some(
+          (plugin) => plugin.id === entry.id,
+        ),
+      })),
+    });
+  } catch {
+    response.status(502).json({ error: "CATALOG_UNAVAILABLE" });
   }
+});
+
+async function extractCatalogPlugin(pluginId: string, temporaryRoot: string) {
+  const catalog = await currentPluginCatalog(true);
+  const entry = catalog.plugins.find((candidate) => candidate.id === pluginId);
+  if (!entry || pluginCatalogCompatibility(entry).status !== "compatible")
+    throw new Error("CATALOG_INCOMPATIBLE");
+  const archivePath = path.join(temporaryRoot, entry.asset);
+  const extractedRoot = path.join(temporaryRoot, "extracted");
+  await downloadCatalogPlugin(pluginCatalogUrl, entry, archivePath);
+  await extractPluginArchive(archivePath, extractedRoot);
+  const directories = discoverPluginDirectories(extractedRoot);
+  if (directories.length !== 1) throw new Error("CATALOG_EXTRA_PLUGINS");
+  const candidate = validatePluginDirectory(directories[0], true).manifest;
+  if (
+    candidate.id !== entry.id ||
+    candidate.version !== entry.version ||
+    candidate.apiVersion !== entry.apiVersion ||
+    candidate.minCoreVersion !== entry.minCoreVersion
+  )
+    throw new Error("CATALOG_MANIFEST_MISMATCH");
+  return directories[0];
+}
+
+app.post("/api/plugins/:pluginId/install-from-catalog", async (request, response) => {
+  const root = path.resolve(dataDirectory, "plugins", "catalog-downloads");
+  mkdirSync(root, { recursive: true });
+  const temporaryRoot = mkdtempSync(path.join(root, "install-"));
+  try {
+    initializePluginRunner();
+    if (getAdministrativePlugin(request.params.pluginId)) {
+      response.status(409).json({ error: "PLUGIN_ALREADY_INSTALLED" });
+      return;
+    }
+    const directory = await extractCatalogPlugin(request.params.pluginId, temporaryRoot);
+    const result = installPluginDirectories([directory]);
+    response.status(result.installed.length ? 201 : 200).json(result);
+  } catch {
+    response.status(422).json({ error: "CATALOG_INSTALL_FAILED" });
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+app.get("/api/methods/catalog", async (_request, response) => {
+  try {
+    const catalog = await fetchMethodCatalog(methodCatalogUrl);
+    response.json({
+      methods: catalog.methods.map((entry) => ({
+        ...entry,
+        compatible: methodCatalogCompatible(entry),
+      })),
+    });
+  } catch {
+    response.status(502).json({ error: "CATALOG_UNAVAILABLE" });
+  }
+});
+
+app.get("/api/methods/catalog/:methodId/preview", async (request, response) => {
+  try {
+    const catalog = await fetchMethodCatalog(methodCatalogUrl);
+    const entry = catalog.methods.find((candidate) => candidate.id === request.params.methodId);
+    if (!entry) {
+      response.status(404).json({ error: "METHOD_NOT_FOUND" });
+      return;
+    }
+    response.json({ manifest: await readCatalogMethod(methodCatalogUrl, entry) });
+  } catch {
+    response.status(422).json({ error: "CATALOG_IMPORT_FAILED" });
+  }
+});
+
+app.get("/api/plugins/updates", async (request, response) => {
   try {
     const catalog = await currentPluginCatalog(request.query.refresh === "true");
     const registry = initializePluginRunner();
-    const updates = registry.plugins
+    const updates = [...registry.plugins, ...registry.administrativePlugins]
       .filter((plugin) => plugin.source === "installed")
       .map((plugin) => {
         const available = catalog.plugins.find((entry) => entry.id === plugin.id);
+        const compatibility = available ? pluginCatalogCompatibility(available) : undefined;
         return {
           id: plugin.id,
           currentVersion: plugin.manifest.version,
           version: available?.version,
+          apiVersion: available?.apiVersion,
+          minCoreVersion: available?.minCoreVersion,
+          compatibility,
           updateAvailable: Boolean(
-            available && isNewerPluginVersion(available.version, plugin.manifest.version),
+            available &&
+            compatibility?.status === "compatible" &&
+            isNewerPluginVersion(available.version, plugin.manifest.version),
           ),
         };
       });
@@ -3730,13 +5040,9 @@ app.get("/api/plugins/updates", async (request, response) => {
   }
 });
 
-function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDirectory: string) {
-  const installedRoot = existsSync(installedPluginsDirectory)
-    ? realpathSync(installedPluginsDirectory)
-    : path.resolve(installedPluginsDirectory);
-  const destination = existsSync(plugin.absoluteDirectory)
-    ? realpathSync(plugin.absoluteDirectory)
-    : path.resolve(plugin.absoluteDirectory);
+function replaceInstalledPluginFromDirectory(plugin: ManagedPlugin, sourceDirectory: string) {
+  const installedRoot = installedPluginsPhysicalRoot();
+  const destination = path.resolve(plugin.absoluteDirectory);
   const updateBackupsDirectory = path.resolve(dataDirectory, "plugins", "update-backups");
   let temporaryDestination: string | undefined;
   let backupDestination: string | undefined;
@@ -3744,9 +5050,11 @@ function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDir
   try {
     if (!existsSync(sourceDirectory) || !statSync(sourceDirectory).isDirectory())
       throw new Error("A pasta informada não existe.");
-    if (!destination.startsWith(`${installedRoot}${path.sep}`))
+    if (!isWithinInstalledPlugins(destination))
       throw new Error("A instalação atual não está dentro do armazenamento autorizado.");
     const source = validatePluginDirectory(sourceDirectory, true);
+    if (pluginCatalogCompatibility(source.manifest).status !== "compatible")
+      throw new Error("O plugin exige uma versão mais recente do ContentFlow.");
     if (source.manifest.id !== plugin.id)
       throw new Error("A pasta selecionada pertence a outro plugin.");
     if (!isNewerPluginVersion(source.manifest.version, plugin.manifest.version))
@@ -3764,6 +5072,13 @@ function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDir
       errorOnExist: true,
     });
     validatePluginDirectory(temporaryDestination, true);
+
+    // Another request may have replaced the same package while a catalog download awaited I/O.
+    const latest = JSON.parse(
+      readFileSync(path.join(destination, "contentflow.plugin.json"), "utf8"),
+    ) as { id?: unknown; version?: unknown };
+    if (latest.id !== plugin.id || latest.version !== plugin.manifest.version)
+      throw new Error("O plugin mudou. Recarregue antes de atualizar.");
 
     renameSync(destination, backupDestination);
     renameSync(temporaryDestination, destination);
@@ -3800,7 +5115,7 @@ function replaceInstalledPluginFromDirectory(plugin: RegisteredPlugin, sourceDir
 
 app.put("/api/plugins/:pluginId/update-from-folder", (request, response) => {
   initializePluginRunner();
-  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const plugin = getAdministrativePlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
@@ -3828,12 +5143,8 @@ app.put("/api/plugins/:pluginId/update-from-folder", (request, response) => {
 });
 
 app.put("/api/plugins/:pluginId/update-from-catalog", async (request, response) => {
-  if (!pluginCatalogUrl) {
-    response.status(503).json({ error: unavailablePluginCatalogMessage });
-    return;
-  }
   initializePluginRunner();
-  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const plugin = getAdministrativePlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
@@ -3852,16 +5163,13 @@ app.put("/api/plugins/:pluginId/update-from-catalog", async (request, response) 
     const catalog = await currentPluginCatalog(true);
     const entry = catalog.plugins.find((candidate) => candidate.id === plugin.id);
     if (!entry) throw new Error("Este plugin não possui atualização no catálogo configurado.");
+    if (pluginCatalogCompatibility(entry).status !== "compatible")
+      throw new Error("A versão do catálogo é incompatível com este ContentFlow.");
     if (!isNewerPluginVersion(entry.version, plugin.manifest.version))
       throw new Error(`O plugin já está na versão mais recente (v${plugin.manifest.version}).`);
 
-    const archivePath = path.join(temporaryRoot, entry.asset);
-    const extractedRoot = path.join(temporaryRoot, "extracted");
-    await downloadCatalogPlugin(pluginCatalogUrl, entry, archivePath);
-    await extractPluginArchive(archivePath, extractedRoot);
-    const directories = discoverPluginDirectories(extractedRoot);
-    if (directories.length !== 1) throw new Error("O pacote individual contém plugins extras.");
-    response.json(replaceInstalledPluginFromDirectory(plugin, directories[0]));
+    const directory = await extractCatalogPlugin(plugin.id, temporaryRoot);
+    response.json(replaceInstalledPluginFromDirectory(plugin, directory));
   } catch (error) {
     response.status(422).json({
       error: error instanceof Error ? error.message : "Não foi possível atualizar o plugin.",
@@ -3878,7 +5186,7 @@ function pluginMethodDependencies(pluginId: string) {
 
 app.get("/api/plugins/:pluginId/dependencies", (request, response) => {
   initializePluginRunner();
-  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const plugin = getAdministrativePlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
@@ -3889,7 +5197,7 @@ app.get("/api/plugins/:pluginId/dependencies", (request, response) => {
 
 app.delete("/api/plugins/:pluginId", async (request, response) => {
   initializePluginRunner();
-  const plugin = getRegisteredPlugin(request.params.pluginId);
+  const plugin = getAdministrativePlugin(request.params.pluginId);
   if (!plugin) {
     response.status(404).json({ error: "Plugin não encontrado." });
     return;
@@ -3905,17 +5213,12 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
   }
   try {
     const connections = pluginConnections.list(plugin.id, true);
+    const secretKeys = "secretKeys" in plugin.manifest ? (plugin.manifest.secretKeys ?? []) : [];
     if (plugin.source === "installed") {
-      const installedRoot = existsSync(installedPluginsDirectory)
-        ? realpathSync(installedPluginsDirectory)
-        : path.resolve(installedPluginsDirectory);
-      const destination = existsSync(plugin.absoluteDirectory)
-        ? realpathSync(plugin.absoluteDirectory)
-        : path.resolve(plugin.absoluteDirectory);
-      if (!destination.startsWith(`${installedRoot}${path.sep}`)) {
+      if (!isWithinInstalledPlugins(plugin.absoluteDirectory)) {
         throw new Error("A pasta instalada não está dentro do armazenamento autorizado.");
       }
-      rmSync(destination, { recursive: true, force: true });
+      rmSync(plugin.absoluteDirectory, { recursive: true, force: true });
     } else {
       rmSync(path.join(developmentLinksDirectory, `${plugin.id}.json`), { force: true });
     }
@@ -3924,14 +5227,15 @@ app.delete("/api/plugins/:pluginId", async (request, response) => {
       database.prepare("DELETE FROM plugin_workspaces WHERE plugin_id = ?").run(plugin.id);
     })();
     for (const connection of connections) {
-      for (const secretKey of plugin.manifest.secretKeys ?? []) {
+      for (const secretKey of secretKeys) {
         await deletePluginConnectionSecret(plugin.id, connection.id, secretKey);
       }
     }
-    for (const secretKey of plugin.manifest.secretKeys ?? []) {
+    for (const secretKey of secretKeys) {
       await deletePluginSecret(plugin.id, secretKey);
     }
     database.prepare("DELETE FROM plugin_connections WHERE plugin_id = ?").run(plugin.id);
+    pluginProfileBindings.unlinkPlugin(plugin.id);
     database.prepare("DELETE FROM plugin_profiles WHERE plugin_id = ?").run(plugin.id);
     initializePluginRunner();
     response.status(204).end();
@@ -4306,30 +5610,43 @@ function requireBuilderMcp(request: Request, response: Response, next: NextFunct
   next();
 }
 
-async function builderPluginContexts(): Promise<BuilderPluginContext[]> {
+async function builderPluginContexts(
+  options: { verifyCredentials?: boolean } = {},
+): Promise<BuilderPluginContext[]> {
+  const verifyCredentials = options.verifyCredentials !== false;
   const registry = initializePluginRunner();
   return Promise.all(
-    registry.plugins.map(async (plugin) => ({
-      plugin,
-      enabled: pluginConsentIsCurrent(plugin),
-      connections: await Promise.all(
-        pluginConnections.list(plugin.id).map(async (connection) => {
-          const publicConnection = await publicPluginConnection(plugin, connection);
-          return {
-            id: publicConnection.id,
-            name: publicConnection.name,
-            connected: publicConnection.connected,
-          };
-        }),
-      ),
-      profiles: plugin.manifest.profileSetup
-        ? profileInventory(plugin).map((profile) => ({
-            id: profile.id,
-            name: profile.name,
-            alias: profile.alias,
-          }))
-        : [],
-    })),
+    registry.plugins.map(async (plugin) => {
+      if (plugin.manifest.profileSetup) profileInventory(plugin);
+      return {
+        plugin,
+        enabled: pluginConsentIsCurrent(plugin),
+        connections: await Promise.all(
+          pluginConnections.list(plugin.id).map(async (connection) => {
+            if (!verifyCredentials) {
+              return {
+                id: connection.id,
+                name: connection.name,
+                connected: null,
+                credentialStatus: "not_checked",
+              };
+            }
+            const publicConnection = await publicPluginConnection(plugin, connection);
+            return {
+              id: publicConnection.id,
+              name: publicConnection.name,
+              connected: publicConnection.connected,
+            };
+          }),
+        ),
+        profiles: plugin.manifest.profileSetup
+          ? pluginProfileBindings.listForPlugin(plugin.id).flatMap((binding) => {
+              const profile = browserProfiles.get(binding.profileId);
+              return profile ? [{ id: profile.id, name: profile.name, alias: profile.alias }] : [];
+            })
+          : [],
+      };
+    }),
   );
 }
 
@@ -4342,7 +5659,7 @@ function publicBuilderPlugin(entry: BuilderPluginContext) {
     description: manifest.description,
     enabled: entry.enabled,
     executable: entry.plugin.executable && entry.enabled,
-    connectionRequired: Boolean(manifest.secretKeys?.length),
+    connectionRequired: pluginConnectionRequired(manifest),
     connections: entry.connections,
     profiles: entry.profiles,
     profileSetup: manifest.profileSetup,
@@ -4369,7 +5686,7 @@ function channelLibraryItems(channelId: string) {
 const builderCollectionFieldSchema = z.object({
   id: z.string().min(1).max(200).optional(),
   label: z.string().trim().min(1).max(200),
-  type: z.enum(["text", "textarea", "number", "image", "url", "thumbnail_layout"]),
+  shape: valueShapeSchema,
   required: z.boolean(),
 });
 
@@ -4411,18 +5728,21 @@ function normalizeBuilderLibraryValues(
         candidate.label.trim().toLocaleLowerCase("pt-BR") === key.trim().toLocaleLowerCase("pt-BR"),
     );
     if (!field) return { ok: false, error: `Campo desconhecido na coleção: “${key}”.` };
-    if (field.type === "number") {
+    if (field.shape.kind === "control" && field.shape.control === "number") {
       if (typeof value !== "number" || !Number.isFinite(value)) {
         return { ok: false, error: `O campo “${field.label}” exige um número.` };
       }
       normalized[field.id] = value;
       continue;
     }
-    if (["text", "textarea", "url"].includes(field.type)) {
+    if (
+      (field.shape.kind === "content" && field.shape.family === "text") ||
+      (field.shape.kind === "control" && field.shape.control === "url")
+    ) {
       if (typeof value !== "string") {
         return { ok: false, error: `O campo “${field.label}” exige texto.` };
       }
-      if (field.type === "url" && value.trim()) {
+      if (field.shape.kind === "control" && field.shape.control === "url" && value.trim()) {
         try {
           const parsed = new URL(value);
           if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("invalid");
@@ -4436,7 +5756,7 @@ function normalizeBuilderLibraryValues(
     if (!value || typeof value !== "object") {
       return {
         ok: false,
-        error: `O campo “${field.label}” exige um valor estruturado compatível com ${field.type}.`,
+        error: `O campo “${field.label}” exige um valor estruturado compatível com seu shape.`,
       };
     }
     normalized[field.id] = value as StoredFile | ThumbnailLayout;
@@ -4448,7 +5768,7 @@ function normalizeBuilderLibraryValues(
     if (field.required && empty) {
       return { ok: false, error: `O campo obrigatório “${field.label}” está vazio.` };
     }
-    if (!empty && field.type === "image") {
+    if (!empty && field.shape.kind === "content" && field.shape.family !== "text") {
       const file = value as StoredFile;
       if (
         typeof file.id !== "string" ||
@@ -4457,10 +5777,16 @@ function normalizeBuilderLibraryValues(
         typeof file.size !== "number" ||
         typeof file.url !== "string"
       ) {
-        return { ok: false, error: `O campo “${field.label}” exige um arquivo de imagem válido.` };
+        return { ok: false, error: `O campo “${field.label}” exige um arquivo válido.` };
+      }
+      if (!file.mimeType.startsWith(`${field.shape.family}/`)) {
+        return {
+          ok: false,
+          error: `O campo “${field.label}” exige conteúdo ${field.shape.family}.`,
+        };
       }
     }
-    if (!empty && field.type === "thumbnail_layout") {
+    if (!empty && field.shape.kind === "control" && field.shape.control === "thumbnail_layout") {
       const layout = value as ThumbnailLayout;
       if (layout.aspectRatio !== "16:9" || !Array.isArray(layout.boxes)) {
         return {
@@ -4472,6 +5798,20 @@ function normalizeBuilderLibraryValues(
   }
   return { ok: true, values: normalized };
 }
+
+app.post("/api/builder/upgrade/apply", requireBuilderMcp, async (request, response) => {
+  try {
+    response.json(
+      await userDataUpgrade.apply(request.body?.planId, request.body?.confirmBackup === true),
+    );
+  } catch (error) {
+    const failure = error instanceof UpgradeError ? error : new UpgradeError("UPGRADE_FAILED");
+    response
+      .status(409)
+      .json({ error: failure.code, code: failure.code, backupPath: failure.backupPath });
+  }
+});
+registerUserDataUpgradeRoutes(app, userDataUpgrade);
 
 app.get("/api/builder/mcp-info", (request, response) => {
   const channelId =
@@ -4528,7 +5868,7 @@ app.get(
       response.status(404).json({ error: "Canal não encontrado." });
       return;
     }
-    const plugins = await builderPluginContexts();
+    const plugins = await builderPluginContexts({ verifyCredentials: false });
     response.json({
       channel: {
         id: channel.id,
@@ -4549,6 +5889,12 @@ app.get(
       })),
       plugins: plugins.map(publicBuilderPlugin),
       contract: BUILDER_METHOD_CONTRACT,
+      migration: userDataUpgrade.state().required
+        ? {
+            ...userDataUpgrade.plan(),
+            reviewMethods: userDataUpgrade.reviewChannel(channel).methods,
+          }
+        : undefined,
     });
   },
 );
@@ -4591,9 +5937,7 @@ app.put(
     }
     channel.processOrder = [...order];
     channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-    database
-      .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-      .run(JSON.stringify(channel), channel.id);
+    persistChannelDefinition(channel);
     response.json({
       ok: true,
       channelId: channel.id,
@@ -4684,6 +6028,14 @@ app.put(
         .json({ error: "Coleção estratégica inválida.", issues: parsed.error.issues });
       return;
     }
+    if (
+      channelLibraryItems(channel.id).some(
+        (item) => item.collectionId === existing.id && hasLibraryReservation(item.id),
+      )
+    ) {
+      response.status(409).json({ error: "Esta coleção possui itens reservados." });
+      return;
+    }
     const nextKey = instructionCollectionKey({ name: parsed.data.name });
     if (
       channelCollections(channel.id).some(
@@ -4714,7 +6066,7 @@ app.put(
     );
     const changedTypes = existing.fields.filter((field) => {
       const next = fields.find((candidate) => candidate.id === field.id);
-      return next && next.type !== field.type;
+      return next && JSON.stringify(next.shape) !== JSON.stringify(field.shape);
     });
     if (references.length && (removed.length || changedTypes.length)) {
       response.status(422).json({
@@ -4749,9 +6101,7 @@ app.put(
       }
       if (changed) {
         channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-        database
-          .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-          .run(JSON.stringify(channel), channel.id);
+        persistChannelDefinition(channel);
       }
     }
     response.json({ ok: true, collection: updated });
@@ -4784,6 +6134,13 @@ app.delete(
       return;
     }
     const remove = database.transaction(() => {
+      if (
+        channelLibraryItems(channel.id).some(
+          (item) => item.collectionId === collection.id && hasLibraryReservation(item.id),
+        )
+      ) {
+        throw new Error("Esta coleção possui itens reservados.");
+      }
       for (const item of channelLibraryItems(channel.id).filter(
         (candidate) => candidate.collectionId === collection.id,
       )) {
@@ -4860,6 +6217,10 @@ app.put(
       return;
     }
     const updated: ChannelLibraryItem = { ...item, values: normalized.values };
+    if (hasLibraryReservation(item.id)) {
+      response.status(409).json({ error: "Este item está reservado por outra execução." });
+      return;
+    }
     database
       .prepare("UPDATE library_items SET payload = ? WHERE id = ?")
       .run(JSON.stringify(updated), updated.id);
@@ -4885,6 +6246,10 @@ app.delete(
       response.status(404).json({ error: "Item não encontrado." });
       return;
     }
+    if (hasLibraryReservation(item.id)) {
+      response.status(409).json({ error: "Este item está reservado por outra execução." });
+      return;
+    }
     database.prepare("DELETE FROM library_items WHERE id = ?").run(item.id);
     response.json({ ok: true, deletedItemId: item.id });
   },
@@ -4900,10 +6265,11 @@ app.post(
       return;
     }
     const result = validateBuilderMethods({
-      channel,
+      channel: userDataUpgrade.state().required ? userDataUpgrade.reviewChannel(channel) : channel,
       methods: request.body?.methods,
       plugins: await builderPluginContexts(),
       collections: channelCollections(channel.id),
+      migrationReview: userDataUpgrade.state().required,
     });
     response.status(result.ok ? 200 : 422).json(result);
   },
@@ -4916,19 +6282,45 @@ app.post("/api/builder/channels/:channelId/apply", requireBuilderMcp, async (req
     return;
   }
   const result = validateBuilderMethods({
-    channel,
+    channel: userDataUpgrade.state().required ? userDataUpgrade.reviewChannel(channel) : channel,
     methods: request.body?.methods,
     plugins: await builderPluginContexts(),
     collections: channelCollections(channel.id),
+    migrationReview: userDataUpgrade.state().required,
   });
   if (!result.ok || !result.methods) {
     response.status(422).json(result);
+    return;
+  }
+  if (userDataUpgrade.state().required) {
+    try {
+      const plan = userDataUpgrade.proposeMethods(channel.id, result.methods, request.body?.planId);
+      response.json({
+        ok: true,
+        staged: true,
+        channelId: channel.id,
+        methods: result.methods,
+        warnings: result.warnings,
+        migration: plan,
+      });
+    } catch (error) {
+      response
+        .status(409)
+        .json({ ok: false, error: error instanceof Error ? error.message : "UPGRADE_FAILED" });
+    }
     return;
   }
   for (const [processType, method] of Object.entries(result.methods) as [
     UniversalProcess,
     ProcessMethod,
   ][]) {
+    const localProfiles = persistLocalProfileExecution(method.blocks);
+    if (localProfiles.errors.length) {
+      response
+        .status(422)
+        .json({ ok: false, errors: localProfiles.errors, warnings: result.warnings });
+      return;
+    }
     channel.methods[processType] = {
       ...method,
       imageUrl:
@@ -4937,6 +6329,7 @@ app.post("/api/builder/channels/:channelId/apply", requireBuilderMcp, async (req
           /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(method.imageUrl))
           ? method.imageUrl.slice(0, 1_500_000)
           : undefined,
+      blocks: localProfiles.blocks,
     };
   }
   const dependencyErrors = validateProcessDependencies(
@@ -4948,9 +6341,7 @@ app.post("/api/builder/channels/:channelId/apply", requireBuilderMcp, async (req
     return;
   }
   channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-  database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(channel), channel.id);
+  persistChannelDefinition(channel);
   response.json({
     ok: true,
     channelId: channel.id,
@@ -4960,14 +6351,24 @@ app.post("/api/builder/channels/:channelId/apply", requireBuilderMcp, async (req
   });
 });
 
-app.post("/api/execute-block", async (request, response) => {
-  const body = request.body as {
-    projectId?: string;
-    processType?: UniversalProcess;
-    blockId?: string;
-    pluginId?: string;
-    parameters?: Record<string, unknown>;
-  };
+type ExecutePluginBlockInput = {
+  projectId?: string;
+  processType?: UniversalProcess;
+  blockId?: string;
+  pluginId?: string;
+  parameters?: Record<string, unknown>;
+};
+
+type ExecutePluginBlockResult = {
+  status: number;
+  body: Record<string, unknown>;
+};
+
+async function executePluginBlockInternal(
+  body: ExecutePluginBlockInput,
+): Promise<ExecutePluginBlockResult> {
+  if (!userDataUpgrade.backgroundAllowed())
+    return { status: 409, body: { error: "USER_DATA_UPGRADE_REQUIRED" } };
   if (
     !body.projectId ||
     !body.processType ||
@@ -4978,34 +6379,33 @@ app.post("/api/execute-block", async (request, response) => {
     typeof body.parameters !== "object" ||
     Array.isArray(body.parameters)
   ) {
-    response.status(400).json({ error: "Solicitação de execução inválida." });
-    return;
+    return { status: 400, body: { error: "Solicitação de execução inválida." } };
   }
 
   const plugin = getRegisteredPlugin(body.pluginId);
   if (!plugin) {
-    response.status(404).json({ error: "Plugin não encontrado no registro local." });
-    return;
+    return { status: 404, body: { error: "Plugin não encontrado no registro local." } };
   }
   if (!plugin.executable || !pluginConsentIsCurrent(plugin)) {
-    response.status(403).json({
-      error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
-    });
-    return;
+    return {
+      status: 403,
+      body: { error: "Ative este plugin e confirme suas permissões na Central de Plugins." },
+    };
   }
 
   const project = readPayload<Project>("projects", body.projectId);
   const execution = executionFor(body.projectId, body.processType);
   const channel = project ? readPayload<Channel>("channels", project.channelId) : undefined;
   if (!project || !execution || !channel) {
-    response.status(404).json({ error: "Projeto ou execução não encontrados." });
-    return;
+    return { status: 404, body: { error: "Projeto ou execução não encontrados." } };
   }
   const block = execution.methodSnapshot.blocks.find((item) => item.id === body.blockId);
   const blockExecution = execution.blocks.find((item) => item.blockId === body.blockId);
   if (!block || !blockExecution) {
-    response.status(404).json({ error: "Bloco não encontrado no snapshot desta execução." });
-    return;
+    return {
+      status: 404,
+      body: { error: "Bloco não encontrado no snapshot desta execução." },
+    };
   }
   const existingJob = pluginJobs.getByExecution(
     execution.id,
@@ -5016,21 +6416,23 @@ app.post("/api/execute-block", async (request, response) => {
     const currentExecution = executionById(execution.id) ?? execution;
     const currentProject = readPayload<Project>("projects", project.id) ?? project;
     const pending = ["starting", "pending", "cancel_requested"].includes(existingJob.status);
-    response.status(pending ? 202 : existingJob.status === "completed" ? 200 : 409).json({
-      ok: pending || existingJob.status === "completed",
-      pending,
-      job: publicPluginJob(existingJob),
-      execution: currentExecution,
-      project: currentProject,
-      error: existingJob.error,
-    });
-    return;
+    return {
+      status: pending ? 202 : existingJob.status === "completed" ? 200 : 409,
+      body: {
+        ok: pending || existingJob.status === "completed",
+        pending,
+        job: publicPluginJob(existingJob),
+        execution: currentExecution,
+        project: currentProject,
+        error: existingJob.error,
+      },
+    };
   }
   if (blockExecution.status !== "blocked_executor" || block.plugin?.pluginId !== plugin.id) {
-    response.status(409).json({
-      error: "Este bloco não está pronto ou não está vinculado ao plugin informado.",
-    });
-    return;
+    return {
+      status: 409,
+      body: { error: "Este bloco não está pronto ou não está vinculado ao plugin informado." },
+    };
   }
 
   const capability = plugin.manifest.capabilities.find(
@@ -5042,17 +6444,30 @@ app.post("/api/execute-block", async (request, response) => {
     !capability.blockTypes.includes(block.type) ||
     (capability.processTypes && !capability.processTypes.includes(body.processType))
   ) {
-    response.status(422).json({ error: "A capacidade não é compatível com este bloco." });
-    return;
+    return { status: 422, body: { error: "A capacidade não é compatível com este bloco." } };
   }
 
   const projectExecutions = (
     database
       .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
       .all(project.id) as { payload: string }[]
-  ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+  ).map((row) => normalizeExecutionDeliveries(parseStoredExecution(row.payload)));
   let conversation: PluginExecutionRequest["conversation"];
+  let resolvedProfileExecution: ReturnType<typeof resolvedProfileExecutionForBlock>;
   try {
+    resolvedProfileExecution = resolvedProfileExecutionForBlock(plugin, block);
+    const profileConfigurationKey = plugin.manifest.profileSetup?.configurationKey;
+    const configuredProfileAlias = profileConfigurationKey
+      ? String(block.plugin?.configuration[profileConfigurationKey] ?? "").trim() || undefined
+      : undefined;
+    const configuredBrowserProfile = resolvedProfileExecution?.profiles[0]
+      ? {
+          profileId: resolvedProfileExecution.profiles[0].profileId,
+          alias: resolvedProfileExecution.profiles[0].alias,
+        }
+      : configuredProfileAlias
+        ? browserProfileSnapshot(plugin, configuredProfileAlias)
+        : undefined;
     conversation = resolvePluginConversation({
       block,
       blockExecution,
@@ -5062,12 +6477,15 @@ app.post("/api/execute-block", async (request, response) => {
       pluginId: plugin.id,
       supportsContinuation: plugin.manifest.supportsConversationContinuation === true,
       profileSetup: plugin.manifest.profileSetup,
+      profileId: configuredBrowserProfile?.profileId,
     });
   } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível resolver a conversa.",
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: error instanceof Error ? error.message : "Não foi possível resolver a conversa.",
+      },
+    };
   }
   const channelProjects = (
     database.prepare("SELECT payload FROM projects WHERE channel_id = ?").all(channel.id) as {
@@ -5083,7 +6501,7 @@ app.post("/api/execute-block", async (request, response) => {
          WHERE projects.channel_id = ?`,
       )
       .all(channel.id) as { payload: string }[]
-  ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+  ).map((row) => normalizeExecutionDeliveries(parseStoredExecution(row.payload)));
   const collections = (
     database
       .prepare("SELECT payload FROM library_collections WHERE channel_id = ?")
@@ -5103,36 +6521,51 @@ app.post("/api/execute-block", async (request, response) => {
     channelProjects,
     collections,
     libraryItems,
+    optionalEmptyInputIds: (block.inputs ?? [])
+      .filter((input) => {
+        const port = capability.inputPorts.find((candidate) => candidate.key === input.portKey);
+        return (
+          port &&
+          !port.required &&
+          port.shape.cardinality === "many" &&
+          input.shape.cardinality === "many" &&
+          areValueShapesCompatible(input.shape, port.shape)
+        );
+      })
+      .map((input) => input.id),
   });
   const missingInputs = resolvedInputs.filter((item) => !item.resolved);
   if (missingInputs.length) {
-    response.status(422).json({
-      error: `Entradas ausentes: ${missingInputs.map((item) => item.input.label).join(", ")}.`,
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: `Entradas ausentes: ${missingInputs.map((item) => item.input.label).join(", ")}.`,
+      },
+    };
   }
 
   const usedInputPorts = new Set<string>();
   const assignedInputs = resolvedInputs.map((item) => {
     const port = selectPluginInputPort(item.input, capability.inputPorts, usedInputPorts);
-    if (port && !port.multiple) usedInputPorts.add(port.key);
+    if (port) usedInputPorts.add(port.key);
     return { resolved: item, port };
   });
   const unsupportedInputs = assignedInputs.filter((item) => !item.port);
   if (unsupportedInputs.length) {
-    response.status(422).json({
-      error: `O plugin não aceita: ${unsupportedInputs
-        .map((item) => item.resolved.input.label)
-        .join(", ")}.`,
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: `O plugin não aceita: ${unsupportedInputs
+          .map((item) => item.resolved.input.label)
+          .join(", ")}.`,
+      },
+    };
   }
-  const inputContract = assignedInputs.map(({ resolved: item, port }) => ({
+  const inputContract = assignedInputs.map(({ resolved: item }) => ({
     id: item.input.id,
-    portKey: port?.key ?? item.input.id,
+    portKey: item.input.portKey!,
     label: item.input.label,
-    type: item.input.type,
-    recordFields: item.input.recordFields,
+    shape: item.input.shape,
     presentation: item.input.presentation,
   }));
   const inputs = Object.fromEntries(
@@ -5152,35 +6585,83 @@ app.post("/api/execute-block", async (request, response) => {
       ];
     }),
   ) as Record<string, RuntimeValue>;
-  if (block.type === "VALIDAR" && block.validation?.targetBlockId) {
-    const targetBlock = execution.methodSnapshot.blocks.find(
-      (candidate) => candidate.id === block.validation?.targetBlockId,
+  if (block.type === "VALIDAR") {
+    const validation = block.validation;
+    const validationIndex = execution.methodSnapshot.blocks.findIndex(
+      (candidate) => candidate.id === block.id,
     );
+    const targetIndex = execution.methodSnapshot.blocks.findIndex(
+      (candidate) => candidate.id === validation?.targetBlockId,
+    );
+    const targetBlock = execution.methodSnapshot.blocks[targetIndex];
     const targetExecution = execution.blocks.find(
-      (candidate) => candidate.blockId === block.validation?.targetBlockId,
+      (candidate) => candidate.blockId === validation?.targetBlockId,
     );
-    const targetOutput =
-      targetBlock?.outputs?.find((field) => field.key === block.validation?.targetOutputKey) ??
-      targetBlock?.outputs?.[0];
-    const targetValue = targetOutput ? targetExecution?.values[targetOutput.key] : undefined;
-    const targetPort = targetOutput
-      ? capability.inputPorts.find((port) => port.acceptedTypes.includes(targetOutput.type))
-      : undefined;
     if (
-      targetOutput &&
-      targetValue !== undefined &&
-      targetPort &&
-      inputs[targetPort.key] === undefined
+      !validation?.targetBlockId ||
+      targetIndex < 0 ||
+      targetIndex >= validationIndex ||
+      !targetBlock ||
+      targetBlock.type === "VALIDAR" ||
+      !targetExecution
     ) {
+      return {
+        status: 422,
+        body: { error: "O bloco validado não está configurado no snapshot da execução." },
+      };
+    }
+    const requiresTargetOutput = validation.mode !== "approval";
+    if (requiresTargetOutput && !validation.targetOutputKey) {
+      return {
+        status: 422,
+        body: { error: "A validação precisa declarar qual saída contém as opções." },
+      };
+    }
+    const targetOutput = validation.targetOutputKey
+      ? targetBlock.outputs?.find((field) => field.key === validation.targetOutputKey)
+      : undefined;
+    if (validation.targetOutputKey && !targetOutput) {
+      return {
+        status: 422,
+        body: { error: "A saída configurada para a validação não existe no bloco validado." },
+      };
+    }
+    if (!targetOutput && validation.targetPortKey) {
+      return {
+        status: 422,
+        body: { error: "A porta do alvo exige uma saída explícita do bloco validado." },
+      };
+    }
+    if (targetOutput) {
+      const targetValue = targetExecution.values[targetOutput.key];
+      const targetPort = validation.targetPortKey
+        ? capability.inputPorts.find(
+            (port) =>
+              port.key === validation.targetPortKey &&
+              areValueShapesCompatible(targetOutput.shape, port.shape),
+          )
+        : undefined;
+      if (!targetPort || inputs[targetPort.key] !== undefined) {
+        return {
+          status: 422,
+          body: { error: "Vincule explicitamente uma porta compatível ao alvo da validação." },
+        };
+      }
+      if (targetValue === undefined) {
+        return {
+          status: 422,
+          body: { error: "O resultado configurado para a validação ainda não está disponível." },
+        };
+      }
       inputs[targetPort.key] = targetValue;
       inputContract.push({
-        id: `validation-${targetBlock?.id ?? "target"}-${targetOutput.key}`,
+        id: `validation-${targetBlock.id}-${targetOutput.key}`,
         portKey: targetPort.key,
         label: targetOutput.label,
-        type: targetOutput.type,
-        recordFields: targetOutput.recordFields,
+        shape: targetOutput.shape,
         presentation: targetOutput.presentation,
       });
+      usedInputPorts.add(targetPort.key);
     }
   }
   // A plugin receives values only through bindings that are visible in the
@@ -5190,59 +6671,42 @@ app.post("/api/execute-block", async (request, response) => {
     block.type === "ESCOLHER"
       ? collections.find((item) => item.id === block.collectionId)
       : undefined;
+  const projectExecutionsForReservations =
+    block.type === "ESCOLHER" ? storedLibraryExecutions() : [];
   const selectedCollectionItems = selectedCollection
-    ? libraryItems.filter((item) => item.collectionId === selectedCollection.id)
+    ? libraryItems.filter(
+        (item) =>
+          item.collectionId === selectedCollection.id &&
+          !libraryReservation(item.id, projectExecutionsForReservations),
+      )
     : [];
   if (block.type === "ESCOLHER" && (!selectedCollection || !selectedCollectionItems.length)) {
-    response.status(422).json({
-      error: selectedCollection
-        ? "A coleção vinculada ao bloco não possui itens para escolher."
-        : "O bloco Escolher precisa estar vinculado a uma coleção do canal.",
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: selectedCollection
+          ? "A coleção vinculada ao bloco não possui itens para escolher."
+          : "O bloco Escolher precisa estar vinculado a uma coleção do canal.",
+      },
+    };
   }
 
-  const invalidOutputBindings = (block.outputs ?? []).filter(
-    (field) =>
-      field.portKey &&
-      !capability.outputPorts.some(
-        (port) => port.key === field.portKey && port.producedTypes.includes(field.type),
-      ),
+  const validatedOutputs = validatePluginOutputContract(
+    block.outputs ?? [],
+    capability.outputPorts,
   );
-  if (invalidOutputBindings.length) {
-    response.status(422).json({
-      error: `O plugin não consegue entregar: ${invalidOutputBindings
-        .map((field) => field.label)
-        .join(", ")}. Revise o vínculo da entrega no painel do plugin.`,
-    });
-    return;
+  if (validatedOutputs.unsupportedFields.length) {
+    return {
+      status: 422,
+      body: {
+        error: `O plugin não consegue entregar: ${validatedOutputs.unsupportedFields
+          .map((field) => field.label)
+          .join(", ")}. Revise o vínculo da entrega no painel do plugin.`,
+      },
+    };
   }
 
-  const outputContract: PluginFieldContract[] =
-    block.type === "ESCOLHER"
-      ? [
-          {
-            label: "Item escolhido",
-            key: "selectedItemId",
-            type: "text",
-            required: true,
-            portKey: capability.outputPorts[0]?.key ?? "result",
-          },
-        ]
-      : (block.outputs ?? []).map((field) => ({
-          label: field.label,
-          key: field.key,
-          type: field.type,
-          required: field.required,
-          options: field.options,
-          recordFields: field.recordFields,
-          presentation: field.presentation,
-          portKey:
-            field.portKey ??
-            capability.outputPorts.find((port) => port.producedTypes.includes(field.type))?.key ??
-            capability.outputPorts[0]?.key ??
-            field.key,
-        }));
+  const outputContract: PluginFieldContract[] = validatedOutputs.outputContract;
   const methodParameterValues = Object.fromEntries(
     (block.parameters ?? []).map((parameter) => [parameter.key, parameter.value]),
   );
@@ -5262,8 +6726,8 @@ app.post("/api/execute-block", async (request, response) => {
     inputs: assignedInputs.map(({ resolved, port }) => ({
       id: resolved.input.id,
       label: resolved.input.label,
-      sourceKey: resolved.resolvedSourceKey ?? resolved.input.sourceKey,
-      portKey: port?.key,
+      sourceKey: resolved.resolvedSourceKey ?? resolved.input.id,
+      portKey: port!.key,
       value: resolved.value ?? null,
     })),
     parameters: executionParameters,
@@ -5275,18 +6739,22 @@ app.post("/api/execute-block", async (request, response) => {
     })),
   });
   if (resolvedInstruction.unresolved.length) {
-    response.status(422).json({
-      error: `Variáveis sem valor no prompt: ${resolvedInstruction.unresolved
-        .map((variable) => `{{${variable}}}`)
-        .join(", ")}. Revise as entradas conectadas ao bloco.`,
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: `Variáveis sem valor no prompt: ${resolvedInstruction.unresolved
+          .map((variable) => `{{${variable}}}`)
+          .join(", ")}. Revise as entradas conectadas ao bloco.`,
+      },
+    };
   }
   if (capability.instructionUsage === "required" && !resolvedInstruction.instruction) {
-    response.status(422).json({
-      error: `Defina o prompt do bloco “${block.name ?? block.type}” antes de executar.`,
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: `Defina o prompt do bloco “${block.name ?? block.type}” antes de executar.`,
+      },
+    };
   }
   const referencedInstructionInputIds = new Set(resolvedInstruction.referencedInputIds);
   const instructionContextInputs = Object.fromEntries(
@@ -5316,48 +6784,59 @@ app.post("/api/execute-block", async (request, response) => {
   try {
     resolvedConnection = await resolvePluginConnection(plugin, block.plugin.connectionId);
   } catch (error) {
-    response.status(422).json({
-      error: error instanceof Error ? error.message : "Não foi possível carregar a conexão.",
-    });
-    return;
+    return {
+      status: 422,
+      body: {
+        error: error instanceof Error ? error.message : "Não foi possível carregar a conexão.",
+      },
+    };
   }
   const pluginSecrets: Record<string, string> = { ...resolvedConnection.secrets };
-  if ((plugin.manifest.secretKeys?.length ?? 0) > 0 && !Object.keys(pluginSecrets).length) {
-    response.status(422).json({
-      error: "Crie ou associe uma conta local válida a este bloco.",
-    });
-    return;
+  if (pluginConnectionRequired(plugin.manifest) && !Object.keys(pluginSecrets).length) {
+    return {
+      status: 422,
+      body: { error: "Crie ou associe uma conta local válida a este bloco." },
+    };
   }
-  const recoveryAuthorization =
-    blockExecution.recoveryAuthorization &&
-    blockExecution.recoveryAuthorization.target.executionId === execution.id &&
-    blockExecution.recoveryAuthorization.target.blockId === block.id &&
-    blockExecution.recoveryAuthorization.target.attempt === (blockExecution.attempt ?? 1)
-      ? blockExecution.recoveryAuthorization
-      : undefined;
+  const requestConfiguration = {
+    ...block.plugin.configuration,
+    ...executionParameters,
+  };
+  if (resolvedProfileExecution) {
+    delete requestConfiguration[resolvedProfileExecution.configurationKey];
+    const fallbackConfigurationKey = plugin.manifest.profileSetup?.fallbackConfigurationKey;
+    if (fallbackConfigurationKey) delete requestConfiguration[fallbackConfigurationKey];
+    // The managed project URL is resolved per active profile at invocation;
+    // a stale typed value must never reach the plugin or leak into a fallback.
+    const managedProjectKey =
+      resolvedProfileExecution.projectConfigurationKey ??
+      plugin.manifest.profileSetup?.namedUrls?.configurationKey?.trim();
+    if (managedProjectKey) delete requestConfiguration[managedProjectKey];
+  }
   const pluginRequest: PluginExecutionRequest = {
     executionId: execution.id,
     traceId: randomUUID(),
     blockId: block.id,
     capabilityId: capability.id,
     attempt: blockExecution.attempt ?? 1,
-    recoveryAuthorization,
     invocation: { mode: "start" },
-    configuration: {
-      ...block.plugin.configuration,
-      ...executionParameters,
-    },
+    configuration: requestConfiguration,
     settings: resolvedConnection.connectionId
       ? { connectionId: resolvedConnection.connectionId }
       : {},
     inputs,
     instructionContextInputs,
     inputContract,
-    inputDeliveries: resolvedInputs.map((item, index) => ({
+    inputDeliveries: resolvedInputs.map((item) => ({
       inputId: item.input.id,
-      portKey: inputContract[index]?.portKey ?? item.input.id,
+      portKey: item.input.portKey!,
       deliveryId: item.sourceDeliveryId,
       itemIds: item.sourceDeliveryItemIds ?? [],
+      items: item.sourceDeliveryItems?.map((sourceItem) => ({
+        id: sourceItem.id,
+        value: structuredClone(sourceItem.value) as RuntimeValue,
+        references: sourceItem.references,
+      })),
     })),
     outputContract,
     validation: block.validation,
@@ -5402,26 +6881,30 @@ app.post("/api/execute-block", async (request, response) => {
 
   const latestExecution = executionById(execution.id);
   if (!latestExecution) {
-    response.status(404).json({ error: "Execução removida." });
-    return;
+    return { status: 404, body: { error: "Execução removida." } };
   }
   if (
     latestExecution.status === "cancelled" ||
     (latestExecution.revision ?? 0) !== (execution.revision ?? 0)
   ) {
-    response.status(202).json({
-      ok: true,
-      execution: latestExecution,
-      project: readPayload<Project>("projects", project.id),
-    });
-    return;
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        execution: latestExecution,
+        project: readPayload<Project>("projects", project.id),
+      },
+    };
   }
   const executionTimeoutMs = capability.execution.defaultTimeoutMs ?? 60_000;
+  const previousExecutionItems = blockExecution.items;
+  const materializedInputItems = materializeReceivedInputWorkUnits(
+    pluginRequest,
+    previousExecutionItems,
+    workItemPolicy(capability, pluginRequest)?.inputPort,
+  );
   const requestedRetryScope = blockExecution.itemRetryScope ?? "all";
-  const itemCapability =
-    requestedRetryScope === "all"
-      ? capability
-      : capabilityWithDeterministicItemMapping(capability, pluginRequest, blockExecution.values);
+  const itemCapability = capability;
   const previousJob =
     ["remaining", "selected"].includes(requestedRetryScope) && pluginRequest.attempt > 1
       ? pluginJobs.getByExecution(execution.id, block.id, pluginRequest.attempt - 1)
@@ -5452,7 +6935,7 @@ app.post("/api/execute-block", async (request, response) => {
   const itemOrchestration =
     selectedOrchestration ??
     resumedOrchestration ??
-    declaredItemOrchestration(itemCapability, pluginRequest);
+    declaredItemOrchestration(itemCapability, pluginRequest, materializedInputItems);
   const retryScope = selectedOrchestration
     ? "selected"
     : resumedOrchestration
@@ -5465,393 +6948,109 @@ app.post("/api/execute-block", async (request, response) => {
   ) {
     blockExecution.values = {};
     blockExecution.itemProgress = undefined;
+    blockExecution.profileLaneProgress = undefined;
   }
-  const pendingJob = createPersistentPluginJob({
+  const resolvedFallback =
+    resolvedProfileExecution?.mode === "fallback"
+      ? {
+          configurationKey: resolvedProfileExecution.configurationKey,
+          candidates: resolvedProfileExecution.profiles.map((profile) => profile.alias),
+          activeIndex: 0,
+          history: [],
+        }
+      : undefined;
+  const legacyFallback = resolvedProfileExecution
+    ? undefined
+    : orderedProfileCandidates(plugin.manifest, pluginRequest.configuration);
+  const initialResolvedProfile = resolvedProfileExecution?.profiles[0];
+  let pendingJob = createPersistentPluginJob({
     pluginId: plugin.id,
     pluginVersion: plugin.manifest.version,
     request: pluginRequest,
     timeoutMs: executionTimeoutMs,
-    profileFallback: orderedProfileCandidates(plugin.manifest, pluginRequest.configuration),
+    profileFallback: resolvedFallback ?? legacyFallback,
+    browserProfile: initialResolvedProfile
+      ? { profileId: initialResolvedProfile.profileId, alias: initialResolvedProfile.alias }
+      : browserProfileSnapshot(
+          plugin,
+          legacyFallback?.candidates[0] ??
+            (plugin.manifest.profileSetup?.configurationKey
+              ? String(
+                  pluginRequest.configuration[plugin.manifest.profileSetup.configurationKey] ?? "",
+                ).trim() || undefined
+              : undefined),
+        ),
+    profileExecution: resolvedProfileExecution,
     itemOrchestration,
     retryScope,
   });
+  const profileLanePool = materializeProfileLanePool(pendingJob, capability);
+  if (profileLanePool) pendingJob = { ...pendingJob, profileLanePool };
   if (selectedOrchestration) pendingJob.partialValues = structuredClone(blockExecution.values);
-  const createdJob = pluginJobs.create(pendingJob);
-  blockExecution.status = "in_progress";
-  blockExecution.traceId = pluginRequest.traceId;
-  blockExecution.itemProgress = itemProgressForJob(createdJob);
-  blockExecution.items = blockExecutionItemsForJob(createdJob);
-  blockExecution.itemRetryScope = undefined;
-  blockExecution.itemRetryId = undefined;
-  blockExecution.progress = itemOrchestration
-    ? (blockExecution.itemProgress?.completed ?? 0) / itemOrchestration.items.length
-    : 0;
-  blockExecution.progressMessage = "Iniciando job…";
-  execution.status = "running";
-  persistPluginExecution(execution, project);
+  const createdJob = commitPluginJobTransition(project.id, () => {
+    const created = pluginJobs.create(pendingJob);
+    blockExecution.status = "in_progress";
+    blockExecution.traceId = pluginRequest.traceId;
+    blockExecution.itemProgress = itemProgressForJob(created);
+    blockExecution.profileLaneProgress = profileLaneProgressForJob(created);
+    blockExecution.items = blockExecutionItemsForJob(created, materializedInputItems);
+    blockExecution.itemRetryScope = undefined;
+    blockExecution.itemRetryId = undefined;
+    blockExecution.progress = itemOrchestration
+      ? (blockExecution.itemProgress?.completed ?? 0) / itemOrchestration.items.length
+      : 0;
+    blockExecution.progressMessage = "Iniciando job…";
+    execution.status = "running";
+    persistPluginExecution(execution, project);
+    return created;
+  });
 
   if (capability.execution.mode === "async") {
     void processDuePluginJobs();
-    response.status(202).json({
-      ok: true,
-      pending: true,
-      job: publicPluginJob(createdJob),
-      execution,
-      project,
-      values: {},
-    });
-    return;
+    return {
+      status: 202,
+      body: {
+        ok: true,
+        pending: true,
+        job: publicPluginJob(createdJob),
+        execution,
+        project,
+        values: {},
+      },
+    };
   }
 
   const job = await processPluginJob(createdJob.id, pluginSecrets);
   const currentExecution = executionById(execution.id) ?? execution;
   const currentProject = readPayload<Project>("projects", project.id) ?? project;
   if (!job || ["failed", "abandoned", "cancelled"].includes(job.status)) {
-    response.status(job?.status === "cancelled" ? 409 : 422).json({
-      error: job?.error ?? job?.message ?? "O job do plugin não pôde ser iniciado.",
-      job: job ? publicPluginJob(job) : undefined,
-      execution: currentExecution,
-      project: currentProject,
-    });
-    return;
+    return {
+      status: job?.status === "cancelled" ? 409 : 422,
+      body: {
+        error: job?.error ?? job?.message ?? "O job do plugin não pôde ser iniciado.",
+        job: job ? publicPluginJob(job) : undefined,
+        execution: currentExecution,
+        project: currentProject,
+      },
+    };
   }
   const pending = ["starting", "pending", "cancel_requested"].includes(job.status);
-  response.status(pending ? 202 : 200).json({
-    ok: true,
-    pending,
-    job: publicPluginJob(job),
-    execution: currentExecution,
-    project: currentProject,
-    values: job.partialValues,
-  });
-});
-
-function researchRunsFor(channelId: string, limit = 30) {
-  return (
-    database
-      .prepare(
-        "SELECT payload FROM channel_research_runs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
-      )
-      .all(channelId, limit) as { payload: string }[]
-  ).map((row) => JSON.parse(row.payload) as ChannelResearchRun);
-}
-
-function researchBriefsFor(channelId: string, limit = 12) {
-  return (
-    database
-      .prepare(
-        "SELECT payload FROM channel_research_briefs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
-      )
-      .all(channelId, limit) as { payload: string }[]
-  ).map((row) => JSON.parse(row.payload) as ChannelResearchBrief);
-}
-
-function saveResearchRun(run: ChannelResearchRun) {
-  database
-    .prepare(
-      `INSERT INTO channel_research_runs (id, channel_id, status, payload, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
-    )
-    .run(run.id, run.channelId, run.status, JSON.stringify(run), run.startedAt, run.updatedAt);
-}
-
-function saveResearchBrief(brief: ChannelResearchBrief) {
-  database
-    .prepare(
-      `INSERT INTO channel_research_briefs (id, channel_id, status, payload, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at`,
-    )
-    .run(
-      brief.id,
-      brief.channelId,
-      brief.status,
-      JSON.stringify(brief),
-      brief.createdAt,
-      brief.updatedAt,
-    );
-}
-
-function researchError(result: PluginExecutionResponse) {
-  return result.status === "error"
-    ? { code: result.code, message: result.message, retryable: result.retryable }
-    : undefined;
-}
-
-function createLocalResearchBrief(
-  channel: Channel,
-  runs: ChannelResearchRun[],
-): ChannelResearchBrief {
-  const latest = runs.find((run) => run.status === "completed");
-  const records = latest?.records ?? [];
-  const top = [...records]
-    .sort((left, right) => Number(right.view_count ?? 0) - Number(left.view_count ?? 0))
-    .slice(0, 5);
-  const observed = top.length
-    ? top
-        .map(
-          (record) =>
-            `• ${String(record.title ?? "Sem título")} — ${Number(record.view_count ?? 0).toLocaleString("pt-BR")} views; canal: ${String(record.channel_title ?? "—")}; fonte: ${String(record.video_url ?? "—")}`,
-        )
-        .join("\n")
-    : "Nenhum registro elegível no snapshot mais recente.";
-  const now = new Date().toISOString();
   return {
-    id: randomUUID(),
-    channelId: channel.id,
-    status: "draft",
-    createdAt: now,
-    updatedAt: now,
-    sourceRunIds: latest ? [latest.id] : [],
-    sourceRecordCount: records.length,
-    provider: "local",
-    summary: `Brief factual local com ${records.length} registro(s) do snapshot mais recente. Ele não cria Tema, Título, Thumbnail ou Roteiro e não usa IA.`,
-    evidence: `OBSERVADO\n${observed}\n\nINFERÊNCIA E HIPÓTESE\nAinda não aprovadas. Devem ser definidas pelo Método Tema, sem tratar métricas públicas como prova de retenção, conversão ou causalidade.`,
-    antiCopy:
-      "Transferir apenas dor, mecanismo, pergunta, estrutura ou padrão de apresentação. Não copiar título, thumbnail, roteiro, personagem, identidade visual, fala, promessa ou símbolo de uma referência.",
-    limitations:
-      "Views, comentários e inscritos são dados públicos pontuais. Não comprovam retenção, receita, vendas, qualidade, veracidade, país da audiência ou causa do desempenho.",
+    status: pending ? 202 : 200,
+    body: {
+      ok: true,
+      pending,
+      job: publicPluginJob(job),
+      execution: currentExecution,
+      project: currentProject,
+      values: job.partialValues,
+    },
   };
 }
 
-app.get("/api/channels/:id/research/runs", (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
-  response.json({ runs: researchRunsFor(channel.id) });
-});
-
-app.get("/api/channels/:id/research/briefs", (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
-  response.json({ briefs: researchBriefsFor(channel.id) });
-});
-
-app.post("/api/channels/:id/research/plan/from-theme", (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  if (!channel) return response.status(404).json({ error: "Canal não encontrado." });
-  const source = channel.methods.theme.blocks.find(
-    (block) => block.type === "BUSCAR" && block.operator === "Código" && block.plugin,
-  );
-  const plugin = source?.plugin ? getRegisteredPlugin(source.plugin.pluginId) : undefined;
-  const capability = plugin?.manifest.capabilities.find(
-    (item) => item.id === source?.plugin?.capabilityId,
-  );
-  const records = source?.outputs?.find((output) => output.type === "records");
-  const summary = source?.outputs?.find((output) => output.type === "textarea");
-  if (!source?.plugin || !capability || !records || !summary)
-    return response
-      .status(422)
-      .json({ error: "O Método Tema não possui um Radar BUSCAR compatível para reaproveitar." });
-  const updated: Channel = {
-    ...channel,
-    research: {
-      pluginId: source.plugin.pluginId,
-      capabilityId: source.plugin.capabilityId,
-      connectionId: source.plugin.connectionId,
-      cadence: "manual",
-      configuration: source.plugin.configuration,
-      recordsKey: records.key,
-      summaryKey: summary.key,
-      minimumBriefRecords: 2,
-    },
-  };
-  database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(updated), updated.id);
-  response.json(updated);
-});
-
-app.post("/api/channels/:id/research/briefs", (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  if (!channel || !isChannelResearchConfig(channel.research))
-    return response.status(422).json({ error: "O canal não possui um plano de pesquisa válido." });
-  const runs = researchRunsFor(channel.id, 7);
-  const latest = runs.find((run) => run.status === "completed");
-  if (!latest || latest.records.length < channel.research.minimumBriefRecords)
-    return response.status(422).json({
-      error: `A pesquisa precisa de pelo menos ${channel.research.minimumBriefRecords} registros antes do brief.`,
-    });
-  const brief = createLocalResearchBrief(channel, runs);
-  saveResearchBrief(brief);
-  response.status(201).json({ brief });
-});
-
-app.post("/api/channels/:id/research/briefs/:briefId/approve", (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  const brief = researchBriefsFor(request.params.id).find(
-    (item) => item.id === request.params.briefId,
-  );
-  if (!channel || !brief)
-    return response.status(404).json({ error: "Canal ou brief não encontrado." });
-  if (brief.status !== "draft")
-    return response.status(409).json({ error: "Este brief já foi decidido." });
-  const collectionId = `channel-research-approved-briefs:${channel.id}`;
-  const collection = database
-    .prepare("SELECT payload FROM library_collections WHERE id = ?")
-    .get(collectionId) as { payload: string } | undefined;
-  if (!collection) {
-    const created = {
-      id: collectionId,
-      channelId: channel.id,
-      name: "Briefs estratégicos aprovados",
-      fields: [
-        { id: "brief-summary", label: "Resumo factual", type: "textarea", required: true },
-        {
-          id: "brief-evidence",
-          label: "Evidências e separações",
-          type: "textarea",
-          required: true,
-        },
-        { id: "brief-anti-copy", label: "Limites anti-cópia", type: "textarea", required: true },
-        { id: "brief-limitations", label: "Limitações", type: "textarea", required: true },
-      ],
-      createdAt: new Date().toISOString(),
-    };
-    database
-      .prepare(
-        "INSERT INTO library_collections (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
-      )
-      .run(created.id, channel.id, JSON.stringify(created), created.createdAt);
-  }
-  const now = new Date().toISOString();
-  const item = {
-    id: `research-brief-${brief.id}`,
-    channelId: channel.id,
-    collectionId,
-    createdAt: now,
-    values: {
-      "brief-summary": brief.summary,
-      "brief-evidence": brief.evidence,
-      "brief-anti-copy": brief.antiCopy,
-      "brief-limitations": brief.limitations,
-    },
-  };
-  database
-    .prepare("INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)")
-    .run(item.id, channel.id, JSON.stringify(item), now);
-  brief.status = "approved";
-  brief.updatedAt = now;
-  brief.approvedLibraryItemId = item.id;
-  saveResearchBrief(brief);
-  response.json({ brief, item });
-});
-
-app.post("/api/channels/:id/research/runs", async (request, response) => {
-  const channel = readPayload<Channel>("channels", request.params.id);
-  if (!channel || !isChannelResearchConfig(channel.research))
-    return response.status(422).json({ error: "O canal não possui um plano de pesquisa válido." });
-  if (researchRunsFor(channel.id).some((run) => run.status === "running"))
-    return response
-      .status(409)
-      .json({ error: "Já existe uma pesquisa em execução para este canal." });
-  initializePluginRunner();
-  const plugin = getRegisteredPlugin(channel.research.pluginId);
-  if (!plugin || !plugin.executable || !pluginConsentIsCurrent(plugin))
-    return response
-      .status(403)
-      .json({ error: "Ative o plugin de pesquisa e confirme as permissões." });
-  const capability = plugin.manifest.capabilities.find(
-    (item) => item.id === channel.research?.capabilityId,
-  );
-  if (!capability || capability.operator !== "Código" || !capability.blockTypes.includes("BUSCAR"))
-    return response.status(422).json({ error: "A capability de pesquisa não é compatível." });
-  let connection: Awaited<ReturnType<typeof resolvePluginConnection>>;
-  try {
-    connection = await resolvePluginConnection(plugin, channel.research.connectionId);
-    if ((plugin.manifest.secretKeys ?? []).some((key) => !connection.secrets[key])) {
-      return response.status(422).json({ error: "Configure a conexão do plugin de pesquisa." });
-    }
-  } catch (error) {
-    return response
-      .status(422)
-      .json({ error: error instanceof Error ? error.message : "Conexão indisponível." });
-  }
-  const now = new Date().toISOString();
-  const run: ChannelResearchRun = {
-    id: randomUUID(),
-    channelId: channel.id,
-    status: "running",
-    startedAt: now,
-    updatedAt: now,
-    planSnapshot: channel.research,
-    records: [],
-  };
-  saveResearchRun(run);
-  const pluginRequest: PluginExecutionRequest = {
-    executionId: `channel-research:${run.id}`,
-    traceId: randomUUID(),
-    blockId: "channel-research",
-    capabilityId: capability.id,
-    attempt: 1,
-    invocation: { mode: "start" },
-    configuration: channel.research.configuration,
-    settings: connection.connectionId ? { connectionId: connection.connectionId } : {},
-    inputs: {},
-    inputContract: [],
-    outputContract: researchOutputContract(capability),
-    context: {
-      locale: channel.language || "pt-BR",
-      timeZone: "America/Porto_Velho",
-      channel: {
-        id: channel.id,
-        name: channel.name,
-        language: channel.language,
-        niche: channel.niche,
-      },
-      project: { id: `channel-research:${channel.id}`, title: "Pesquisa factual do canal" },
-      processType: "theme",
-      block: {
-        type: "BUSCAR",
-        name: "Pesquisa factual do canal",
-        instructions: "Colete dados públicos; não crie tema, título, mídia ou publicação.",
-      },
-      previousProcessOutputs: [],
-      previousBlockOutputs: [],
-      previousDeliveries: [],
-    },
-  };
-  try {
-    const result = await executeRegisteredPlugin(
-      plugin,
-      pluginRequest,
-      capability.execution.defaultTimeoutMs ?? 90_000,
-      connection.secrets,
-    );
-    run.updatedAt = new Date().toISOString();
-    run.completedAt = run.updatedAt;
-    run.usage = result.usage;
-    run.logs = result.logs;
-    if (result.status === "success") {
-      run.status = "completed";
-      run.records = Array.isArray(result.values[channel.research.recordsKey])
-        ? (result.values[channel.research.recordsKey] as Array<Record<string, RuntimeValue>>)
-        : [];
-      const summary = result.values[channel.research.summaryKey];
-      run.summary = typeof summary === "string" ? summary : undefined;
-      saveResearchRun(run);
-      return response.status(201).json({ run });
-    }
-    run.status = "failed";
-    run.error = researchError(result) ?? {
-      code: "UNEXPECTED_PLUGIN_RESPONSE",
-      message: "A pesquisa não devolveu resultado final.",
-      retryable: false,
-    };
-    saveResearchRun(run);
-    return response.status(422).json({ error: run.error.message, run });
-  } catch (error) {
-    run.status = "failed";
-    run.updatedAt = new Date().toISOString();
-    run.completedAt = run.updatedAt;
-    run.error = {
-      code: "RESEARCH_EXECUTION_FAILED",
-      message: error instanceof Error ? error.message : "A pesquisa falhou.",
-      retryable: true,
-    };
-    saveResearchRun(run);
-    return response.status(422).json({ error: run.error.message, run });
-  }
+app.post("/api/execute-block", async (request, response) => {
+  const result = await executePluginBlockInternal(request.body as ExecutePluginBlockInput);
+  response.status(result.status).json(result.body);
 });
 
 app.get("/api/youtube/channel", async (request, response) => {
@@ -5867,9 +7066,10 @@ app.get("/api/youtube/channel", async (request, response) => {
 
 function stateSnapshot() {
   return database.transaction(() => {
-    const read = <T>(table: string) =>
+    const reservationExecutions = storedLibraryExecutions();
+    const read = <T>(table: string, order: "ASC" | "DESC" = "DESC") =>
       (
-        database.prepare(`SELECT payload FROM ${table} ORDER BY rowid DESC`).all() as {
+        database.prepare(`SELECT payload FROM ${table} ORDER BY rowid ${order}`).all() as {
           payload: string;
         }[]
       ).map((row) => JSON.parse(row.payload) as T);
@@ -5879,6 +7079,7 @@ function stateSnapshot() {
           revision: number;
         }
       ).revision,
+      upgrade: userDataUpgrade.state(),
       channels: (
         database
           .prepare(
@@ -5896,13 +7097,32 @@ function stateSnapshot() {
         return channel;
       }),
       projects: read<Project>("projects"),
-      executions: read<ProcessExecution>("process_executions"),
+      executions: (
+        database.prepare("SELECT payload FROM process_executions ORDER BY rowid DESC").all() as {
+          payload: string;
+        }[]
+      ).map((row) => parseStoredExecution(row.payload)),
       orchestrators: read<ExecutionOrchestrator>("execution_orchestrators"),
-      libraryItems: read<ChannelLibraryItem>("library_items"),
+      libraryItems: read<ChannelLibraryItem>("library_items", "ASC").map((item) => ({
+        ...item,
+        reservation: libraryReservation(item.id, reservationExecutions),
+      })),
       libraryCollections: read<StrategicCollection>("library_collections"),
     };
   })();
 }
+
+app.get(
+  "/api/state/events",
+  stateEvents(
+    () =>
+      (
+        database.prepare("SELECT revision FROM state_clock WHERE id = 1").get() as {
+          revision: number;
+        }
+      ).revision,
+  ),
+);
 
 app.get("/api/state", (request, response) => {
   const revision = (
@@ -5937,7 +7157,6 @@ const commandSchema = z.object({
   attempt: z.number().int().positive().optional(),
   retryScope: z.enum(["remaining", "all", "selected"]).optional(),
   values: z.record(z.string(), z.unknown()).optional(),
-  confirmSnapshotRevision: z.string().trim().min(1).optional(),
 });
 
 app.post("/api/commands", (request, response) => {
@@ -5966,7 +7185,13 @@ app.post("/api/commands", (request, response) => {
         if (!block || command.attempt !== (block.attempt ?? 1))
           throw new Error("Esta etapa mudou. Atualize a tela antes de continuar.");
       }
-      const engine = executionCommands(state, coreKeyStore);
+      const engine = executionCommands({
+        ...state,
+        adaptMethod: (method) => {
+          const parsed = processMethodV3Schema.safeParse(method);
+          return parsed.success ? parsed.data : undefined;
+        },
+      });
       let result: unknown;
       let updated = execution;
       const values = (command.values ?? {}) as Record<string, RuntimeValue>;
@@ -5996,7 +7221,7 @@ app.post("/api/commands", (request, response) => {
           result = engine.completeProcessOutput(execution!.id, values);
           break;
         case "acceptBlockDelivery":
-          result = engine.acceptBlockDelivery(execution!.id, command.blockId ?? "");
+          result = engine.acceptBlockDelivery(execution!.id, command.blockId ?? "", values);
           break;
         case "outputDraft":
           if (execution!.status !== "awaiting_output") {
@@ -6010,32 +7235,14 @@ app.post("/api/commands", (request, response) => {
           };
           result = true;
           break;
-        case "retry": {
-          const block = execution?.blocks.find((item) => item.blockId === command.blockId);
-          if (block?.recoverySnapshot) {
-            if (
-              !command.confirmSnapshotRevision ||
-              block.recoverySnapshot.snapshotRevision !== command.confirmSnapshotRevision
-            ) {
-              throw new Error(
-                "A revisão de recuperação divergiu ou está pendente de confirmação. Atualize a tela antes de continuar.",
-              );
-            }
-          } else if (command.confirmSnapshotRevision) {
-            throw new Error(
-              "Esta etapa não possui recuperação pendente aguardando confirmação. Atualize a tela antes de continuar.",
-            );
-          }
-          result = engine.retryBlockExecution(execution!.id, command.blockId ?? "", {
-            confirmSnapshotRevision: command.confirmSnapshotRevision,
-            retryScope: command.retryScope ?? "all",
-            itemId: command.itemId,
-          });
-          if (!result) {
-            throw new Error("Esta etapa não pôde ser reiniciada.");
-          }
+        case "retry":
+          result = engine.retryBlockExecution(
+            execution!.id,
+            command.blockId ?? "",
+            command.retryScope ?? "all",
+            command.itemId,
+          );
           break;
-        }
         case "reset": {
           if (!command.processType) throw new Error("Processo não informado.");
           const prior = state.executions.find(
@@ -6043,7 +7250,10 @@ app.post("/api/commands", (request, response) => {
           );
           if (prior && !["completed", "cancelled", "failed"].includes(prior.status))
             throw new Error("Cancele a execução antes de reiniciar.");
+          const channel = state.channels.find((item) => item.id === project.channelId);
+          if (!channel) throw new Error("Canal não encontrado.");
           if (prior) database.prepare("DELETE FROM process_executions WHERE id = ?").run(prior.id);
+          refreshProjectProcessStrategy(project, channel, command.processType);
           delete project.runThrough;
           project.stages[command.processType] = "not_started";
           project.currentStage = command.processType;
@@ -6059,6 +7269,7 @@ app.post("/api/commands", (request, response) => {
       )
         return result;
       if (updated) {
+        commitLibraryConsumption(updated);
         updated.revision = (updated.revision ?? 0) + 1;
         updated.updatedAt = new Date().toISOString();
         database
@@ -6070,7 +7281,7 @@ app.post("/api/commands", (request, response) => {
             updated.id,
             project.id,
             updated.processType,
-            JSON.stringify(updated),
+            serializeStoredExecution(updated),
             updated.updatedAt,
           );
       }
@@ -6084,6 +7295,11 @@ app.post("/api/commands", (request, response) => {
       }
       return result;
     })();
+    if (monitorEnabled())
+      for (const row of database.prepare("SELECT payload FROM process_executions").all() as {
+        payload: string;
+      }[])
+        observeCommittedExecution(parseStoredExecution(row.payload));
     response.json({ result, state: stateSnapshot() });
     const projectId =
       command.projectId ??
@@ -6092,7 +7308,7 @@ app.post("/api/commands", (request, response) => {
       for (const row of database
         .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
         .all(projectId) as { payload: string }[])
-        scheduleAutomaticPluginBlock(JSON.parse(row.payload));
+        scheduleAutomaticPluginBlock(parseStoredExecution(row.payload));
       queueOrchestratorReconciliationForProject(projectId);
     }
     reconcileStandaloneProcesses();
@@ -6104,6 +7320,7 @@ app.post("/api/commands", (request, response) => {
 });
 
 function reconcileStandaloneProcesses() {
+  if (!userDataUpgrade.backgroundAllowed()) return;
   const projects = (
     database
       .prepare(
@@ -6132,7 +7349,7 @@ function reconcileStandaloneProcesses() {
     const next = nextExecutableProcess(order, project.stages, project.runFrom, project.runThrough);
     if (
       !next ||
-      !(project.strategySnapshot?.methods[next] ?? channel.methods[next])?.blocks.length
+      !(channel.methods[next] ?? project.strategySnapshot?.methods[next])?.blocks.length
     ) {
       delete project.runThrough;
       database
@@ -6274,6 +7491,43 @@ app.put("/api/channels/order", (request, response) => {
   response.json({ channelIds: requestedIds });
 });
 
+app.delete("/api/channels/:id/methods/:processType", (request, response) => {
+  const channel = readPayload<Channel>("channels", String(request.params.id));
+  const processType = request.params.processType as UniversalProcess;
+  if (!channel) {
+    response.status(404).json({ error: "Canal não encontrado." });
+    return;
+  }
+  if (!PROCESS_ORDER.includes(processType)) {
+    response.status(400).json({ error: "Método inválido." });
+    return;
+  }
+  if (request.body?.definitionRevision !== (channel.definitionRevision ?? 0)) {
+    response.status(409).json({
+      error: "A definição do Canal mudou em outra aba. Recarregue antes de salvar o Método.",
+    });
+    return;
+  }
+  channel.methods[processType] = createEmptyMethods()[processType];
+  const errors = validateProcessDependencies(effectiveProcessOrder(channel), channel.methods);
+  if (errors.length) {
+    response.status(422).json({ error: errors[0], errors });
+    return;
+  }
+  channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
+  try {
+    persistChannelDefinition(channel);
+    response.json({
+      method: channel.methods[processType],
+      definitionRevision: channel.definitionRevision,
+    });
+  } catch (error) {
+    response.status(409).json({
+      error: error instanceof Error ? error.message : "Não foi possível apagar o Método.",
+    });
+  }
+});
+
 app.put("/api/channels/:id/methods/:processType", (request, response) => {
   const channel = readPayload<Channel>("channels", request.params.id);
   const processType = request.params.processType as UniversalProcess;
@@ -6294,7 +7548,31 @@ app.put("/api/channels/:id/methods/:processType", (request, response) => {
     });
     return;
   }
+  const incomingMethod: ProcessMethod = {
+    contractVersion: 3,
+    name:
+      typeof request.body?.name === "string" && request.body.name.trim()
+        ? request.body.name.trim().slice(0, 200)
+        : channel.methods[processType]?.name || `Método de ${PROCESS_META[processType].label}`,
+    imageUrl: request.body?.imageUrl,
+    processType,
+    blocks: request.body.blocks,
+  };
+  const parsedMethod = processMethodV3Schema.safeParse(incomingMethod);
+  if (!parsedMethod.success) {
+    const errors = parsedMethod.error.issues.map((issue) => issue.message);
+    response.status(422).json({ error: errors[0], errors });
+    return;
+  }
+  const localProfiles = persistLocalProfileExecution(
+    normalizeMethodBlocks(parsedMethod.data.blocks, processType),
+  );
+  if (localProfiles.errors.length) {
+    response.status(422).json({ error: localProfiles.errors[0], errors: localProfiles.errors });
+    return;
+  }
   const nextMethod: ProcessMethod = {
+    contractVersion: 3,
     name:
       typeof request.body?.name === "string" && request.body.name.trim()
         ? request.body.name.trim().slice(0, 200)
@@ -6306,7 +7584,7 @@ app.put("/api/channels/:id/methods/:processType", (request, response) => {
         ? request.body.imageUrl.slice(0, 1_500_000)
         : channel.methods[processType]?.imageUrl,
     processType,
-    blocks: normalizeMethodBlocks(request.body.blocks, processType),
+    blocks: localProfiles.blocks,
   };
   const errors = validateProcessDependencies(
     effectiveProcessOrder(channel),
@@ -6319,9 +7597,7 @@ app.put("/api/channels/:id/methods/:processType", (request, response) => {
   }
   channel.methods[processType] = nextMethod;
   channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-  database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(channel), channel.id);
+  persistChannelDefinition(channel);
   response.json({
     method: channel.methods[processType],
     definitionRevision: channel.definitionRevision,
@@ -6353,20 +7629,43 @@ app.put("/api/channels/:id/methods", (request, response) => {
     response.status(400).json({ error: "Pacote de Métodos inválido." });
     return;
   }
+  const preparedEntries: Array<[UniversalProcess, ProcessMethod]> = [];
   for (const [processType, method] of entries) {
-    channel.methods[processType] = {
-      name:
-        typeof method.name === "string" && method.name.trim()
-          ? method.name.trim().slice(0, 200)
-          : `Método de ${PROCESS_META[processType].label}`,
-      imageUrl:
-        typeof method.imageUrl === "string" &&
-        (/^data:image\/(webp|png|jpeg);base64,/.test(method.imageUrl) ||
-          /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(method.imageUrl))
-          ? method.imageUrl.slice(0, 1_500_000)
-          : undefined,
+    const parsedMethod = processMethodV3Schema.safeParse(method);
+    if (!parsedMethod.success) {
+      const errors = parsedMethod.error.issues.map((issue) => issue.message);
+      response.status(422).json({ error: errors[0], errors });
+      return;
+    }
+    const localProfiles = persistLocalProfileExecution(
+      normalizeMethodBlocks(parsedMethod.data.blocks, processType),
+    );
+    if (localProfiles.errors.length) {
+      response.status(422).json({ error: localProfiles.errors[0], errors: localProfiles.errors });
+      return;
+    }
+    preparedEntries.push([
       processType,
-      blocks: normalizeMethodBlocks(method.blocks, processType),
+      {
+        contractVersion: 3,
+        name:
+          typeof parsedMethod.data.name === "string" && parsedMethod.data.name.trim()
+            ? parsedMethod.data.name.trim().slice(0, 200)
+            : `Método de ${PROCESS_META[processType].label}`,
+        imageUrl:
+          typeof parsedMethod.data.imageUrl === "string" &&
+          (/^data:image\/(webp|png|jpeg);base64,/.test(parsedMethod.data.imageUrl) ||
+            /^\/api\/files\/[a-zA-Z0-9._-]+$/.test(parsedMethod.data.imageUrl))
+            ? parsedMethod.data.imageUrl.slice(0, 1_500_000)
+            : undefined,
+        processType,
+        blocks: localProfiles.blocks,
+      },
+    ]);
+  }
+  for (const [processType, method] of preparedEntries) {
+    channel.methods[processType] = {
+      ...method,
     };
   }
   const errors = validateProcessDependencies(effectiveProcessOrder(channel), channel.methods);
@@ -6375,9 +7674,7 @@ app.put("/api/channels/:id/methods", (request, response) => {
     return;
   }
   channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-  database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(channel), channel.id);
+  persistChannelDefinition(channel);
   response.json({ methods: channel.methods });
 });
 
@@ -6403,9 +7700,7 @@ app.put("/api/channels/:id/process-order", (request, response) => {
   }
   channel.processOrder = [...order];
   channel.definitionRevision = (channel.definitionRevision ?? 0) + 1;
-  database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(channel), channel.id);
+  persistChannelDefinition(channel);
   response.json({
     processOrder: effectiveProcessOrder(channel),
     definitionRevision: channel.definitionRevision,
@@ -6419,9 +7714,9 @@ app.post("/api/method-transfers/apply", (request, response) => {
     newChannel?: { id?: string; name?: string; methodsImageUrl?: string };
     expectedDefinitionRevision?: number;
     methods?: ProcessMethod[];
-    collections?: PortableCollectionV2[];
+    collections?: PortableCollection[];
     itemsIncluded?: boolean;
-    items?: PortableLibraryItemV2[];
+    items?: PortableLibraryItem[];
     preferredOrder?: UniversalProcess[];
     selectedProcesses?: UniversalProcess[];
     preserveLocalConnections?: boolean;
@@ -6443,6 +7738,17 @@ app.post("/api/method-transfers/apply", (request, response) => {
   if (!selected.length || selected.length !== selectedProcesses.length) {
     response.status(400).json({ error: "Seleção de Métodos inválida." });
     return;
+  }
+
+  const adaptedSelected: ProcessMethod[] = [];
+  for (const method of selected) {
+    const parsedMethod = processMethodV3Schema.safeParse(method);
+    if (!parsedMethod.success) {
+      const errors = parsedMethod.error.issues.map((issue) => issue.message);
+      response.status(422).json({ error: errors[0], errors });
+      return;
+    }
+    adaptedSelected.push(parsedMethod.data);
   }
 
   const existing = body.targetChannelId
@@ -6467,7 +7773,7 @@ app.post("/api/method-transfers/apply", (request, response) => {
     return;
   }
 
-  let portableItems: PortableLibraryItemV2[] = [];
+  let portableItems: PortableLibraryItem[] = [];
   try {
     portableItems = parsePortableLibraryItems(body.items ?? []);
     if (body.itemsIncluded !== true && portableItems.length) {
@@ -6506,13 +7812,14 @@ app.post("/api/method-transfers/apply", (request, response) => {
       id,
       channelId,
       name: collection.name,
+      usage: collection.usage ?? "fixed",
       fields: collection.fields.map((field) => {
         const fieldId = `field-${randomUUID()}`;
         fieldIds.set(`${collection.key}:${field.key}`, fieldId);
         return {
           id: fieldId,
           label: field.label,
-          type: field.type,
+          shape: field.shape,
           required: field.required,
         };
       }),
@@ -6520,10 +7827,71 @@ app.post("/api/method-transfers/apply", (request, response) => {
     };
   });
 
-  const copied = copyImportedMethods(selected, (prefix) => `${prefix}-${randomUUID()}`, {
-    collectionIds,
-    preserveLocalConnections: body.preserveLocalConnections === true,
-  });
+  // Local trust must be proven against actual server channel/method bindings,
+  // never from the requester-supplied boolean alone. A forged sourceChannelId
+  // (unknown channel) or supplied methods not owned by that channel cannot
+  // import bound profileExecution/projectSelections or managed raw URLs.
+  const sourceChannel =
+    typeof body.sourceChannelId === "string" && body.sourceChannelId
+      ? readPayload<Channel>("channels", body.sourceChannelId)
+      : undefined;
+  const localCopy = Boolean(sourceChannel);
+  const copied: ProcessMethod[] = copyImportedMethods(
+    adaptedSelected,
+    (prefix) => `${prefix}-${randomUUID()}`,
+    {
+      collectionIds,
+      preserveLocalConnections: body.preserveLocalConnections === true,
+      remapLocalProfileExecution: localCopy
+        ? (pluginId, policy) => {
+            const plugin = getRegisteredPlugin(pluginId);
+            const validation = validateLocalProfileExecution({
+              policy,
+              profileSetup: plugin?.manifest.profileSetup,
+              isBoundProfile: (profileId) =>
+                Boolean(pluginProfileBindings.get(pluginId, profileId)),
+            });
+            return validation.policy;
+          }
+        : undefined,
+    },
+  );
+  if (!localCopy) {
+    for (const method of copied) {
+      const stripped = clearImportedProfileAssociations({
+        blocks: method.blocks,
+        profileSetupForPlugin: portableProfileSetupForPlugin,
+      });
+      // Non-local imports never carry local connection handles either.
+      method.blocks = stripped.map((block) =>
+        block.plugin?.connectionId
+          ? { ...block, plugin: { ...block.plugin, connectionId: undefined } }
+          : block,
+      );
+    }
+  } else {
+    // Legitimate internal copy: per-block authority rederived from the ACTUAL
+    // source channel at the same process/index with matching plugin/capability.
+    // Proven blocks adopt the authoritative connectionId; every unproven block
+    // (no policy, mismatched identity, dropped invalid policy, forged) is
+    // stripped of profileExecution + connectionId + managed URL. Wired to the
+    // pure authorizeLocalBlockCopy helper (tested directly).
+    for (const method of copied) {
+      const actualSourceMethod = sourceChannel?.methods?.[method.processType];
+      const suppliedMethod = adaptedSelected.find(
+        (candidate) => candidate.processType === method.processType,
+      );
+      method.blocks = method.blocks.map((block, index) =>
+        authorizeLocalBlockCopy({
+          actualBlock: actualSourceMethod?.blocks[index],
+          suppliedBlock: suppliedMethod?.blocks[index],
+          copiedBlock: block,
+          expectedPortableBlockId: `${method.processType}:block:${index + 1}`,
+          profileSetupForPlugin: portableProfileSetupForPlugin,
+        }),
+      );
+    }
+  }
   const finalMethods = existing ? structuredClone(existing.methods) : createEmptyMethods();
   for (const method of copied) finalMethods[method.processType] = method;
   const preferredOrder = existing ? effectiveProcessOrder(existing) : body.preferredOrder;
@@ -6658,9 +8026,7 @@ app.post("/api/method-transfers/apply", (request, response) => {
         processOrder: resultOrder,
         definitionRevision: (current.definitionRevision ?? 0) + 1,
       };
-      database
-        .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-        .run(JSON.stringify(channel), channel.id);
+      persistChannelDefinition(channel);
     } else {
       channel = {
         id: channelId,
@@ -6760,9 +8126,7 @@ app.put("/api/channels/:id", (request, response) => {
     channel.processOrder = current.processOrder;
     channel.definitionRevision = current.definitionRevision;
   }
-  const result = database
-    .prepare("UPDATE channels SET payload = ? WHERE id = ?")
-    .run(JSON.stringify(channel), channel.id);
+  const result = persistChannelDefinition(channel);
   if (result.changes === 0) {
     response.status(404).json({ error: "Canal não encontrado." });
     return;
@@ -6801,6 +8165,7 @@ app.post("/api/channels/:id/sync-youtube", async (request, response) => {
 });
 
 app.delete("/api/channels/:id", (request, response) => {
+  const cancelledExecutions: string[] = [];
   const remove = database.transaction((channelId: string) => {
     const projects = database
       .prepare("SELECT id FROM projects WHERE channel_id = ?")
@@ -6808,8 +8173,10 @@ app.delete("/api/channels/:id", (request, response) => {
     for (const project of projects) {
       for (const row of database
         .prepare("SELECT id FROM process_executions WHERE project_id = ?")
-        .all(project.id) as { id: string }[])
+        .all(project.id) as { id: string }[]) {
         pluginJobs.requestCancellation(row.id);
+        cancelledExecutions.push(row.id);
+      }
       database.prepare("DELETE FROM process_executions WHERE project_id = ?").run(project.id);
     }
     database.prepare("DELETE FROM projects WHERE channel_id = ?").run(channelId);
@@ -6817,12 +8184,11 @@ app.delete("/api/channels/:id", (request, response) => {
     database.prepare("DELETE FROM library_collections WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM execution_orchestrators WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_preferences WHERE channel_id = ?").run(channelId);
-    database.prepare("DELETE FROM channel_research_runs WHERE channel_id = ?").run(channelId);
-    database.prepare("DELETE FROM channel_research_briefs WHERE channel_id = ?").run(channelId);
     database.prepare("DELETE FROM channel_order WHERE channel_id = ?").run(channelId);
     return database.prepare("DELETE FROM channels WHERE id = ?").run(channelId);
   });
   const result = remove(request.params.id) as { changes: number };
+  for (const executionId of cancelledExecutions) abortActivePluginInvocations(executionId);
   response.status(result.changes ? 204 : 404).end();
 });
 
@@ -6830,15 +8196,14 @@ function executionOrchestratorState(orchestrator: ExecutionOrchestrator) {
   const projects = orchestrator.projectIds
     .map((id) => readPayload<Project>("projects", id))
     .filter((project): project is Project => !!project);
-  const executions = orchestrator.projectIds.flatMap(
-    (projectId) =>
-      parseRows(
-        database
-          .prepare(
-            "SELECT payload FROM process_executions WHERE project_id = ? ORDER BY updated_at DESC",
-          )
-          .all(projectId) as { payload: string }[],
-      ) as ProcessExecution[],
+  const executions = orchestrator.projectIds.flatMap((projectId) =>
+    (
+      database
+        .prepare(
+          "SELECT payload FROM process_executions WHERE project_id = ? ORDER BY updated_at DESC",
+        )
+        .all(projectId) as { payload: string }[]
+    ).map((row) => parseStoredExecution(row.payload)),
   );
   return {
     orchestrator,
@@ -6936,7 +8301,7 @@ app.post("/api/orchestrators/:id/stop", (request, response) => {
       for (const row of database
         .prepare("SELECT payload FROM process_executions WHERE project_id = ?")
         .all(projectId) as { payload: string }[]) {
-        const execution = JSON.parse(row.payload) as ProcessExecution;
+        const execution = parseStoredExecution(row.payload);
         if (execution.status === "completed" || execution.status === "cancelled") continue;
         cancelStoredProcessExecution(execution, project);
       }
@@ -7158,15 +8523,19 @@ app.delete("/api/projects/:id", (request, response) => {
     });
     return;
   }
+  const cancelledExecutions: string[] = [];
   const remove = database.transaction((projectId: string) => {
     for (const row of database
       .prepare("SELECT id FROM process_executions WHERE project_id = ?")
-      .all(projectId) as { id: string }[])
+      .all(projectId) as { id: string }[]) {
       pluginJobs.requestCancellation(row.id);
+      cancelledExecutions.push(row.id);
+    }
     database.prepare("DELETE FROM process_executions WHERE project_id = ?").run(projectId);
     return database.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   });
   const result = remove(request.params.id) as { changes: number };
+  for (const executionId of cancelledExecutions) abortActivePluginInvocations(executionId);
   response.status(result.changes ? 204 : 404).end();
 });
 
@@ -7177,7 +8546,7 @@ app.get("/api/projects/:id/deliveries", (request, response) => {
         "SELECT payload FROM process_executions WHERE project_id = ? ORDER BY updated_at ASC",
       )
       .all(request.params.id) as { payload: string }[]
-  ).map((row) => normalizeExecutionDeliveries(JSON.parse(row.payload) as ProcessExecution));
+  ).map((row) => normalizeExecutionDeliveries(parseStoredExecution(row.payload)));
   const includeHistory = request.query.history === "true";
   const deliveries = includeHistory
     ? executions.flatMap((execution) => execution.deliveries ?? [])
@@ -7190,7 +8559,7 @@ app.get("/api/deliveries/:deliveryId", (request, response) => {
     payload: string;
   }[];
   for (const row of rows) {
-    const execution = JSON.parse(row.payload) as ProcessExecution;
+    const execution = parseStoredExecution(row.payload);
     const delivery = activeProjectDeliveries([execution]).find(
       (item) => item.id === request.params.deliveryId,
     );
@@ -7207,7 +8576,7 @@ app.get("/api/delivery-items/:itemId", (request, response) => {
     payload: string;
   }[];
   for (const row of rows) {
-    const execution = JSON.parse(row.payload) as ProcessExecution;
+    const execution = parseStoredExecution(row.payload);
     for (const delivery of activeProjectDeliveries([execution])) {
       const item = delivery.items.find((candidate) => candidate.id === request.params.itemId);
       if (item) {
@@ -7250,6 +8619,15 @@ app.get("/api/executions/:id/state", (request, response) => {
   response.json({ execution, project, jobs });
 });
 
+app.get("/api/executions/:id/browser-diagnostics", (request, response) => {
+  const execution = executionById(request.params.id);
+  if (!execution) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  response.json(exportBrowserDiagnostics(execution.id, pluginJobs.listForExecution(execution.id)));
+});
+
 app.post("/api/executions/:id/cancel", (request, response) => {
   const execution = executionById(request.params.id);
   const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
@@ -7261,92 +8639,30 @@ app.post("/api/executions/:id/cancel", (request, response) => {
     response.status(409).json({ error: "Uma execução concluída não pode ser cancelada." });
     return;
   }
-  cancelStoredProcessExecution(execution, project);
+  const cancellation = cancelStoredProcessExecution(execution, project);
+  if (!cancellation.ok) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de continuar." });
+    return;
+  }
   response.status(202).json({ ok: true, execution, project });
 });
 
-// Recovery preserves orchestration state; never reuse the destructive full retry path.
-app.post("/api/executions/:id/resume-items", (request, response) => {
-  const body = request.body ?? {};
-  if (
-    body.confirmedNoUncapturedOutput !== true ||
-    typeof body.jobId !== "string" ||
-    typeof body.expectedUpdatedAt !== "string" ||
-    typeof body.reconciliationNote !== "string"
-  ) {
-    response
-      .status(400)
-      .json({ error: "Reconcilie a tentativa externa antes de retomar os itens salvos." });
-    return;
-  }
-  const execution = executionById(request.params.id);
-  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
-  const job = pluginJobs.get(body.jobId);
-  const blockExecution = execution?.blocks.find((b) => b.blockId === job?.blockId);
-  const block = execution?.methodSnapshot.blocks.find((b) => b.id === job?.blockId);
-  const plugin = job ? getRegisteredPlugin(job.pluginId) : undefined;
-  const capability = plugin?.manifest.capabilities.find((c) => c.id === job?.capabilityId);
-  const policy = capability?.execution.itemOrchestration;
-  if (
-    !execution ||
-    !project ||
-    !job ||
-    job.executionId !== execution.id ||
-    execution.status !== "failed" ||
-    blockExecution?.status !== "failed" ||
-    (blockExecution.attempt ?? 1) !== job.attempt ||
-    block?.plugin?.pluginId !== job.pluginId ||
-    block.plugin.capabilityId !== job.capabilityId ||
-    !plugin?.executable ||
-    !pluginConsentIsCurrent(plugin) ||
-    !policy ||
-    policy.inputPort !== job.itemOrchestration?.inputPort ||
-    policy.outputPort !== job.itemOrchestration?.outputPort ||
-    policy.combinedOutputPort !== job.itemOrchestration?.combinedOutputPort ||
-    JSON.stringify(blockExecution.values) !== JSON.stringify(job.partialValues)
-  ) {
-    response.status(409).json({
-      error:
-        "Execução, contrato, consentimento ou entregas mudaram; recuperação recusada sem apagar dados.",
-    });
-    return;
-  }
-  try {
-    const saved = pluginJobs.resumeFailedItems(
-      job.id,
-      body.expectedUpdatedAt,
-      {
-        pluginVersion: plugin.manifest.version,
-        timeoutMs: capability.execution.defaultTimeoutMs ?? 60_000,
-        reconciliationNote: body.reconciliationNote,
-      },
-      (next) => {
-        blockExecution.status = "in_progress";
-        blockExecution.error = undefined;
-        blockExecution.progressMessage = next.message;
-        execution.status = "running";
-        execution.error = undefined;
-        persistPluginExecution(execution, project);
-      },
-    );
-    response.status(202).json({ ok: true, job: publicPluginJob(saved), execution, project });
-    void processDuePluginJobs();
-  } catch (error) {
-    response
-      .status(409)
-      .json({ error: error instanceof Error ? error.message : "Não foi possível retomar." });
-  }
-});
-
 app.post("/api/executions", (request, response) => {
-  const execution = request.body as StoredPayload;
-  if (!execution?.id || !execution.projectId || !execution.processType || !execution.updatedAt) {
+  const parsed = parseCanonicalExecutionCreatePayload(request.body);
+  if (!parsed.ok) {
     response.status(400).json({ error: "Execução inválida." });
     return;
   }
-  const project = readPayload<Project>("projects", String(execution.projectId));
+  const execution = parsed.execution;
+  const project = readPayload<Project>("projects", execution.projectId);
   const channel = project && readPayload<Channel>("channels", project.channelId);
-  if (project && channel && !project.strategySnapshot) {
+  if (!project || !channel || project.channelId !== execution.channelId) {
+    response.status(400).json({ error: "Execução inválida." });
+    return;
+  }
+  if (!project.strategySnapshot) {
     captureProjectStrategy(
       project,
       channel,
@@ -7362,7 +8678,7 @@ app.post("/api/executions", (request, response) => {
         .run(JSON.stringify(project), project.id);
     }
   }
-  const existing = executionFor(execution.projectId, execution.processType as UniversalProcess);
+  const existing = executionFor(execution.projectId, execution.processType);
   if (existing) {
     response
       .status(409)
@@ -7378,12 +8694,56 @@ app.post("/api/executions", (request, response) => {
       execution.id,
       execution.projectId,
       execution.processType,
-      JSON.stringify(execution),
+      serializeStoredExecution(execution),
       execution.updatedAt,
     );
-  scheduleAutomaticPluginBlock(execution as unknown as ProcessExecution);
+  scheduleAutomaticPluginBlock(execution);
   queueOrchestratorReconciliationForProject(execution.projectId);
+  observeCommittedExecution(execution);
   response.status(201).json(execution);
+});
+
+app.patch("/api/executions/:id/blocks/:blockId/runtime-inputs", (request, response) => {
+  const execution = executionById(request.params.id);
+  const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+  if (!execution || !project) {
+    response.status(404).json({ error: "Execução não encontrada." });
+    return;
+  }
+  const revision = Number(request.body?.revision);
+  if (!Number.isInteger(revision) || revision !== (execution.revision ?? 0)) {
+    response
+      .status(409)
+      .json({ error: "A execução mudou. Recarregue o estado antes de enviar as entradas." });
+    return;
+  }
+  const block = execution.methodSnapshot.blocks.find((item) => item.id === request.params.blockId);
+  const blockExecution = execution.blocks.find((item) => item.blockId === request.params.blockId);
+  if (!block || !blockExecution) {
+    response.status(404).json({ error: "Bloco da execução não encontrado." });
+    return;
+  }
+  if (
+    execution.status !== "blocked_executor" ||
+    blockExecution.status !== "blocked_executor" ||
+    !block.plugin
+  ) {
+    response.status(409).json({ error: "Este bloco não está aguardando entradas do plugin." });
+    return;
+  }
+  if (!runtimeInputBindings(block.inputs).length) {
+    response.status(400).json({ error: "Este bloco não declara entradas fornecidas na execução." });
+    return;
+  }
+  const result = validateRuntimeInputValues(block.inputs, request.body?.values);
+  if ("error" in result) {
+    response.status(400).json({ error: result.error });
+    return;
+  }
+  blockExecution.runtimeInputs = result.values;
+  persistPluginExecution(execution, project);
+  scheduleAutomaticPluginBlock(execution);
+  response.json({ ok: true, execution, project });
 });
 
 app.patch("/api/executions/:id/blocks/:blockId/values", (request, response) => {
@@ -7410,38 +8770,20 @@ app.patch("/api/executions/:id/blocks/:blockId/values", (request, response) => {
     response.status(409).json({ error: "Aguarde o bloco terminar antes de editar a entrega." });
     return;
   }
-  const submitted = request.body?.values;
-  if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
-    response.status(400).json({ error: "Valores de entrega inválidos." });
+  const edit = validateCompletedDeliveryEdit(
+    block,
+    blockExecution.values ?? {},
+    request.body?.values,
+    {
+      methodSnapshot: execution.methodSnapshot,
+      blocks: execution.blocks,
+    },
+  );
+  if (!edit.ok) {
+    response.status(edit.status).json({ error: edit.error });
     return;
   }
-  const allowedKeys = new Set((block.outputs ?? []).map((field) => field.key));
-  const unknownKeys = Object.keys(submitted).filter((key) => !allowedKeys.has(key));
-  if (unknownKeys.length) {
-    response
-      .status(400)
-      .json({ error: `Campos de entrega desconhecidos: ${unknownKeys.join(", ")}.` });
-    return;
-  }
-  const values = Object.fromEntries(
-    (block.outputs ?? []).map((field) => [field.key, submitted[field.key] ?? null]),
-  ) as Record<string, RuntimeValue>;
-  const missing = (block.outputs ?? [])
-    .filter((field) => field.required && isEmptyRuntimeValue(values[field.key]))
-    .map((field) => field.label);
-  const restrictionIssues = (block.outputs ?? []).flatMap((field) => {
-    const issue = getPresentationRestrictionIssue(field.presentation, values[field.key]);
-    return issue ? [`${field.label}: ${issue}`] : [];
-  });
-  if (missing.length || restrictionIssues.length) {
-    response.status(400).json({
-      error: [
-        ...(missing.length ? [`Preencha: ${missing.join(", ")}.`] : []),
-        ...restrictionIssues,
-      ].join(" "),
-    });
-    return;
-  }
+  const values = edit.values;
   blockExecution.values = structuredClone(values);
   const now = new Date().toISOString();
   blockExecution.completedAt = now;
@@ -7510,38 +8852,7 @@ app.patch("/api/executions/:id/blocks/:blockId/items-order", (request, response)
 
   const now = new Date().toISOString();
   const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
-  if (job?.itemOrchestration) {
-    const outputKey = job.request.outputContract.find(
-      (field) => field.portKey === job.itemOrchestration!.outputPort,
-    )?.key;
-    const combinedOutputKey = job.itemOrchestration.combinedOutputPort
-      ? job.request.outputContract.find(
-          (field) => field.portKey === job.itemOrchestration!.combinedOutputPort,
-        )?.key
-      : undefined;
-    const accumulatedItems = reordered.flatMap((item) => {
-      if (item.status !== "completed" || item.output === undefined) return [];
-      return Array.isArray(item.output)
-        ? (structuredClone(item.output) as RuntimeValue[])
-        : [structuredClone(item.output) as RuntimeValue];
-    });
-    if (outputKey) blockExecution.values[outputKey] = accumulatedItems as RuntimeValue;
-    if (combinedOutputKey) {
-      blockExecution.values[combinedOutputKey] = accumulatedItems
-        .filter((value): value is string => typeof value === "string")
-        .join(job.itemOrchestration.separator ?? "\n\n");
-    }
-    job.itemOrchestration.workItems = structuredClone(reordered);
-    job.itemOrchestration.accumulatedItems = structuredClone(accumulatedItems);
-    job.partialValues = structuredClone(blockExecution.values);
-    job.updatedAt = now;
-    database
-      .prepare(
-        `UPDATE plugin_jobs SET payload = ?, updated_at = ?
-         WHERE id = ? AND status NOT IN ('starting', 'pending', 'cancel_requested')`,
-      )
-      .run(JSON.stringify(job), now, job.id);
-  } else {
+  if (!job) {
     const oldIndexById = new Map(previousOrder.map((item, index) => [item.id, index]));
     for (const field of block.outputs ?? []) {
       const value = blockExecution.values[field.key];
@@ -7551,6 +8862,7 @@ app.patch("/api/executions/:id/blocks/:blockId/items-order", (request, response)
       ) as RuntimeValue;
     }
   }
+  synchronizeExecutionItems(block, blockExecution, reordered, job, now);
 
   recordBlockDeliveries(
     execution,
@@ -7596,6 +8908,10 @@ app.patch("/api/executions/:id/blocks/:blockId/items/:itemId", (request, respons
     response.status(404).json({ error: "Item da execução não encontrado." });
     return;
   }
+  if (block.plugin && !declaredItemActionForBlock(block, "replace")) {
+    response.status(403).json({ error: "Este plugin não declarou a ação de substituir itens." });
+    return;
+  }
   if (blockExecution.status === "in_progress") {
     response
       .status(409)
@@ -7603,49 +8919,18 @@ app.patch("/api/executions/:id/blocks/:blockId/items/:itemId", (request, respons
     return;
   }
 
-  const currentOutput = item.output;
-  const submittedOutput = request.body?.output as BlockExecutionItemValue | undefined;
-  const unwrapSingle = (value: BlockExecutionItemValue | undefined) =>
-    Array.isArray(value) && value.length === 1 ? value[0] : value;
-  const currentSingle = unwrapSingle(currentOutput);
-  const submittedSingle = unwrapSingle(submittedOutput);
-  const currentIsText = typeof currentSingle === "string";
-  const currentIsMedia =
-    currentSingle &&
-    typeof currentSingle === "object" &&
-    !Array.isArray(currentSingle) &&
-    "mimeType" in currentSingle &&
-    typeof currentSingle.mimeType === "string" &&
-    /^(image|audio|video)\//.test(currentSingle.mimeType);
-  const submittedIsMedia =
-    submittedSingle &&
-    typeof submittedSingle === "object" &&
-    !Array.isArray(submittedSingle) &&
-    "mimeType" in submittedSingle &&
-    typeof submittedSingle.mimeType === "string" &&
-    /^(image|audio|video)\//.test(submittedSingle.mimeType) &&
-    "url" in submittedSingle &&
-    typeof submittedSingle.url === "string" &&
-    submittedSingle.url.startsWith("/api/files/");
-
-  if (currentIsText && typeof submittedSingle !== "string") {
-    response.status(400).json({ error: "Este item aceita somente texto." });
+  let normalizedOutput: BlockExecutionItemValue;
+  try {
+    normalizedOutput = normalizeItemReplacement(
+      item.output,
+      request.body?.output as BlockExecutionItemValue | undefined,
+    );
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : "Não foi possível substituir o item.",
+    });
     return;
   }
-  if (currentIsMedia && !submittedIsMedia) {
-    response.status(400).json({ error: "Este item aceita somente imagem, áudio ou vídeo local." });
-    return;
-  }
-  if (!currentIsText && !currentIsMedia) {
-    response
-      .status(400)
-      .json({ error: "Este tipo de item ainda não pode ser alterado manualmente." });
-    return;
-  }
-
-  const normalizedOutput = Array.isArray(currentOutput)
-    ? ([structuredClone(submittedSingle)] as BlockExecutionItemValue)
-    : (structuredClone(submittedSingle) as BlockExecutionItemValue);
   const now = new Date().toISOString();
   item.output = normalizedOutput;
   item.status = "completed";
@@ -7678,48 +8963,22 @@ app.patch("/api/executions/:id/blocks/:blockId/items/:itemId", (request, respons
   };
 
   const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
-  if (job?.itemOrchestration) {
-    const outputKey = job.request.outputContract.find(
-      (field) => field.portKey === job.itemOrchestration!.outputPort,
-    )?.key;
-    const combinedOutputKey = job.itemOrchestration.combinedOutputPort
-      ? job.request.outputContract.find(
-          (field) => field.portKey === job.itemOrchestration!.combinedOutputPort,
-        )?.key
-      : undefined;
-    const accumulatedItems = executionItems.flatMap((candidate) => {
-      if (candidate.status !== "completed" || candidate.output === undefined) return [];
-      return Array.isArray(candidate.output)
-        ? (structuredClone(candidate.output) as RuntimeValue[])
-        : [structuredClone(candidate.output) as RuntimeValue];
-    });
-    if (outputKey) blockExecution.values[outputKey] = accumulatedItems as RuntimeValue;
-    if (combinedOutputKey) {
-      blockExecution.values[combinedOutputKey] = accumulatedItems
-        .filter((value): value is string => typeof value === "string")
-        .join(job.itemOrchestration.separator ?? "\n\n");
-    }
-    job.itemOrchestration.workItems = structuredClone(executionItems);
-    job.itemOrchestration.accumulatedItems = structuredClone(accumulatedItems);
-    job.partialValues = structuredClone(blockExecution.values);
-    job.updatedAt = now;
-    database
-      .prepare(
-        `UPDATE plugin_jobs SET payload = ?, updated_at = ?
-         WHERE id = ? AND status NOT IN ('starting', 'pending', 'cancel_requested')`,
-      )
-      .run(JSON.stringify(job), now, job.id);
-  } else {
+  if (!job) {
     const listOutput = (block.outputs ?? []).find((field) => {
       const value = blockExecution.values[field.key];
       return Array.isArray(value) && value.length === executionItems.length;
     });
     if (listOutput) {
       const values = [...(blockExecution.values[listOutput.key] as RuntimeValue[])];
-      values[item.order] = structuredClone(submittedSingle) as RuntimeValue;
+      const normalizedSingle =
+        Array.isArray(normalizedOutput) && normalizedOutput.length === 1
+          ? normalizedOutput[0]
+          : normalizedOutput;
+      values[item.order] = structuredClone(normalizedSingle) as RuntimeValue;
       blockExecution.values[listOutput.key] = values as RuntimeValue;
     }
   }
+  synchronizeExecutionItems(block, blockExecution, executionItems, job, now);
 
   recordBlockDeliveries(
     execution,
@@ -7739,9 +8998,217 @@ app.patch("/api/executions/:id/blocks/:blockId/items/:itemId", (request, respons
   response.json({ execution, project });
 });
 
+app.post(
+  "/api/executions/:id/blocks/:blockId/items/:itemId/actions/:action",
+  async (request, response) => {
+    const execution = executionById(request.params.id);
+    const project = execution ? readPayload<Project>("projects", execution.projectId) : undefined;
+    if (!execution || !project) {
+      response.status(404).json({ error: "Execução não encontrada." });
+      return;
+    }
+    const revision = Number(request.body?.revision);
+    if (!Number.isInteger(revision) || revision !== (execution.revision ?? 0)) {
+      response.status(409).json({ error: "A execução mudou. Recarregue antes de agir no item." });
+      return;
+    }
+    const block = execution.methodSnapshot.blocks.find(
+      (item) => item.id === request.params.blockId,
+    );
+    const blockExecution = execution.blocks.find((item) => item.blockId === request.params.blockId);
+    const executionItems = blockExecution?.items;
+    const item = executionItems?.find((candidate) => candidate.id === request.params.itemId);
+    if (!block || !blockExecution || !executionItems || !item) {
+      response.status(404).json({ error: "Item da execução não encontrado." });
+      return;
+    }
+    if (blockExecution.status === "in_progress") {
+      response.status(409).json({ error: "Aguarde a execução atual terminar." });
+      return;
+    }
+    const action = request.params.action;
+    const declared = declaredItemActionForBlock(block, action);
+    if (!declared) {
+      response.status(403).json({ error: "Esta ação não foi declarada pelo plugin." });
+      return;
+    }
+
+    if (action === "select") {
+      for (const candidate of executionItems) {
+        if (belongsToSameItemActionGroup(item, candidate)) {
+          candidate.selected = candidate.id === item.id;
+        }
+      }
+      const now = new Date().toISOString();
+      const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
+      synchronizeExecutionItems(block, blockExecution, executionItems, job, now);
+      persistPluginExecution(execution, project);
+      response.json({ execution, project });
+      return;
+    }
+    if (action !== "regenerate") {
+      response.status(400).json({ error: "Esta ação é executada localmente pela interface." });
+      return;
+    }
+    if (!declared.plugin.executable || !pluginConsentIsCurrent(declared.plugin)) {
+      response.status(403).json({
+        error: "Ative este plugin e confirme suas permissões na Central de Plugins.",
+      });
+      return;
+    }
+
+    const job = pluginJobs.getByExecution(execution.id, block.id, blockExecution.attempt ?? 1);
+    if (!job) {
+      response.status(409).json({ error: "O contexto original deste item não está disponível." });
+      return;
+    }
+    const outputPort =
+      item.pluginCorrelation?.outputPort ??
+      job.itemOrchestration?.outputPort ??
+      job.request.outputContract.find((field) => field.key === item.pluginCorrelation?.outputKey)
+        ?.portKey;
+    if (!outputPort) {
+      response.status(422).json({ error: "Não foi possível resolver a saída original do item." });
+      return;
+    }
+
+    // Canonical frozen-destination guard BEFORE any provider/browser effect.
+    // Every regeneration effect uses the same safety check as
+    // start/resume/continuation/fallback. Deleted/foreign/invalid/unbound or a
+    // catalog URL edit blocks here with a structured non-retryable setup
+    // diagnostic; no cached projectUrls URI escapes to the plugin.
+    if (job.profileExecution?.projectConfigurationKey) {
+      try {
+        refreshActiveProjectUrl({
+          database,
+          plugin: declared.plugin,
+          snapshot: job.profileExecution,
+          activeIndex: job.profileFallback?.activeIndex ?? 0,
+          isBoundProfile: (profileId) =>
+            Boolean(pluginProfileBindings.get(declared.plugin.id, profileId)),
+        });
+      } catch (guardError) {
+        response.status(422).json({
+          error:
+            guardError instanceof Error
+              ? guardError.message
+              : "Selecione um projeto nomeado para este perfil.",
+          code:
+            guardError instanceof ProjectSelectionError
+              ? guardError.code
+              : "PROJECT_SELECTION_REQUIRED",
+        });
+        return;
+      }
+    }
+
+    try {
+      const requestedConnectionId =
+        typeof job.request.settings.connectionId === "string"
+          ? job.request.settings.connectionId
+          : undefined;
+      const connection = await resolvePluginConnection(declared.plugin, requestedConnectionId);
+      const itemAttempt =
+        Math.max(item.attempt, ...item.attempts.map((entry) => entry.attempt)) + 1;
+      const actionRequest = itemActionRequestForJob({
+        job,
+        item,
+        outputPort,
+        attempt: itemAttempt,
+        traceId: randomUUID(),
+      });
+      const pluginResponse = await executeRegisteredPlugin(
+        declared.plugin,
+        actionRequest,
+        declared.capability.execution.defaultTimeoutMs ?? 120_000,
+        connection.secrets,
+        {
+          workspaceDirectory: executionWorkspaceForPlugin(declared.plugin),
+          profileDirectory: browserProfileForJob(declared.plugin, job)?.profileDirectory,
+          existingArtifacts: job.partialArtifacts,
+        },
+      );
+      if (pluginResponse.status === "pending") {
+        response
+          .status(422)
+          .json({ error: "A regeneração de item precisa concluir na mesma ação." });
+        return;
+      }
+      if (pluginResponse.status === "error") {
+        response.status(422).json({ error: pluginResponse.message, code: pluginResponse.code });
+        return;
+      }
+      const rawOutput = pluginResponse.values[outputPort];
+      const regenerated = Array.isArray(rawOutput) ? rawOutput[0] : rawOutput;
+      if (regenerated === undefined || regenerated === null) {
+        response.status(422).json({ error: "O plugin não devolveu o item regenerado." });
+        return;
+      }
+      const outputShape = job.request.outputContract.find(
+        (field) => field.portKey === outputPort,
+      )?.shape;
+      if (!outputShape || !isCompatiblePluginItemValue(outputShape, regenerated)) {
+        response.status(422).json({ error: "O plugin devolveu um tipo incompatível para o item." });
+        return;
+      }
+      const latestExecution = executionById(execution.id);
+      if (!latestExecution || (latestExecution.revision ?? 0) !== revision) {
+        response.status(409).json({ error: "A execução mudou durante a regeneração do item." });
+        return;
+      }
+      const normalizedOutput = Array.isArray(item.output)
+        ? ([structuredClone(regenerated)] as BlockExecutionItemValue)
+        : (structuredClone(regenerated) as BlockExecutionItemValue);
+      const now = new Date().toISOString();
+      item.output = normalizedOutput;
+      item.status = "completed";
+      item.attempt = itemAttempt;
+      item.error = undefined;
+      item.attempts.push({
+        attempt: itemAttempt,
+        status: "completed",
+        input: structuredClone(item.input),
+        output: structuredClone(normalizedOutput),
+        startedAt: now,
+        completedAt: now,
+      });
+      job.partialArtifacts = mergeStoredArtifacts(
+        job.partialArtifacts,
+        pluginResponse.storedArtifacts,
+      );
+      synchronizeExecutionItems(block, blockExecution, executionItems, job, now);
+      recordBlockDeliveries(
+        execution,
+        block,
+        blockExecution.values,
+        blockExecution.status === "completed" ? "completed" : "partial",
+        now,
+      );
+      if (execution.outputStatus === "completed") {
+        const derived = deriveProcessOutput(execution);
+        if (derived) {
+          execution.output = derived;
+          recordProcessOutputDelivery(execution, derived.values, now);
+        }
+      }
+      persistPluginExecution(execution, project);
+      response.json({ execution, project });
+    } catch (error) {
+      response.status(422).json({
+        error: error instanceof Error ? error.message : "Não foi possível regenerar o item.",
+      });
+    }
+  },
+);
+
 app.put("/api/executions/:id", (request, response) => {
   const execution = request.body as ProcessExecution;
-  if (!execution?.id || execution.id !== request.params.id || !execution.updatedAt) {
+  if (
+    !execution?.id ||
+    execution.id !== request.params.id ||
+    !execution.updatedAt ||
+    !Array.isArray(execution.blocks)
+  ) {
     response.status(400).json({ error: "Execução inválida." });
     return;
   }
@@ -7755,6 +9222,13 @@ app.put("/api/executions/:id", (request, response) => {
     execution.projectId !== current.projectId ||
     execution.processType !== current.processType ||
     JSON.stringify(execution.methodSnapshot) !== JSON.stringify(current.methodSnapshot) ||
+    execution.blocks.some((block) => {
+      const prior = current.blocks.find((candidate) => candidate.blockId === block.blockId);
+      return (
+        JSON.stringify(block.collectionSelection) !== JSON.stringify(prior?.collectionSelection) ||
+        (prior?.collectionSelection && block.values.selectedItemId !== prior.values.selectedItemId)
+      );
+    }) ||
     (current.status === "cancelled" && execution.status !== "cancelled")
   ) {
     response
@@ -7763,9 +9237,12 @@ app.put("/api/executions/:id", (request, response) => {
     return;
   }
   execution.revision = (current.revision ?? 0) + 1;
-  const result = database
-    .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
-    .run(JSON.stringify(execution), execution.updatedAt, execution.id);
+  const result = database.transaction(() => {
+    commitLibraryConsumption(execution);
+    return database
+      .prepare("UPDATE process_executions SET payload = ?, updated_at = ? WHERE id = ?")
+      .run(serializeStoredExecution(execution), execution.updatedAt, execution.id);
+  })();
   if (result.changes) {
     scheduleAutomaticPluginBlock(execution as unknown as ProcessExecution);
     if (execution.projectId) queueOrchestratorReconciliationForProject(execution.projectId);
@@ -7776,7 +9253,7 @@ app.put("/api/executions/:id", (request, response) => {
 });
 
 app.delete("/api/executions/:id", (request, response) => {
-  pluginJobs.requestCancellation(request.params.id);
+  requestPluginExecutionCancellation(request.params.id);
   const result = database
     .prepare("DELETE FROM process_executions WHERE id = ?")
     .run(request.params.id);
@@ -7808,7 +9285,8 @@ app.post("/api/library/collections", (request, response) => {
     !collection.name ||
     !collection.createdAt ||
     !Array.isArray(collection.fields) ||
-    collection.fields.length === 0
+    collection.fields.length === 0 ||
+    (collection.usage !== undefined && !["fixed", "consumable"].includes(String(collection.usage)))
   ) {
     response.status(400).json({ error: "Coleção estratégica inválida." });
     return;
@@ -7830,9 +9308,18 @@ app.put("/api/library/collections/:id", (request, response) => {
     !collection.name ||
     !collection.createdAt ||
     !Array.isArray(collection.fields) ||
-    collection.fields.length === 0
+    collection.fields.length === 0 ||
+    (collection.usage !== undefined && !["fixed", "consumable"].includes(String(collection.usage)))
   ) {
     response.status(400).json({ error: "Coleção estratégica inválida." });
+    return;
+  }
+  if (
+    channelLibraryItems(String(collection.channelId)).some(
+      (item) => item.collectionId === collection.id && hasLibraryReservation(item.id),
+    )
+  ) {
+    response.status(409).json({ error: "Esta coleção possui itens reservados." });
     return;
   }
   const result = database
@@ -7846,6 +9333,14 @@ app.put("/api/library/collections/:id", (request, response) => {
 });
 
 app.delete("/api/library/collections/:id", (request, response) => {
+  if (
+    stateSnapshot().libraryItems.some(
+      (item) => item.collectionId === request.params.id && item.reservation,
+    )
+  ) {
+    response.status(409).json({ error: "Esta coleção possui itens reservados." });
+    return;
+  }
   const remove = database.transaction((collectionId: string) => {
     const itemRows = database.prepare("SELECT id, payload FROM library_items").all() as {
       id: string;
@@ -7887,21 +9382,119 @@ app.post("/api/library", (request, response) => {
   response.status(201).json(item);
 });
 
+const libraryBatchSchema = z.object({
+  importId: z.string().uuid(),
+  collectionId: z.string().min(1),
+  rows: z.array(z.record(z.string(), z.unknown())).min(1).max(1000),
+});
+app.post("/api/library/batch", (request, response) => {
+  const parsed = libraryBatchSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ error: "Lote inválido." });
+    return;
+  }
+  const collection = readPayload<StrategicCollection>(
+    "library_collections",
+    parsed.data.collectionId,
+  );
+  if (!collection) {
+    response.status(404).json({ error: "Coleção não encontrada." });
+    return;
+  }
+  const rows = parsed.data.rows as ChannelLibraryItem["values"][];
+  const invalid = rows
+    .map((values, index) => ({ row: index + 1, fields: libraryValuesIssues(collection, values) }))
+    .filter((row) => row.fields.length);
+  if (invalid.length) {
+    response.status(422).json({ error: "Revise os campos do lote antes de importar.", invalid });
+    return;
+  }
+  try {
+    const result = database.transaction(() => {
+      const receiptId = `library-import:${parsed.data.importId}`;
+      const receipt = readPayload<{
+        rows: ChannelLibraryItem["values"][];
+        collectionId: string;
+        items: ChannelLibraryItem[];
+      }>("execution_commands", receiptId);
+      if (receipt) {
+        if (
+          receipt.collectionId !== collection.id ||
+          JSON.stringify(receipt.rows) !== JSON.stringify(rows)
+        )
+          throw new Error("Lote inválido.");
+        return receipt.items;
+      }
+      const now = new Date().toISOString();
+      const items = rows.map(
+        (values) =>
+          ({
+            id: randomUUID(),
+            channelId: collection.channelId,
+            collectionId: collection.id,
+            values,
+            createdAt: now,
+          }) satisfies ChannelLibraryItem,
+      );
+      const insert = database.prepare(
+        "INSERT INTO library_items (id, channel_id, payload, created_at) VALUES (?, ?, ?, ?)",
+      );
+      for (const item of items)
+        insert.run(item.id, item.channelId, JSON.stringify(item), item.createdAt);
+      database
+        .prepare("INSERT INTO execution_commands (id, payload) VALUES (?, ?)")
+        .run(receiptId, JSON.stringify({ collectionId: collection.id, rows, items }));
+      return items;
+    })();
+    response.status(201).json({ items: result });
+  } catch {
+    response.status(409).json({ error: "Lote inválido." });
+  }
+});
+
 app.put("/api/library/:id", (request, response) => {
-  const item = request.body as StoredPayload;
-  if (!item?.id || item.id !== request.params.id || !item.channelId) {
+  if (hasLibraryReservation(String(request.params.id))) {
+    response.status(409).json({ error: "Este item está reservado por outra execução." });
+    return;
+  }
+  const original = readPayload<ChannelLibraryItem>("library_items", String(request.params.id));
+  if (!original) {
+    response.status(404).json({ error: "Item não encontrado." });
+    return;
+  }
+  const collection = readPayload<StrategicCollection>("library_collections", original.collectionId);
+  const values = request.body?.values;
+  if (
+    !collection ||
+    collection.channelId !== original.channelId ||
+    !values ||
+    typeof values !== "object" ||
+    Array.isArray(values)
+  ) {
     response.status(400).json({ error: "Item de biblioteca inválido." });
     return;
   }
+  const issues = libraryValuesIssues(collection, values);
+  if (issues.length) {
+    response
+      .status(422)
+      .json({ error: "Revise os campos do item antes de salvar.", fields: issues });
+    return;
+  }
+  const item = { ...original, values };
   const result = database
-    .prepare("UPDATE library_items SET channel_id = ?, payload = ? WHERE id = ?")
-    .run(item.channelId, JSON.stringify(item), item.id);
+    .prepare("UPDATE library_items SET payload = ? WHERE id = ?")
+    .run(JSON.stringify(item), item.id);
   response
     .status(result.changes ? 200 : 404)
     .json(result.changes ? item : { error: "Item não encontrado." });
 });
 
 app.delete("/api/library/:id", (request, response) => {
+  if (hasLibraryReservation(String(request.params.id))) {
+    response.status(409).json({ error: "Este item está reservado por outra execução." });
+    return;
+  }
   const result = database.prepare("DELETE FROM library_items WHERE id = ?").run(request.params.id);
   response.status(result.changes ? 204 : 404).end();
 });
@@ -7917,14 +9510,23 @@ const payloadErrorHandler: ErrorRequestHandler = (error, _request, response, nex
 };
 
 app.use(payloadErrorHandler);
+app.use(supportErrorDiagnostics);
 
 app.listen(port, "127.0.0.1", () => {
+  reportSupportEvent({ area: "api", code: "API_STARTED" });
   console.log(`ContentFlow API local pronta em http://127.0.0.1:${port}`);
   resumeExecutionOrchestrators();
 });
 
 setInterval(resumeExecutionOrchestrators, 2_000).unref();
 setInterval(reconcileStandaloneProcesses, 1_000).unref();
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    for (const invocation of activePluginInvocations.values()) invocation.controller.abort();
+    void disposeCoreBrowserSessions().finally(() => process.exit(0));
+  });
+}
 
 function boundedEnvironmentNumber(
   name: string,

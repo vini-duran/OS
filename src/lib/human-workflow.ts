@@ -3,13 +3,14 @@ import {
   type ActionBlock,
   type BlockFieldDefinition,
   type BlockType,
-  type HumanFieldType,
   type ProcessId,
   type ProcessMethod,
   type RuntimeValue,
+  type ValueShape,
   type ValidationMode,
 } from "@/lib/domain";
 import { normalizeFieldPresentation } from "@/lib/presentation";
+import { contentShape, controlShape } from "@/lib/data-shape";
 
 export function getMethodConfigurationIssue(method?: ProcessMethod) {
   if (!method?.blocks.length) return "O processo ainda não possui um método.";
@@ -28,30 +29,45 @@ export function getMethodConfigurationIssue(method?: ProcessMethod) {
       return `As chaves das entregas do bloco “${block.name ?? block.type}” precisam ser únicas.`;
     }
     for (const input of block.inputs ?? []) {
-      if (
-        input.source === "channel_history" &&
-        block.type !== "ESCOLHER" &&
-        block.type !== "CRIAR"
-      ) {
+      const source = input.binding;
+      const sourceKind = source?.kind;
+      if (!source) {
+        return `Selecione a origem explícita da entrada “${input.label}”.`;
+      }
+      if (sourceKind === "runtime" && (!block.plugin || block.operator === "Humano")) {
+        return `A entrada “${input.label}” fornecida na execução exige um plugin de IA ou Código.`;
+      }
+      if (sourceKind === "channel_history" && block.type !== "ESCOLHER" && block.type !== "CRIAR") {
         return `O Histórico do Canal só pode orientar um bloco “Escolher” ou “Criar”. Remova-o do bloco “${block.name ?? block.type}”.`;
       }
-      if (
-        input.source === "channel_history" &&
-        (!input.sourceProcessType || !input.blockId || !input.sourceKey)
-      ) {
+      if (sourceKind === "channel_history" && source?.kind !== "channel_history") {
         return `Selecione a origem do histórico do canal na entrada “${input.label}”.`;
       }
-      if (input.source === "channel_history" && input.type !== "records") {
+      if (sourceKind === "channel_history" && input.shape.kind !== "record") {
         return `A entrada de histórico “${input.label}” precisa usar Lista de registros.`;
       }
     }
     for (const structuredField of [...(block.inputs ?? []), ...(block.outputs ?? [])].filter(
-      (field) => field.type === "records",
+      (field) => field.shape.kind === "record",
     )) {
-      const recordKeys = (structuredField.recordFields ?? [])
-        .map((field) => field.key.trim())
-        .filter(Boolean);
-      if (!recordKeys.length || recordKeys.length !== structuredField.recordFields?.length) {
+      const recordFields =
+        structuredField.shape.kind === "record" && Array.isArray(structuredField.shape.fields)
+          ? structuredField.shape.fields
+          : [];
+      const isPluginBoundOpenRecord = Boolean(
+        block.plugin &&
+        structuredField.portKey?.trim() &&
+        structuredField.shape.kind === "record" &&
+        structuredField.shape.open === true,
+      );
+      if (!recordFields.length) {
+        if (!isPluginBoundOpenRecord) {
+          return `Defina a chave de todos os campos da lista de registros “${structuredField.label}”.`;
+        }
+        continue;
+      }
+      const recordKeys = recordFields.map((field) => field.key.trim()).filter(Boolean);
+      if (recordKeys.length !== recordFields.length) {
         return `Defina a chave de todos os campos da lista de registros “${structuredField.label}”.`;
       }
       if (new Set(recordKeys).size !== recordKeys.length) {
@@ -59,26 +75,30 @@ export function getMethodConfigurationIssue(method?: ProcessMethod) {
       }
     }
     if (block.type === "VALIDAR") {
-      const targetIndex = block.validation?.targetBlockId
-        ? method.blocks.findIndex((candidate) => candidate.id === block.validation?.targetBlockId)
-        : (method.blocks
-            .slice(0, blockIndex)
-            .map((candidate, index) => ({ candidate, index }))
-            .reverse()
-            .find(({ candidate }) => candidate.type !== "VALIDAR")?.index ?? -1);
+      const targetBlockId = block.validation?.targetBlockId?.trim();
+      if (!targetBlockId) {
+        return `Selecione um bloco anterior para a validação “${block.name ?? "Validar"}”.`;
+      }
+      const targetIndex = method.blocks.findIndex((candidate) => candidate.id === targetBlockId);
       if (targetIndex < 0 || targetIndex >= blockIndex) {
         return `Selecione um bloco anterior para a validação “${block.name ?? "Validar"}”.`;
       }
       if (method.blocks[targetIndex].type === "VALIDAR") {
         return `A validação “${block.name ?? "Validar"}” deve apontar para um bloco Buscar, Escolher ou Criar.`;
       }
+      const targetOutputKey = block.validation?.targetOutputKey?.trim();
+      const requiresTargetOutput = block.validation?.mode !== "approval";
+      if (requiresTargetOutput && !targetOutputKey) {
+        return `Selecione qual saída será apresentada pela validação “${block.name ?? "Validar"}”.`;
+      }
       if (
-        block.validation?.mode !== "approval" &&
-        !method.blocks[targetIndex].outputs?.some(
-          (output) => output.key === block.validation?.targetOutputKey,
-        )
+        targetOutputKey &&
+        !method.blocks[targetIndex].outputs?.some((output) => output.key === targetOutputKey)
       ) {
         return `Selecione qual saída será apresentada pela validação “${block.name ?? "Validar"}”.`;
+      }
+      if (!targetOutputKey && block.validation?.targetPortKey) {
+        return `Selecione qual saída será enviada ao plugin na validação “${block.name ?? "Validar"}”.`;
       }
     }
   }
@@ -96,46 +116,63 @@ export const PROCESS_ROUTE_SEGMENT: Record<ProcessId, string> = {
   publishing: "publish",
 };
 
-const FINAL_FIELD_TYPE: Record<ProcessId, HumanFieldType> = {
-  theme: "textarea",
-  title: "text",
-  thumbnail: "image",
-  script: "textarea",
-  narration: "audio",
-  assets: "files",
-  editing: "video",
-  publishing: "url",
+const FINAL_FIELD_SHAPE: Record<Exclude<ProcessId, "assets">, ValueShape> = {
+  theme: contentShape("text"),
+  title: contentShape("text"),
+  thumbnail: contentShape("image"),
+  script: contentShape("text"),
+  narration: contentShape("audio"),
+  editing: contentShape("video"),
+  publishing: controlShape("url"),
 };
 
-const FINAL_FIELD_KEY: Record<ProcessId, string> = {
+const FINAL_FIELD_KEY: Record<Exclude<ProcessId, "assets">, string> = {
   theme: "theme",
   title: "title",
   thumbnail: "thumbnail",
   script: "script",
   narration: "audio",
-  assets: "assets",
   editing: "video",
   publishing: "url",
 };
 
-const FINAL_FIELD_LABEL: Record<ProcessId, string> = {
+const FINAL_FIELD_LABEL: Record<Exclude<ProcessId, "assets">, string> = {
   theme: "Tema final",
   title: "Título final",
   thumbnail: "Thumbnail final",
   script: "Roteiro final",
   narration: "Narração final",
-  assets: "Assets visuais finais",
   editing: "Vídeo final",
   publishing: "URL da publicação",
 };
 
 export function createProcessOutputFields(processType: ProcessId): BlockFieldDefinition[] {
+  if (processType === "assets") {
+    return [
+      {
+        id: "process-output-assets-images",
+        label: "Imagens finais",
+        key: "images",
+        shape: contentShape("image", "many"),
+        required: false,
+        placeholder: "Adicione as imagens finais",
+      },
+      {
+        id: "process-output-assets-videos",
+        label: "Vídeos finais",
+        key: "videos",
+        shape: contentShape("video", "many"),
+        required: false,
+        placeholder: "Adicione os vídeos finais",
+      },
+    ];
+  }
   return [
     {
       id: `process-output-${processType}`,
       label: FINAL_FIELD_LABEL[processType],
       key: FINAL_FIELD_KEY[processType],
-      type: FINAL_FIELD_TYPE[processType],
+      shape: FINAL_FIELD_SHAPE[processType],
       required: true,
       placeholder:
         processType === "publishing"
@@ -149,14 +186,14 @@ function field(
   prefix: string,
   label: string,
   key: string,
-  type: HumanFieldType,
+  shape: ValueShape,
   placeholder?: string,
 ): BlockFieldDefinition {
   return {
     id: `${prefix}-${crypto.randomUUID()}`,
     label,
     key,
-    type,
+    shape,
     required: true,
     placeholder,
   };
@@ -169,25 +206,46 @@ export function createSuggestedHumanFields(
   const prefix = `${processType}-${blockType.toLowerCase()}`;
   if (blockType === "BUSCAR") {
     return [
-      field(prefix, "Itens encontrados", "items_found", "list", "Adicione um item por linha"),
+      field(
+        prefix,
+        "Itens encontrados",
+        "items_found",
+        contentShape("text", "many"),
+        "Adicione um item por linha",
+      ),
       {
-        ...field(prefix, "Fontes consultadas", "sources", "list", "Cole URLs ou referências"),
+        ...field(
+          prefix,
+          "Fontes consultadas",
+          "sources",
+          contentShape("text", "many"),
+          "Cole URLs ou referências",
+        ),
         required: false,
       },
     ];
   }
   if (blockType === "ESCOLHER") {
-    return [];
+    return [
+      field(
+        prefix,
+        "Item escolhido",
+        "selectedItemId",
+        controlShape("identifier"),
+        "Selecione um item da coleção",
+      ),
+    ];
   }
   if (blockType === "VALIDAR") {
     return createValidationFields("approval");
   }
+  if (processType === "assets") return createProcessOutputFields(processType);
   return [
     field(
       prefix,
       `${PROCESS_META[processType].label} produzido`,
       FINAL_FIELD_KEY[processType],
-      FINAL_FIELD_TYPE[processType],
+      FINAL_FIELD_SHAPE[processType],
       "Entregue o resultado deste bloco",
     ),
   ];
@@ -197,33 +255,29 @@ export function createValidationFields(
   mode: ValidationMode,
   targetBlockId?: string,
   targetOutputKey?: string,
-  targetOutputType?: HumanFieldType,
+  targetOutputShape?: ValueShape,
 ): BlockFieldDefinition[] {
   const prefix = `validation-${mode}`;
   const feedback = {
-    ...field(prefix, "Observações", "feedback", "textarea", "Explique sua decisão"),
+    ...field(prefix, "Observações", "feedback", contentShape("text"), "Explique sua decisão"),
     required: false,
   };
   if (mode === "approval") {
-    return [field(prefix, "Decisão", "decision", "approval"), feedback];
+    return [field(prefix, "Decisão", "decision", controlShape("approval")), feedback];
   }
-  const selectedType: HumanFieldType =
-    mode === "select_many"
-      ? targetOutputType === "files"
-        ? "files"
-        : "list"
-      : targetOutputType === "files"
-        ? "file"
-        : targetOutputType === "list" || targetOutputType === "multiselect"
-          ? "text"
-          : (targetOutputType ?? "text");
+  const selectedShape: ValueShape = targetOutputShape
+    ? {
+        ...structuredClone(targetOutputShape),
+        cardinality: mode === "select_many" ? "many" : "one",
+      }
+    : contentShape("text", mode === "select_many" ? "many" : "one");
   return [
     {
       ...field(
         prefix,
         mode === "select_many" ? "Opções escolhidas" : "Opção escolhida",
         mode === "select_many" ? "selected_values" : "selected_value",
-        selectedType,
+        selectedShape,
       ),
       optionsSourceBlockId: targetBlockId,
       optionsSourceKey: targetOutputKey,
@@ -233,49 +287,27 @@ export function createValidationFields(
 }
 
 export function normalizeActionBlock(block: ActionBlock, processType: ProcessId): ActionBlock {
-  const legacyOutputs = (block.parameters ?? []).map<BlockFieldDefinition>((parameter) => ({
-    id: parameter.id,
-    label: parameter.label,
-    key: parameter.key,
-    type: parameter.type,
-    required: false,
-    placeholder: parameter.placeholder,
-    options: parameter.options,
-  }));
   return {
     ...block,
     name: block.name || `${block.type.charAt(0)}${block.type.slice(1).toLowerCase()}`,
     instructions: block.instructions ?? "",
-    inputs: (block.inputs ?? [])
-      .filter((input) => input.source !== "channel_library")
-      .map((input) => {
-        const type = input.source === "channel_history" ? "records" : (input.type ?? "text");
-        return {
-          ...input,
-          type,
-          historyLimit:
-            input.source === "channel_history"
-              ? Math.min(100, Math.max(1, input.historyLimit ?? 10))
-              : undefined,
-          historyEligibility:
-            input.source === "channel_history"
-              ? (input.historyEligibility ?? "completed")
-              : undefined,
-          presentation: normalizeFieldPresentation(type, input.presentation),
-        };
-      }),
-    outputs:
-      block.type === "ESCOLHER"
-        ? []
-        : block.outputs?.length || legacyOutputs.length
-          ? (block.outputs ?? legacyOutputs).map((output) => ({
-              ...output,
-              presentation: normalizeFieldPresentation(output.type, output.presentation),
-            }))
-          : createSuggestedHumanFields(processType, block.type).map((output) => ({
-              ...output,
-              presentation: normalizeFieldPresentation(output.type, output.presentation),
-            })),
+    inputs: (block.inputs ?? []).map((input) => {
+      const shape = input.shape;
+      return {
+        ...input,
+        shape,
+        presentation: normalizeFieldPresentation(shape, input.presentation),
+      };
+    }),
+    outputs: block.outputs?.length
+      ? block.outputs.map((output) => ({
+          ...output,
+          presentation: normalizeFieldPresentation(output.shape, output.presentation),
+        }))
+      : createSuggestedHumanFields(processType, block.type).map((output) => ({
+          ...output,
+          presentation: normalizeFieldPresentation(output.shape, output.presentation),
+        })),
     validation:
       block.type === "VALIDAR"
         ? {
@@ -283,8 +315,9 @@ export function normalizeActionBlock(block: ActionBlock, processType: ProcessId)
             onReject: block.validation?.onReject ?? "retry_target",
             maxAttempts: Math.max(1, block.validation?.maxAttempts ?? 3),
             retryMode: block.validation?.retryMode ?? "full",
-            targetBlockId: block.validation?.targetBlockId,
+            targetBlockId: block.validation?.targetBlockId ?? "",
             targetOutputKey: block.validation?.targetOutputKey,
+            targetPortKey: block.validation?.targetPortKey,
           }
         : undefined,
     parameters: block.parameters ?? [],
@@ -296,21 +329,22 @@ export function normalizeMethodBlocks(blocks: ActionBlock[], processType: Proces
   for (const [order, sourceBlock] of blocks.entries()) {
     const block = { ...normalizeActionBlock(sourceBlock, processType), order };
     if (block.type === "VALIDAR") {
-      const target =
-        normalized.find((candidate) => candidate.id === block.validation?.targetBlockId) ??
-        [...normalized].reverse().find((candidate) => candidate.type !== "VALIDAR");
-      const mode = block.validation?.mode ?? "approval";
-      const targetOutput =
-        target?.outputs?.find((output) => output.key === block.validation?.targetOutputKey) ??
-        target?.outputs?.find((output) => ["list", "files", "multiselect"].includes(output.type)) ??
-        target?.outputs?.[0];
+      const currentValidation = block.validation;
+      const mode = currentValidation?.mode ?? "approval";
+      const target = normalized.find(
+        (candidate) => candidate.id === currentValidation?.targetBlockId,
+      );
+      const targetOutput = target?.outputs?.find(
+        (output) => output.key === currentValidation?.targetOutputKey,
+      );
       block.validation = {
         mode,
-        targetBlockId: target?.id,
-        targetOutputKey: mode === "approval" ? undefined : targetOutput?.key,
-        onReject: block.validation?.onReject ?? "retry_target",
-        maxAttempts: Math.max(1, block.validation?.maxAttempts ?? 3),
-        retryMode: block.validation?.retryMode ?? "full",
+        targetBlockId: currentValidation?.targetBlockId ?? "",
+        targetOutputKey: currentValidation?.targetOutputKey,
+        targetPortKey: currentValidation?.targetPortKey,
+        onReject: currentValidation?.onReject ?? "retry_target",
+        maxAttempts: Math.max(1, currentValidation?.maxAttempts ?? 3),
+        retryMode: currentValidation?.retryMode ?? "full",
       };
       const hasExpectedOutput = (block.outputs ?? []).some((output) =>
         mode === "approval"
@@ -320,9 +354,19 @@ export function normalizeMethodBlocks(blocks: ActionBlock[], processType: Proces
       if (!hasExpectedOutput) {
         block.outputs = createValidationFields(
           mode,
-          target?.id,
+          block.validation.targetBlockId,
           block.validation.targetOutputKey,
-          targetOutput?.type,
+          targetOutput?.shape,
+        );
+      } else if (mode !== "approval") {
+        block.outputs = (block.outputs ?? []).map((output) =>
+          ["selected_value", "selected_values"].includes(output.key)
+            ? {
+                ...output,
+                optionsSourceBlockId: block.validation!.targetBlockId,
+                optionsSourceKey: block.validation!.targetOutputKey,
+              }
+            : output,
         );
       }
     }

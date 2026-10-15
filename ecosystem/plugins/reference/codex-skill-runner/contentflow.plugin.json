@@ -1,25 +1,31 @@
 {
-  "$schema": "../../../docs/schemas/contentflow-plugin-v1.schema.json",
-  "apiVersion": "1",
+  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow/main/docs/ecosystem/schemas/contentflow-plugin-v2.schema.json",
+  "apiVersion": "2",
   "id": "com.contentflow.codex-skill-runner",
   "name": "Codex Skill Runner",
-  "version": "0.3.0",
+  "version": "1.0.1",
   "description": "Executa o agente Codex e suas skills locais em etapas de produção, com entregas tipadas para o Método.",
   "author": "ContentFlow",
-  "license": "LicenseRef-ContentFlow-Codex-Plugin-Proprietary-1.0",
-  "branding": { "iconPath": "assets/icon.png" },
+  "license": "MIT",
+  "branding": {
+    "iconPath": "assets/icon.png"
+  },
   "homepage": "https://github.com/andremjr/contentflow",
-  "repository": "https://github.com/andremjr/contentflow",
+  "repository": "https://github.com/andremjr/plugins-contentflow",
   "runtime": {
     "kind": "node",
     "version": ">=26 <27",
     "module": "esm"
   },
-  "minCoreVersion": "0.3.5",
+  "minCoreVersion": "1.3.3",
   "entrypoint": "handler.mjs",
-  "permissions": ["network", "filesystem:read", "filesystem:write", "process"],
+  "permissions": [
+    "network",
+    "filesystem:read",
+    "filesystem:write",
+    "process"
+  ],
   "secretKeys": [],
-  "deliveryTypes": ["text", "processing"],
   "supportsConversationContinuation": true,
   "settingsSchema": {
     "type": "object",
@@ -31,7 +37,11 @@
       "id": "run-production-skill",
       "operator": "IA",
       "instructionUsage": "optional",
-      "blockTypes": ["BUSCAR", "CRIAR", "VALIDAR"],
+      "blockTypes": [
+        "BUSCAR",
+        "CRIAR",
+        "VALIDAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -47,22 +57,13 @@
           "key": "context",
           "label": "Contexto",
           "description": "Entradas resolvidas que o agente usará para produzir a entrega.",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "approval",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
@@ -70,48 +71,14 @@
           "key": "result",
           "label": "Resultado do agente",
           "description": "Entrega tipada produzida pelo Codex.",
-          "producedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "approval"
-          ],
-          "required": true
+          "required": true,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
-      ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "approval",
-        "thumbnail_layout"
-      ],
-      "producedOutputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "approval"
       ],
       "execution": {
         "mode": "immediate",
@@ -119,14 +86,21 @@
         "supportsCancellation": false,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_read", "external_write", "subprocess"],
+      "sideEffects": [
+        "external_read",
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI", "provedores chamados por scripts das skills autorizadas"],
+        "providers": [
+          "OpenAI",
+          "provedores chamados por scripts das skills autorizadas"
+        ],
         "retentionPolicyUrl": "https://platform.openai.com/docs/guides/your-data",
         "trainingPolicyUrl": "https://platform.openai.com/docs/guides/your-data"
       },
@@ -159,10 +133,22 @@
             "type": "string",
             "title": "Esforço de raciocínio",
             "oneOf": [
-              { "const": "low", "title": "Baixo" },
-              { "const": "medium", "title": "Médio" },
-              { "const": "high", "title": "Alto" },
-              { "const": "xhigh", "title": "Extra alto" }
+              {
+                "const": "low",
+                "title": "Baixo"
+              },
+              {
+                "const": "medium",
+                "title": "Médio"
+              },
+              {
+                "const": "high",
+                "title": "Alto"
+              },
+              {
+                "const": "xhigh",
+                "title": "Extra alto"
+              }
             ],
             "default": "medium"
           },
@@ -171,8 +157,14 @@
             "title": "Acesso da skill à pasta de trabalho",
             "description": "Leitura é o padrão. Escrita permite scripts da skill alterarem apenas a pasta autorizada.",
             "oneOf": [
-              { "const": "read-only", "title": "Somente leitura" },
-              { "const": "workspace-write", "title": "Ler e escrever no workspace" }
+              {
+                "const": "read-only",
+                "title": "Somente leitura"
+              },
+              {
+                "const": "workspace-write",
+                "title": "Ler e escrever no workspace"
+              }
             ],
             "default": "read-only"
           },
@@ -215,7 +207,9 @@
       "id": "choose-with-production-skill",
       "operator": "IA",
       "instructionUsage": "optional",
-      "blockTypes": ["ESCOLHER"],
+      "blockTypes": [
+        "ESCOLHER"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -230,61 +224,48 @@
         {
           "key": "context",
           "label": "Contexto da escolha",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "approval",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Item escolhido",
-          "producedTypes": ["select"],
-          "required": true
+          "required": true,
+          "shape": {
+            "kind": "control",
+            "control": "identifier",
+            "cardinality": "one"
+          }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "approval",
-        "thumbnail_layout"
-      ],
-      "producedOutputTypes": ["select"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 900000,
         "supportsCancellation": false,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_read", "external_write", "subprocess"],
+      "sideEffects": [
+        "external_read",
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI", "provedores chamados por scripts das skills autorizadas"],
+        "providers": [
+          "OpenAI",
+          "provedores chamados por scripts das skills autorizadas"
+        ],
         "retentionPolicyUrl": "https://platform.openai.com/docs/guides/your-data",
         "trainingPolicyUrl": "https://platform.openai.com/docs/guides/your-data"
       },
@@ -314,10 +295,22 @@
             "type": "string",
             "title": "Esforço de raciocínio",
             "oneOf": [
-              { "const": "low", "title": "Baixo" },
-              { "const": "medium", "title": "Médio" },
-              { "const": "high", "title": "Alto" },
-              { "const": "xhigh", "title": "Extra alto" }
+              {
+                "const": "low",
+                "title": "Baixo"
+              },
+              {
+                "const": "medium",
+                "title": "Médio"
+              },
+              {
+                "const": "high",
+                "title": "Alto"
+              },
+              {
+                "const": "xhigh",
+                "title": "Extra alto"
+              }
             ],
             "default": "medium"
           },
@@ -325,8 +318,14 @@
             "type": "string",
             "title": "Acesso da skill à pasta de trabalho",
             "oneOf": [
-              { "const": "read-only", "title": "Somente leitura" },
-              { "const": "workspace-write", "title": "Ler e escrever no workspace" }
+              {
+                "const": "read-only",
+                "title": "Somente leitura"
+              },
+              {
+                "const": "workspace-write",
+                "title": "Ler e escrever no workspace"
+              }
             ],
             "default": "read-only"
           },
@@ -364,9 +363,13 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "selectedItemId": { "type": "string" }
+          "selectedItemId": {
+            "type": "string"
+          }
         },
-        "required": ["selectedItemId"]
+        "required": [
+          "selectedItemId"
+        ]
       }
     }
   ]

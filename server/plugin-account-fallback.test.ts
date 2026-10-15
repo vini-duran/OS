@@ -56,29 +56,32 @@ test("normaliza aliases ordenados e remove duplicatas ou valores inválidos", ()
   ]);
 });
 
-for (const code of ["UPSTREAM_UNAVAILABLE", "TIMEOUT", "JOB_FAILED"]) {
-  test(`avança apenas falha técnica explicitamente repetível ${code}`, () => {
+for (const code of ["AUTHENTICATION_FAILED", "PERMISSION_DENIED", "QUOTA_EXCEEDED"]) {
+  test(`avança perfil em erro seguro associado ao perfil ${code}`, () => {
     assert.equal(
-      canAdvanceProfileFallback(jobWithFallback(), { status: "error", code, retryable: true }),
+      canAdvanceProfileFallback(jobWithFallback(), {
+        status: "error",
+        code,
+        message: `Falha com ${code}`,
+        retryable: false,
+      }),
       true,
     );
-    assert.equal(
-      canAdvanceProfileFallback(jobWithFallback(), { status: "error", code, retryable: false }),
-      false,
-    );
-    assert.equal(canAdvanceProfileFallback(jobWithFallback(), { status: "error", code }), false);
   });
 }
 
 for (const code of [
-  "AUTHENTICATION_FAILED",
+  "UPSTREAM_UNAVAILABLE",
+  "TIMEOUT",
+  "JOB_FAILED",
   "RATE_LIMIT",
-  "PERMISSION_DENIED",
-  "QUOTA_EXCEEDED",
   "OUTPUT_VALIDATION_FAILED",
-  "UNEXPECTED_ERROR",
+  "BRIDGE_PAGE_UNAVAILABLE",
+  "BRIDGE_MISSING",
+  "BRIDGE_INCOMPATIBLE",
+  "PROVIDER_SECURITY_CHALLENGE",
 ]) {
-  test(`não troca conta por recusa do provedor ou erro não técnico ${code}`, () => {
+  test(`não usa outra identidade para erro que não é fallback de conta ${code}`, () => {
     assert.equal(
       canAdvanceProfileFallback(jobWithFallback(), {
         status: "error",
@@ -90,6 +93,18 @@ for (const code of [
     );
   });
 }
+
+test("não troca de identidade por erro desconhecido sem fatos de segurança", () => {
+  assert.equal(
+    canAdvanceProfileFallback(jobWithFallback(), {
+      status: "error",
+      code: "UNEXPECTED_ERROR",
+      message: "Falha desconhecida.",
+      retryable: true,
+    }),
+    false,
+  );
+});
 
 test("não avança perfil em cancelamento explícito CANCELLED", () => {
   assert.equal(

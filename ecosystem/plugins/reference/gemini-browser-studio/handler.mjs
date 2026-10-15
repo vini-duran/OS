@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, extname, join } from "node:path";
 import { attachContentFlowBridge } from "./browser-bridge-client.mjs";
-import { providerNotices, providerError, failedTurn, cleanupPolicy } from "./response-guard.mjs";
+import { createBridgeDiagnostics } from "./bridge-diagnostics.mjs";
 
 const PLUGIN_ID = "local.contentflow.gemini-browser-studio";
 const URL_NEW = "https://gemini.google.com/app",
@@ -319,11 +318,10 @@ function textList(t) {
 }
 function searchValues(text, sources, r) {
   const f = r?.outputContract ?? [];
-  if (!f.length) return { result: text, sources };
   const v = {};
   for (const x of f) {
     const src = /source|fonte|url|link/i.test(`${x.key} ${x.label}`);
-    v[x.key] = src
+    v[x.portKey] = src
       ? x.type === "url"
         ? (sources[0] ?? URL_NEW)
         : sources
@@ -334,9 +332,10 @@ function searchValues(text, sources, r) {
   return v;
 }
 function generationValues(result, responses, r) {
-  const v = { result };
-  if ((r?.outputContract ?? []).some((x) => x.key === "parts"))
-    v.parts = responses.map((x) => x.text);
+  const v = {};
+  for (const field of r?.outputContract ?? []) {
+    v[field.portKey] = field.key === "parts" ? responses.map((response) => response.text) : result;
+  }
   return v;
 }
 function clean(t) {
@@ -455,175 +454,32 @@ function assertProfile(p, allowExistingChromeProfile = false) {
   if (n.endsWith("/google/chrome/user data") || n.includes("/google/chrome/user data/default"))
     throw err("INVALID_CONFIGURATION", "Use perfil Chrome dedicado.");
 }
-async function capture(exe, args, ms = 4000) {
-  return await new Promise((resolve) => {
-    let c;
-    try {
-      c = spawn(exe, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: false });
-    } catch {
-      return resolve({ ok: false, stdout: "" });
-    }
-    let stdout = "",
-      done = false;
-    const end = (ok) => {
-        if (done) return;
-        done = true;
-        clearTimeout(t);
-        resolve({ ok, stdout });
-      },
-      t = setTimeout(() => {
-        try {
-          c.kill();
-        } catch {}
-        end(false);
-      }, ms);
-    c.stdout?.setEncoding("utf8");
-    c.stdout?.on("data", (x) => (stdout += x));
-    c.once("error", () => end(false));
-    c.once("close", (code) => end(code === 0));
-  });
-}
-function regValue(o) {
-  for (const l of String(o ?? "").split(/\r?\n/)) {
-    const m = l.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i);
-    if (m) return m[1].trim().replace(/^"|"$/g, "");
-  }
-  return "";
-}
-async function chromeCandidates() {
-  if (platform() === "win32") {
-    const standardCandidates = [
-      process.env.PROGRAMFILES &&
-        join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
-      process.env["PROGRAMFILES(X86)"] &&
-        join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
-      process.env.LOCALAPPDATA &&
-        join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    ].filter(Boolean);
-    const existing = standardCandidates.filter((p) => existsSync(p));
-    if (existing.length) return [...new Set(existing)];
-
-    const f = [];
-    for (const k of [
-      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
-    ]) {
-      const r = await capture("reg.exe", ["query", k, "/ve"]);
-      if (r.ok) f.push(regValue(r.stdout));
-    }
-    const w = await capture("where.exe", ["chrome.exe"]);
-    if (w.ok) f.push(...w.stdout.split(/\r?\n/));
-    return [...new Set(f.filter(Boolean).map((x) => x.trim()))];
-  }
-  if (platform() === "darwin")
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
-  const f = [];
-  for (const n of ["google-chrome", "chromium"]) {
-    const r = await capture("which", [n]);
-    if (r.ok) f.push(...r.stdout.split(/\r?\n/));
-  }
-  return f.filter(Boolean);
-}
-async function version(port, ms = 1500) {
-  const c = new AbortController(),
-    t = setTimeout(() => c.abort(), ms);
-  try {
-    const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: c.signal });
-    if (!r.ok) return null;
-    const v = await r.json();
-    return v?.webSocketDebuggerUrl ? v : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
-}
-async function launch(settings, p, port, signal) {
-  const old = await version(port);
-  if (old) return { version: old, child: null, reused: true };
-  const exes = settings?.chromeExecutable?.trim?.()
-    ? [settings.chromeExecutable.trim()]
-    : await chromeCandidates();
-  if (!exes.length) throw err("INVALID_CONFIGURATION", "Chrome não localizado.");
-  const keepBrowserOpen = settings.keepBrowserOpen !== false;
-  const args = [
-    `--remote-debugging-port=${port}`,
-    "--remote-debugging-address=127.0.0.1",
-    `--user-data-dir=${p}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-blink-features=AutomationControlled",
-    "--window-size=1280,900",
-    URL_NEW,
-  ];
-  if (settings.startMinimized !== false) {
-    // A execução normal permanece minimizada; desative o throttling de
-    // janela ocluída para a página do provedor continuar processando a UI.
-    args.unshift(
-      "--start-minimized",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--disable-features=CalculateNativeWinOcclusion",
+function requireCoreBrowserSession(coreSession) {
+  if (
+    !coreSession ||
+    !Number.isInteger(coreSession.port) ||
+    typeof coreSession.webSocketDebuggerUrl !== "string" ||
+    !coreSession.webSocketDebuggerUrl
+  ) {
+    throw err(
+      "INVALID_CONFIGURATION",
+      "O ContentFlow não forneceu a sessão de navegador reservada para este perfil.",
     );
   }
-  for (const exe of exes) {
-    let child;
-    try {
-      child = spawn(exe, args, {
-        detached: keepBrowserOpen,
-        stdio: "ignore",
-        windowsHide: false,
-        shell: false,
-      });
-    } catch {
-      continue;
-    }
-    if (keepBrowserOpen) child.unref();
-    const d = Date.now() + 15000;
-    while (Date.now() < d) {
-      if (signal?.aborted) throw err("CANCELLED", "Cancelado.");
-      const v = await version(port);
-      if (v) return { version: v, child, reused: false };
-      await sleep(350, signal);
-    }
-    try {
-      child.kill();
-    } catch {}
-  }
-  throw err("PERMISSION_DENIED", "Não foi possível iniciar Chrome dedicado.");
+  return coreSession;
 }
-async function waitForChildExit(child, timeoutMs = 5000) {
-  if (!child || child.exitCode !== null) return true;
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (exited) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("exit", onExit);
-      resolve(exited);
-    };
-    const onExit = () => finish(true);
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    timer.unref?.();
-    child.once("exit", onExit);
-  });
+async function launch(settings) {
+  const session = requireCoreBrowserSession(settings?.__contentFlowBrowserSession);
+  return {
+    version: { webSocketDebuggerUrl: session.webSocketDebuggerUrl },
+    child: null,
+    reused: true,
+    startedByCore: true,
+    startedByPlugin: false,
+  };
 }
-
-async function closeBrowserGracefully(client, child) {
-  try {
-    await client?.send("Browser.close");
-  } catch {}
-  const exited = await waitForChildExit(child);
+async function closeBrowserGracefully(client) {
   client?.close();
-  if (!exited && child?.exitCode === null) {
-    try {
-      child.kill();
-    } catch {}
-  }
 }
 
 class CDP {
@@ -711,7 +567,11 @@ function classifyGeminiError(st) {
       combinedRelevant,
     )
   ) {
-    const error = err("RATE_LIMIT", "Notamos uma atividade incomum no Gemini ou na rede.", true);
+    const error = err(
+      "PROVIDER_SECURITY_CHALLENGE",
+      "Notamos uma atividade incomum no Gemini ou na rede.",
+      false,
+    );
     error.isUnusualActivity = true;
     error.retryAfterMs = 45000;
     return error;
@@ -783,7 +643,18 @@ async function markTaskPage(client, sessionId, request, signal) {
 async function attach(c, signal, activate = false, forceNew = false) {
   const { targetInfos = [] } = await c.send("Target.getTargets");
   let t = forceNew
-    ? undefined
+    ? targetInfos.find(
+        (item) =>
+          item.type === "page" &&
+          (() => {
+            try {
+              const url = new URL(item.url);
+              return url.hostname === HOST && url.hash === "#contentflow-ready-gemini";
+            } catch {
+              return false;
+            }
+          })(),
+      )
     : targetInfos.find((x) => x.type === "page" && String(x.url).includes(HOST));
   let created = false;
   if (!t) {
@@ -1071,19 +942,12 @@ async function send(c, s, bridge, signal, operationKey) {
   throw err("OUTPUT_VALIDATION_FAILED", "O Gemini não confirmou o envio do prompt.", true);
 }
 async function responseState(c, s) {
-  return await evaluate(
-    c,
-    s,
-    `(()=>{${HELP};return {...state(), notices:(${providerNotices.toString()})()}})()`,
-  );
+  return await evaluate(c, s, `(()=>{${HELP};return state()})()`);
 }
-async function textTurn(c, s, bridge, promptText, settings, signal, operationKey, lifecycle = {}) {
+async function textTurn(c, s, bridge, promptText, settings, signal, operationKey) {
   const before = await responseState(c, s),
     base = before.texts?.length ?? 0;
-  const preflight = providerError(before.notices);
-  if (preflight) throw err(preflight.code, preflight.message, false);
   await setPrompt(bridge, promptText, `prompt:${operationKey}`);
-  lifecycle.submitted = true;
   await send(c, s, bridge, signal, `send:${operationKey}`);
   const d = Date.now() + clamp(settings.responseTimeoutSeconds, 600, 30, 3600) * 1000;
   let last = "",
@@ -1098,30 +962,17 @@ async function textTurn(c, s, bridge, promptText, settings, signal, operationKey
       generating: Boolean(st.stop),
       stablePolls: stable,
     });
+    if (phase === "completed") return { text, links: st.entries?.at(-1)?.links ?? [] };
     const detectedError = classifyGeminiError(st);
     if (detectedError) throw detectedError;
-    const notice = providerError(st.notices);
-    if (notice) throw err(notice.code, notice.message, false);
-    if (phase === "completed") return { text, links: [] };
     await waitForDomMutation(c, s, calculateJitteredDelay(1_000), signal);
   }
   throw err("TIMEOUT", "Gemini não concluiu resposta.", true);
 }
-async function mediaTurn(
-  c,
-  s,
-  bridge,
-  promptText,
-  settings,
-  signal,
-  type,
-  operationKey,
-  lifecycle = {},
-) {
+async function mediaTurn(c, s, bridge, promptText, settings, signal, type, operationKey) {
   const selector = type === "image" ? "img" : "audio,video",
     base = await evaluate(c, s, `document.querySelectorAll(${JSON.stringify(selector)}).length`);
   await setPrompt(bridge, promptText, `media-prompt:${operationKey}`);
-  lifecycle.submitted = true;
   await send(c, s, bridge, signal, `media-send:${operationKey}`);
   const d = Date.now() + clamp(settings.responseTimeoutSeconds, 600, 30, 3600) * 1000;
   while (Date.now() < d) {
@@ -1207,7 +1058,7 @@ async function configureProfile(request, services) {
     return failure("INVALID_CONFIGURATION", "Ação de configuração de perfil inválida.");
   }
 
-  let client, child, bridge;
+  let client, bridge;
   try {
     const launched = await launch(
       { ...settings, keepBrowserOpen: false, startMinimized: false },
@@ -1215,7 +1066,6 @@ async function configureProfile(request, services) {
       port,
       services.signal,
     );
-    child = launched.child;
     client = await new CDP(launched.version.webSocketDebuggerUrl).connect(services.signal);
     const { sessionId } = await attach(client, services.signal, true);
     await newChat(client, sessionId, services.signal);
@@ -1242,12 +1092,12 @@ async function configureProfile(request, services) {
       Boolean(error?.retryable),
     );
   } finally {
-    bridge?.dispose();
-    await closeBrowserGracefully(client, child);
+    await bridge?.dispose();
+    await closeBrowserGracefully(client);
   }
 }
 
-export async function execute(request, services) {
+async function executeHandler(request, services) {
   if (request?.invocation?.mode === "configure") return await configureProfile(request, services);
   const settings = request?.settings ?? {},
     id = String(request?.capabilityId ?? "generate-text-in-browser"),
@@ -1295,7 +1145,6 @@ export async function execute(request, services) {
     bridge,
     taskTargetId,
     closeTaskTarget = false;
-  const lifecycle = { submitted: false, succeeded: false };
   try {
     const cfg = request.configuration ?? {},
       profile = normalizeProfile(cfg.accountProfile),
@@ -1319,7 +1168,6 @@ export async function execute(request, services) {
       port,
       services.signal,
     );
-    child = launched.child;
     client = await new CDP(
       launched.version.webSocketDebuggerUrl,
       settings.diagnosticTrace ? (m) => process.stderr.write(`[Gemini Browser] ${m}\n`) : null,
@@ -1327,7 +1175,7 @@ export async function execute(request, services) {
     const taskPage = await attach(client, services.signal, false, launched.reused);
     const { sessionId } = taskPage;
     taskTargetId = taskPage.targetId;
-    closeTaskTarget = taskPage.created || !launched.reused;
+    closeTaskTarget = true;
     const reusedConversation = await prepareConversation(
       client,
       sessionId,
@@ -1336,7 +1184,7 @@ export async function execute(request, services) {
       services.signal,
     );
     parts = partsForConversation(parts, request.conversation, reusedConversation);
-    if (taskPage.created) await markTaskPage(client, sessionId, request, services.signal);
+    await markTaskPage(client, sessionId, request, services.signal);
     bridge = await attachContentFlowBridge({
       client,
       pageSessionId: sessionId,
@@ -1366,7 +1214,6 @@ export async function execute(request, services) {
                   services.signal,
                   media,
                   `${i}:${a}`,
-                  lifecycle,
                 )
               : await textTurn(
                   client,
@@ -1376,7 +1223,6 @@ export async function execute(request, services) {
                   settings,
                   services.signal,
                   `${i}:${a}`,
-                  lifecycle,
                 ),
           );
           last = null;
@@ -1403,7 +1249,6 @@ export async function execute(request, services) {
     const conversationId = await currentConversationUrl(client, sessionId);
     if (media) {
       const captured = await captureMedia(client, sessionId, services, request, media);
-      lifecycle.succeeded = true;
       await services.publishPartial?.({
         values: { [media === "image" ? "image" : "audio"]: captured.file, description: combined },
         artifacts: [captured.artifact],
@@ -1438,7 +1283,12 @@ export async function execute(request, services) {
         throw err("OUTPUT_VALIDATION_FAILED", `Resultado abaixo de ${min} caracteres.`, true);
       values = generationValues(result, responses, request);
     }
-    lifecycle.succeeded = true;
+    await evaluate(
+      client,
+      sessionId,
+      `(() => { const url = new URL(location.href); url.hash = "contentflow-ready-gemini"; history.replaceState(history.state, "", url); return true; })()`,
+    );
+    closeTaskTarget = false;
     return {
       status: "success",
       values,
@@ -1448,35 +1298,36 @@ export async function execute(request, services) {
   } catch (e) {
     if (services.signal?.aborted || e.code === "CANCELLED")
       return failure("CANCELLED", "Execução cancelada.");
-    const fault = failedTurn(e, lifecycle.submitted);
-    return failure(
-      fault.code || e.code || "UPSTREAM_UNAVAILABLE",
-      fault.message || e.message || "Falha Gemini.",
-      fault.retryable ?? !!e.retryable,
+    const response = failure(
+      e.code || "UPSTREAM_UNAVAILABLE",
+      e.message || "Falha Gemini.",
+      !!e.retryable,
       e.retryAfterMs,
     );
+    if (e.code === "PROVIDER_SECURITY_CHALLENGE") {
+      response.recovery = {
+        externalEffect: "none",
+        intervention: "provider_security_challenge",
+      };
+    }
+    return response;
   } finally {
-    bridge?.dispose();
-    const cleanup = cleanupPolicy({
-      succeeded: lifecycle.succeeded,
-      cancelled: services.signal?.aborted,
-      created: closeTaskTarget,
-      keepBrowserOpen: settings.keepBrowserOpen,
-    });
-    if (cleanup.closeTarget && taskTargetId)
+    await bridge?.dispose();
+    if (closeTaskTarget && taskTargetId)
       try {
         await client?.send("Target.closeTarget", { targetId: taskTargetId });
       } catch {}
-    if (cleanup.closeBrowser && child)
-      try {
-        await client?.send("Browser.close");
-      } catch {}
     client?.close();
-    if (cleanup.closeBrowser && child)
-      try {
-        child.kill();
-      } catch {}
   }
+}
+
+export async function execute(request, services) {
+  const bridgeDiagnosticsState = await createBridgeDiagnostics(request, services);
+  const response = await executeHandler(
+    { ...request, __bridgeDiagnosticsState: bridgeDiagnosticsState },
+    services,
+  );
+  return { ...response, bridgeDiagnostics: bridgeDiagnosticsState.bridgeDiagnostics };
 }
 
 export const __test = {
@@ -1500,7 +1351,6 @@ export const __test = {
   profilePath,
   runtimeProfilePath,
   profilePort,
-  waitForChildExit,
   closeBrowserGracefully,
   searchValues,
   summarize,

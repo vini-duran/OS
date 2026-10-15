@@ -1,0 +1,110 @@
+{
+  "format": "contentflow-method",
+  "version": 3,
+  "name": "P60 — Flow mínimo",
+  "exportedAt": "2026-09-25T12:00:00.000Z",
+  "method": {
+    "name": "P60 — Flow → VALIDAR",
+    "processType": "assets",
+    "blocks": [
+      {
+        "id": "p60-flow-generate",
+        "type": "CRIAR",
+        "operator": "IA",
+        "name": "Gerar imagens no Flow",
+        "instructions": "Gere uma imagem por item preservando a ordem e a identidade de cada prompt.",
+        "inputs": [
+          {
+            "id": "p60-flow-prompts",
+            "label": "Prompts",
+            "shape": {
+              "kind": "content",
+              "family": "text",
+              "cardinality": "many",
+              "representation": "inline"
+            },
+            "binding": {
+              "kind": "runtime"
+            },
+            "portKey": "prompts"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "p60-flow-images",
+            "label": "Imagens",
+            "key": "images",
+            "shape": {
+              "kind": "content",
+              "family": "image",
+              "cardinality": "many",
+              "representation": "artifact",
+              "formats": {
+                "mimeTypes": [
+                  "image/*"
+                ]
+              }
+            },
+            "required": true,
+            "presentation": {
+              "renderer": "image-gallery"
+            },
+            "portKey": "images"
+          }
+        ],
+        "parameters": [],
+        "order": 0,
+        "plugin": {
+          "pluginId": "local.contentflow.google-flow-batch-images",
+          "pluginVersion": "3.0.0",
+          "capabilityId": "generate-images-in-browser",
+          "configuration": {
+            "productionMode": "images_only",
+            "aspectRatio": "landscape",
+            "maxImagesPerPrompt": 1
+          },
+          "connectionRequired": false
+        }
+      },
+      {
+        "id": "p60-flow-validate",
+        "type": "VALIDAR",
+        "operator": "Humano",
+        "name": "Selecionar imagens do Flow",
+        "instructions": "Selecione somente as imagens aprovadas para a edição.",
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "p60-flow-selected",
+            "label": "Selecionadas",
+            "key": "selected_value",
+            "shape": {
+              "kind": "content",
+              "family": "image",
+              "cardinality": "many",
+              "representation": "artifact",
+              "formats": {
+                "mimeTypes": [
+                  "image/*"
+                ]
+              }
+            },
+            "required": true,
+            "optionsSourceBlockId": "p60-flow-generate",
+            "optionsSourceKey": "images"
+          }
+        ],
+        "validation": {
+          "targetBlockId": "p60-flow-generate",
+          "targetOutputKey": "images",
+          "mode": "select_many",
+          "onReject": "pause",
+          "maxAttempts": 2
+        },
+        "parameters": [],
+        "order": 1
+      }
+    ],
+    "contractVersion": 3
+  }
+}

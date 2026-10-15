@@ -1,97 +1,64 @@
 import {
-  type BlockInputBinding,
-  type HumanFieldType,
+  type BlockInputSourceBinding,
   type ProcessExecution,
   type Project,
   type RecordFieldDefinition,
-  type RecordFieldType,
   type RuntimeValue,
   type StoredFile,
   type StructuredRecord,
+  type ValueShape,
 } from "@/lib/domain";
-import { normalizeExecutionDeliveries } from "@/lib/deliveries";
+import { normalizeExecutionDeliveries, processOutputDeliveryFor } from "@/lib/deliveries";
+import { contentShape, controlShape } from "@/lib/data-shape";
 
-const HISTORY_VALUE_TYPES = new Set<HumanFieldType>([
-  "text",
-  "textarea",
-  "number",
-  "boolean",
-  "select",
-  "datetime",
-  "url",
-  "file",
-  "image",
-  "audio",
-  "video",
-]);
-
-export function isChannelHistoryValueType(type: HumanFieldType): type is RecordFieldType {
-  return HISTORY_VALUE_TYPES.has(type);
-}
-
-export function createChannelHistoryRecordFields(
-  valueType: HumanFieldType,
-): RecordFieldDefinition[] {
-  const normalizedValueType: RecordFieldType =
-    valueType === "files"
-      ? "file"
-      : valueType === "list" || valueType === "multiselect"
-        ? "text"
-        : isChannelHistoryValueType(valueType)
-          ? valueType
-          : "text";
+export function createChannelHistoryRecordFields(valueShape: ValueShape): RecordFieldDefinition[] {
+  const normalizedValueShape =
+    valueShape.kind === "record"
+      ? contentShape("text")
+      : { ...structuredClone(valueShape), cardinality: "one" as const };
   return [
     {
       id: "channel-history-value",
       label: "Valor",
       key: "value",
-      type: normalizedValueType,
+      shape: normalizedValueShape,
       required: true,
     },
     {
       id: "channel-history-project-id",
       label: "ID do projeto",
       key: "project_id",
-      type: "text",
+      shape: controlShape("identifier"),
       required: true,
     },
     {
       id: "channel-history-project-title",
       label: "Projeto",
       key: "project_title",
-      type: "text",
+      shape: contentShape("text"),
       required: true,
     },
     {
       id: "channel-history-recorded-at",
       label: "Registrado em",
       key: "recorded_at",
-      type: "datetime",
+      shape: controlShape("datetime"),
       required: true,
     },
   ];
 }
 
 export function resolveChannelHistory({
-  input,
+  binding,
   currentExecution,
   channelExecutions,
   channelProjects,
 }: {
-  input: BlockInputBinding;
+  binding: Extract<BlockInputSourceBinding, { kind: "channel_history" }>;
   currentExecution: ProcessExecution;
   channelExecutions: ProcessExecution[];
   channelProjects: Project[];
 }): StructuredRecord[] | undefined {
-  if (
-    input.source !== "channel_history" ||
-    !input.sourceProcessType ||
-    !input.blockId ||
-    !input.sourceKey
-  ) {
-    return undefined;
-  }
-
   const projects = new Map(
     channelProjects
       .filter((project) => project.channelId === currentExecution.channelId)
@@ -114,21 +81,29 @@ export function resolveChannelHistory({
       )
       .map((execution) => execution.projectId),
   );
-  const limit = Math.min(100, Math.max(1, input.historyLimit ?? 10));
-  const eligibility = input.historyEligibility ?? "completed";
+  const limit = Math.min(100, Math.max(1, binding.limit));
+  const eligibility = binding.eligibility;
+  const sourceKey = binding.outputKey;
 
   return executions
     .filter(
       (execution) =>
-        execution.processType === input.sourceProcessType &&
+        execution.processType === binding.processType &&
         (eligibility !== "published" || publishedProjectIds.has(execution.projectId)),
     )
-    .flatMap((execution) =>
-      (normalizeExecutionDeliveries(execution).deliveries ?? [])
+    .flatMap((execution) => {
+      const normalized = normalizeExecutionDeliveries(execution);
+      const deliveries =
+        binding.blockId === "__process_output__"
+          ? [processOutputDeliveryFor(normalized, sourceKey)].filter(
+              (delivery): delivery is NonNullable<typeof delivery> => Boolean(delivery),
+            )
+          : (normalized.deliveries ?? []);
+      return deliveries
         .filter(
           (delivery) =>
-            delivery.blockId === input.blockId &&
-            delivery.outputKey === input.sourceKey &&
+            (binding.blockId === "__process_output__" || delivery.blockId === binding.blockId) &&
+            (binding.blockId === "__process_output__" || delivery.outputKey === sourceKey) &&
             delivery.status === "completed",
         )
         .flatMap((delivery) => {
@@ -145,8 +120,8 @@ export function resolveChannelHistory({
               } satisfies StructuredRecord,
             ];
           });
-        }),
-    )
+        });
+    })
     .sort((left, right) => String(right.recorded_at).localeCompare(String(left.recorded_at)))
     .slice(0, limit);
 }

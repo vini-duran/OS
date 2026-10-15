@@ -2,7 +2,7 @@
 
 Plugin de referência para automação de navegador do **Microsoft AI Playground** (`https://playground.microsoft.ai/chat`), com foco especial em **Text-to-Speech (TTS)** com `mai-voice-2` e `mai-voice-2-flash`.
 
-Versão **1.0.4** para ContentFlow Plugin API v1.
+Versão **1.0.4** para ContentFlow Plugin API v2.
 
 ---
 
@@ -76,3 +76,8 @@ npm run plugin:kit -- check ./ecosystem/plugins/reference/mai-playground-browser
 npm run plugin:kit -- test-contract ./ecosystem/plugins/reference/mai-playground-browser
 npm run plugin:kit -- test-sandbox ./ecosystem/plugins/reference/mai-playground-browser
 ```
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

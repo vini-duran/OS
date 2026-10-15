@@ -1,0 +1,280 @@
+{
+  "format": "contentflow-method",
+  "version": 3,
+  "name": "P60 — Free Stock mínimo",
+  "exportedAt": "2026-09-25T12:00:00.000Z",
+  "method": {
+    "name": "P60 — Free Stock → VALIDAR → materializar",
+    "processType": "assets",
+    "blocks": [
+      {
+        "id": "p60-stock-search",
+        "type": "BUSCAR",
+        "operator": "Código",
+        "name": "Buscar por briefings",
+        "instructions": "Busque um candidato por briefing preservando licença, atribuição e identificador do briefing.",
+        "inputs": [
+          {
+            "id": "p60-stock-briefs",
+            "label": "Briefings",
+            "shape": {
+              "kind": "record",
+              "cardinality": "many",
+              "fields": [
+                {
+                  "id": "brief-id",
+                  "label": "ID",
+                  "key": "brief_id",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": true
+                },
+                {
+                  "id": "primary-query",
+                  "label": "Consulta",
+                  "key": "primary_query",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": true
+                }
+              ]
+            },
+            "binding": {
+              "kind": "runtime"
+            },
+            "portKey": "asset_briefs"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "p60-stock-candidates",
+            "label": "Selecionados pela busca",
+            "key": "selected_assets",
+            "shape": {
+              "kind": "record",
+              "cardinality": "many",
+              "fields": [
+                {
+                  "id": "out-brief-id",
+                  "label": "ID",
+                  "key": "brief_id",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": true
+                },
+                {
+                  "id": "out-provider",
+                  "label": "Fonte",
+                  "key": "provider",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                },
+                {
+                  "id": "out-license",
+                  "label": "Licença",
+                  "key": "license_name",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                }
+              ]
+            },
+            "required": true,
+            "portKey": "selected_assets"
+          }
+        ],
+        "parameters": [],
+        "order": 0,
+        "plugin": {
+          "pluginId": "local.contentflow.free-stock-media-studio",
+          "pluginVersion": "1.0.1",
+          "capabilityId": "search-stock-by-briefs",
+          "configuration": {
+            "providerStrategy": "balanced_fallback",
+            "licenseProfile": "commercial_safe",
+            "safeSearch": true
+          },
+          "connectionRequired": false
+        }
+      },
+      {
+        "id": "p60-stock-validate",
+        "type": "VALIDAR",
+        "operator": "Humano",
+        "name": "Validar stock",
+        "instructions": "Confirme licença, atribuição e adequação editorial antes do download.",
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "p60-stock-selected",
+            "label": "Aprovados",
+            "key": "selected_value",
+            "shape": {
+              "kind": "record",
+              "cardinality": "many",
+              "fields": [
+                {
+                  "id": "out-brief-id",
+                  "label": "ID",
+                  "key": "brief_id",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": true
+                },
+                {
+                  "id": "out-provider",
+                  "label": "Fonte",
+                  "key": "provider",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                },
+                {
+                  "id": "out-license",
+                  "label": "Licença",
+                  "key": "license_name",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                }
+              ]
+            },
+            "required": true,
+            "optionsSourceBlockId": "p60-stock-search",
+            "optionsSourceKey": "selected_assets"
+          }
+        ],
+        "validation": {
+          "targetBlockId": "p60-stock-search",
+          "targetOutputKey": "selected_assets",
+          "mode": "select_many",
+          "onReject": "pause",
+          "maxAttempts": 1
+        },
+        "parameters": [],
+        "order": 1
+      },
+      {
+        "id": "p60-stock-download",
+        "type": "CRIAR",
+        "operator": "Código",
+        "name": "Materializar stock aprovado",
+        "instructions": "Baixe somente os candidatos aprovados e preserve a proveniência completa.",
+        "inputs": [
+          {
+            "id": "p60-stock-approved",
+            "label": "Aprovados",
+            "shape": {
+              "kind": "record",
+              "cardinality": "many",
+              "fields": [
+                {
+                  "id": "approved-brief-id",
+                  "label": "ID",
+                  "key": "brief_id",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": true
+                },
+                {
+                  "id": "approved-provider",
+                  "label": "Fonte",
+                  "key": "provider",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                },
+                {
+                  "id": "approved-license",
+                  "label": "Licença",
+                  "key": "license_name",
+                  "shape": {
+                    "kind": "content",
+                    "family": "text",
+                    "cardinality": "one",
+                    "representation": "inline"
+                  },
+                  "required": false
+                }
+              ]
+            },
+            "binding": {
+              "kind": "previous_block",
+              "blockId": "p60-stock-validate",
+              "outputKey": "selected_value"
+            },
+            "portKey": "selected_assets"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "p60-stock-assets",
+            "label": "Assets",
+            "key": "assets",
+            "shape": {
+              "kind": "record",
+              "cardinality": "many",
+              "fields": []
+            },
+            "required": true,
+            "presentation": {
+              "renderer": "file-list"
+            },
+            "portKey": "assets"
+          }
+        ],
+        "parameters": [],
+        "order": 2,
+        "plugin": {
+          "pluginId": "local.contentflow.free-stock-media-studio",
+          "pluginVersion": "1.0.1",
+          "capabilityId": "download-selected-stock-assets",
+          "configuration": {},
+          "connectionRequired": false
+        }
+      }
+    ],
+    "contractVersion": 3
+  }
+}

@@ -1,6 +1,6 @@
 # Grok Browser Studio
 
-Versão **1.0.5** para ContentFlow Plugin API v1.
+Versão **1.0.5** para ContentFlow Plugin API v2.
 
 O plugin usa a instrução resolvida do bloco como único prompt editável. As entradas conectadas são acrescentadas automaticamente como contexto. O bloco expõe apenas o perfil da conta, abre uma conversa nova e realiza um único envio por execução. Configurações antigas permanecem aceitas apenas para compatibilidade e são ignoradas.
 
@@ -29,3 +29,8 @@ npm run plugin:kit -- check ./ecosystem/plugins/reference/grok-browser-studio
 npm run plugin:kit -- test-contract ./ecosystem/plugins/reference/grok-browser-studio
 npm run plugin:kit -- test-sandbox ./ecosystem/plugins/reference/grok-browser-studio
 ```
+
+
+## Licença MIT
+
+O código deste plugin é aberto sob MIT: uso pessoal ou comercial, modificação e redistribuição são permitidos com preservação dos avisos de autoria e licença. Dependências de terceiros conservam suas próprias licenças e avisos. A licença do aplicativo ContentFlow é separada.

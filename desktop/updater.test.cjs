@@ -98,6 +98,7 @@ test("percorre o fluxo IPC de verificar, baixar e instalar", async () => {
     getWindow,
     updater,
     logger: log,
+    platform: "win32",
   });
 
   await handlers.get("contentflow:updater:check")();
@@ -117,10 +118,5 @@ test("percorre o fluxo IPC de verificar, baixar e instalar", async () => {
   assert.equal(controller.getState().status, "installing");
 
   await handlers.get("contentflow:updater:open-releases")();
-  assert.deepEqual(opened, [RELEASES_URL]);
-});
-
-test("o destino de releases aponta exclusivamente para o fork do proprietário", () => {
-  assert.equal(RELEASES_URL, "https://github.com/vini-duran/OS/releases/latest");
-  assert.equal(RELEASES_URL.includes("andremjr"), false);
+  assert.deepEqual(opened, ["https://github.com/vini-duran/OS/releases/latest"]);
 });

@@ -1,12 +1,200 @@
 {
-  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow/main/ecosystem/docs/schemas/contentflow-plugin-v1.schema.json",
-  "apiVersion": "1",
+  "$schema": "https://raw.githubusercontent.com/andremjr/contentflow/main/docs/ecosystem/schemas/contentflow-plugin-v2.schema.json",
+  "apiVersion": "2",
   "id": "local.contentflow.chatgpt-browser-studio",
   "name": "ChatGPT Browser Studio",
-  "version": "1.0.14",
+  "version": "2.0.2",
   "description": "Automação modular do ChatGPT web para criar, pesquisar, escolher, validar, analisar arquivos e gerar imagens.",
+  "localizations": {
+    "en": {
+      "description": "Modular ChatGPT web automation for creating, researching, choosing, validating, analyzing files, and generating images.",
+      "profileSetup": {
+        "label": "Save profile",
+        "description": "Opens ChatGPT for sign-in and closes Chrome after validating the chat area."
+      },
+      "capabilities": {
+        "generate-image-in-browser": {
+          "name": "Generate images",
+          "description": "Generates one or more images in ChatGPT and imports every new valid variant.",
+          "inputPorts": {
+            "prompt": {
+              "label": "Image prompt"
+            },
+            "references": {
+              "label": "Reference images"
+            },
+            "prompts": {
+              "label": "Image prompts"
+            }
+          },
+          "outputPorts": {
+            "image": {
+              "label": "Generated image"
+            },
+            "images": {
+              "label": "Generated images"
+            },
+            "description": {
+              "label": "Generation description"
+            }
+          },
+          "itemActions": {
+            "regenerate": {
+              "label": "Regenerate"
+            },
+            "replace": {
+              "label": "Replace"
+            },
+            "select": {
+              "label": "Select"
+            },
+            "download": {
+              "label": "Download"
+            }
+          },
+          "blockConfigSchema": {
+            "properties": {
+              "fallbackAccountProfiles": {
+                "title": "Fallback profiles",
+                "description": "Additional aliases, one per line, in order. The system automatically advances to the next saved profile whenever execution fails."
+              },
+              "accountProfile": {
+                "title": "Account profile"
+              },
+              "startMinimized": {
+                "title": "Start minimized"
+              }
+            }
+          }
+        },
+        "generate-text-in-browser": {
+          "blockConfigSchema": {
+            "properties": {
+              "textItemFormat": {
+                "title": "Text item format",
+                "options": [
+                  {
+                    "value": "plain",
+                    "label": "Plain text"
+                  },
+                  {
+                    "value": "json",
+                    "label": "Structured JSON text"
+                  }
+                ]
+              },
+              "textItemFields": {
+                "title": "JSON text fields"
+              },
+              "textItemReferenceInputs": {
+                "title": "Inputs supplying IDs"
+              }
+            }
+          },
+          "inputPorts": {
+            "context_items": {
+              "label": "Reference text items"
+            }
+          }
+        }
+      }
+    },
+    "es": {
+      "description": "Automatización modular de ChatGPT web para crear, investigar, elegir, validar, analizar archivos y generar imágenes.",
+      "profileSetup": {
+        "label": "Guardar perfil",
+        "description": "Abre ChatGPT para iniciar sesión y cierra Chrome después de validar el área del chat."
+      },
+      "capabilities": {
+        "generate-image-in-browser": {
+          "name": "Generar imágenes",
+          "description": "Genera una o más imágenes en ChatGPT e importa cada variante nueva válida.",
+          "inputPorts": {
+            "prompt": {
+              "label": "Prompt de la imagen"
+            },
+            "references": {
+              "label": "Imágenes de referencia"
+            },
+            "prompts": {
+              "label": "Prompts de imagen"
+            }
+          },
+          "outputPorts": {
+            "image": {
+              "label": "Imagen generada"
+            },
+            "images": {
+              "label": "Imágenes generadas"
+            },
+            "description": {
+              "label": "Descripción de la generación"
+            }
+          },
+          "itemActions": {
+            "regenerate": {
+              "label": "Regenerar"
+            },
+            "replace": {
+              "label": "Reemplazar"
+            },
+            "select": {
+              "label": "Seleccionar"
+            },
+            "download": {
+              "label": "Descargar"
+            }
+          },
+          "blockConfigSchema": {
+            "properties": {
+              "fallbackAccountProfiles": {
+                "title": "Perfiles alternativos",
+                "description": "Aliases adicionales, uno por línea y en orden. El sistema avanza automáticamente al siguiente perfil guardado cuando falla la ejecución."
+              },
+              "accountProfile": {
+                "title": "Perfil de la cuenta"
+              },
+              "startMinimized": {
+                "title": "Iniciar minimizado"
+              }
+            }
+          }
+        },
+        "generate-text-in-browser": {
+          "blockConfigSchema": {
+            "properties": {
+              "textItemFormat": {
+                "title": "Formato de cada texto",
+                "options": [
+                  {
+                    "value": "plain",
+                    "label": "Texto directo"
+                  },
+                  {
+                    "value": "json",
+                    "label": "Texto JSON estructurado"
+                  }
+                ]
+              },
+              "textItemFields": {
+                "title": "Campos del texto JSON"
+              },
+              "textItemReferenceInputs": {
+                "title": "Entradas que proporcionan IDs"
+              }
+            }
+          },
+          "inputPorts": {
+            "context_items": {
+              "label": "Lista de textos de referencia"
+            }
+          }
+        }
+      }
+    }
+  },
   "author": "André Marinho Jr.",
-  "license": "Proprietary",
+  "license": "MIT",
   "branding": {
     "iconPath": "assets/icon.png"
   },
@@ -15,11 +203,22 @@
     "version": ">=26 <27",
     "module": "esm"
   },
-  "minCoreVersion": "0.4.8",
+  "minCoreVersion": "1.3.3",
   "entrypoint": "handler.mjs",
-  "permissions": ["network", "filesystem:read", "filesystem:write", "process"],
-  "networkHosts": ["chatgpt.com", "files.oaiusercontent.com"],
-  "deliveryTypes": ["text", "image", "processing"],
+  "browserRuntime": {
+    "lifecycle": "core"
+  },
+  "permissions": [
+    "network",
+    "filesystem:read",
+    "filesystem:write",
+    "process"
+  ],
+  "networkHosts": [
+    "chatgpt.com",
+    "files.oaiusercontent.com"
+  ],
+  "supportsConversationContinuation": true,
   "profileSetup": {
     "configurationKey": "accountProfile",
     "fallbackConfigurationKey": "fallbackAccountProfiles",
@@ -69,7 +268,7 @@
         "type": "integer",
         "minimum": 30,
         "maximum": 3600,
-        "default": 600
+        "default": 1200
       },
       "typingChunkSize": {
         "type": "integer",
@@ -103,7 +302,9 @@
       "promptPreview": {
         "template": "INSTRUÇÕES DO BLOCO:\n{{BLOCK_INSTRUCTIONS}}\n\nCONTEXTO DAS ENTRADAS:\n{{CONTEXT_INPUTS}}"
       },
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -118,74 +319,196 @@
         {
           "key": "content",
           "label": "Contexto para geração",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "history",
+          "label": "Histórico do canal",
+          "description": "Registros históricos explicitamente vinculados pelo núcleo para orientar a geração.",
+          "required": false,
+          "shape": {
+            "kind": "record",
+            "cardinality": "many",
+            "fields": [],
+            "open": true
+          }
+        },
+        {
+          "key": "context_1",
+          "label": "Contexto adicional 1",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_2",
+          "label": "Contexto adicional 2",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_3",
+          "label": "Contexto adicional 3",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_4",
+          "label": "Contexto adicional 4",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_5",
+          "label": "Contexto adicional 5",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "context_6",
+          "label": "Contexto adicional 6",
+          "description": "Entrada textual adicional explicitamente vinculada pelo Método e enviada no contexto da instrução.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "outline",
           "label": "Outline / estrutura",
-          "acceptedTypes": ["records", "list"],
           "required": false,
-          "multiple": false
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         },
         {
           "key": "attachments",
           "label": "Referências anexas",
-          "acceptedTypes": ["image", "file", "files"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
+        },
+        {
+          "key": "documents",
+          "label": "Documentos de contexto",
+          "description": "Arquivos de texto, Markdown ou SRT explicitamente anexados ao contexto da geração.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "artifact",
+            "formats": {
+              "mimeTypes": [
+                "application/x-subrip",
+                "text/plain",
+                "text/markdown"
+              ]
+            }
+          }
+        },
+        {
+          "key": "context_items",
+          "label": "Lista de textos de referência",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Texto gerado",
-          "producedTypes": ["text", "textarea", "number"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "parts",
           "label": "Respostas por etapa",
-          "producedTypes": ["list"],
           "required": false,
           "presentation": {
             "renderer": "list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "records",
+          "label": "Registros estruturados",
+          "description": "Lista de objetos JSON produzida quando o Método declara uma saída estruturada.",
+          "required": false,
+          "presentation": {
+            "renderer": "table"
+          },
+          "shape": {
+            "kind": "record",
+            "cardinality": "many",
+            "fields": [],
+            "open": true
           }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "thumbnail_layout",
-        "image",
-        "file",
-        "files"
-      ],
-      "producedOutputTypes": ["text", "textarea", "list"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
@@ -196,17 +519,26 @@
           "outputPort": "parts",
           "combinedOutputPort": "result",
           "separator": "\n\n",
-          "mode": "sequential"
+          "mode": "sequential",
+          "strategies": [
+            "per_item"
+          ],
+          "preferredStrategy": "per_item"
         }
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web"]
+        "providers": [
+          "OpenAI / ChatGPT web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -229,6 +561,55 @@
           "startMinimized": {
             "type": "boolean",
             "default": true
+          },
+          "textItemFormat": {
+            "type": "string",
+            "title": "Formato de cada texto",
+            "default": "plain",
+            "oneOf": [
+              {
+                "const": "plain",
+                "title": "Texto direto"
+              },
+              {
+                "const": "json",
+                "title": "Texto JSON estruturado"
+              }
+            ],
+            "ui": {
+              "section": "primary",
+              "order": 0
+            }
+          },
+          "textItemFields": {
+            "type": "string",
+            "title": "Campos do texto JSON",
+            "format": "textarea",
+            "default": "{\"prompt\":\"string\"}",
+            "visibleWhen": {
+              "property": "textItemFormat",
+              "values": [
+                "json"
+              ]
+            },
+            "ui": {
+              "section": "advanced"
+            }
+          },
+          "textItemReferenceInputs": {
+            "type": "string",
+            "title": "Entradas que fornecem IDs",
+            "format": "textarea",
+            "default": "{}",
+            "visibleWhen": {
+              "property": "textItemFormat",
+              "values": [
+                "json"
+              ]
+            },
+            "ui": {
+              "section": "advanced"
+            }
           }
         }
       },
@@ -248,13 +629,17 @@
             }
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       }
     },
     {
       "id": "search-web-in-browser",
       "operator": "IA",
-      "blockTypes": ["BUSCAR"],
+      "blockTypes": [
+        "BUSCAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -269,54 +654,77 @@
         {
           "key": "query",
           "label": "Consulta",
-          "acceptedTypes": ["text", "textarea", "list"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "context",
           "label": "Contexto",
-          "acceptedTypes": ["text", "textarea", "list", "records", "url"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Resultado",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "sources",
           "label": "Fontes",
-          "producedTypes": ["list"],
           "required": false,
           "presentation": {
             "renderer": "list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["text", "textarea", "list", "records", "url"],
-      "producedOutputTypes": ["textarea", "list"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_read", "external_write", "subprocess"],
+      "sideEffects": [
+        "external_read",
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web", "Fontes públicas acessadas pela pesquisa"]
+        "providers": [
+          "OpenAI / ChatGPT web",
+          "Fontes públicas acessadas pela pesquisa"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -349,7 +757,9 @@
     {
       "id": "deep-research-in-browser",
       "operator": "IA",
-      "blockTypes": ["BUSCAR"],
+      "blockTypes": [
+        "BUSCAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -364,54 +774,77 @@
         {
           "key": "query",
           "label": "Tema da pesquisa aprofundada",
-          "acceptedTypes": ["text", "textarea", "list"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "context",
           "label": "Contexto",
-          "acceptedTypes": ["text", "textarea", "list", "records", "url", "file", "files"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Relatório",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         },
         {
           "key": "sources",
           "label": "Fontes",
-          "producedTypes": ["list"],
           "required": false,
           "presentation": {
             "renderer": "list"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["text", "textarea", "list", "records", "url", "file", "files"],
-      "producedOutputTypes": ["textarea", "list"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 3600000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_read", "external_write", "subprocess"],
+      "sideEffects": [
+        "external_read",
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT Deep research", "Fontes externas acessadas pelo ChatGPT"]
+        "providers": [
+          "OpenAI / ChatGPT Deep research",
+          "Fontes externas acessadas pelo ChatGPT"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -444,7 +877,9 @@
     {
       "id": "choose-library-item-in-browser",
       "operator": "IA",
-      "blockTypes": ["ESCOLHER"],
+      "blockTypes": [
+        "ESCOLHER"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -459,53 +894,57 @@
         {
           "key": "context",
           "label": "Contexto da escolha",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "list",
-            "records",
-            "number",
-            "boolean",
-            "url",
-            "thumbnail_layout"
-          ],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "history",
+          "label": "Histórico de escolhas",
+          "description": "Decisões anteriores deste bloco, com proveniência preservada pelo núcleo.",
+          "required": false,
+          "shape": {
+            "kind": "record",
+            "cardinality": "many",
+            "fields": []
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "ID escolhido",
-          "producedTypes": ["text"],
-          "required": true
+          "required": true,
+          "shape": {
+            "kind": "control",
+            "control": "identifier",
+            "cardinality": "one"
+          }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "list",
-        "records",
-        "number",
-        "boolean",
-        "url",
-        "thumbnail_layout"
-      ],
-      "producedOutputTypes": ["text"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web"]
+        "providers": [
+          "OpenAI / ChatGPT web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -539,14 +978,18 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     },
     {
       "id": "validate-content-in-browser",
       "operator": "IA",
-      "blockTypes": ["VALIDAR"],
+      "blockTypes": [
+        "VALIDAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -561,100 +1004,71 @@
         {
           "key": "content",
           "label": "Conteúdo a validar",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "url",
-            "thumbnail_layout",
-            "image",
-            "file",
-            "files"
-          ],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "criteria",
           "label": "Critérios",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "decision",
           "label": "Decisão",
-          "producedTypes": ["approval"],
           "required": false,
           "presentation": {
             "renderer": "decision"
+          },
+          "shape": {
+            "kind": "control",
+            "control": "approval",
+            "cardinality": "one"
           }
         },
         {
           "key": "feedback",
           "label": "Observações",
-          "producedTypes": ["textarea"],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         },
         {
           "key": "selected_value",
           "label": "Escolha",
-          "producedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "select",
-            "url",
-            "thumbnail_layout",
-            "image",
-            "file"
-          ],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "control",
+            "control": "selection",
+            "cardinality": "one"
+          }
         },
         {
           "key": "selected_values",
           "label": "Escolhas",
-          "producedTypes": ["list", "multiselect", "files"],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "control",
+            "control": "selection",
+            "cardinality": "many"
+          }
         }
-      ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "url",
-        "thumbnail_layout",
-        "image",
-        "file",
-        "files"
-      ],
-      "producedOutputTypes": [
-        "approval",
-        "textarea",
-        "text",
-        "number",
-        "boolean",
-        "select",
-        "url",
-        "thumbnail_layout",
-        "list",
-        "multiselect",
-        "image",
-        "file",
-        "files"
       ],
       "execution": {
         "mode": "immediate",
@@ -662,14 +1076,19 @@
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web"]
+        "providers": [
+          "OpenAI / ChatGPT web"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -702,7 +1121,9 @@
     {
       "id": "analyze-images-in-browser",
       "operator": "IA",
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -717,45 +1138,61 @@
         {
           "key": "images",
           "label": "Imagens",
-          "acceptedTypes": ["image", "file", "files"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         },
         {
           "key": "context",
           "label": "Contexto",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Análise visual",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["image", "file", "files", "text", "textarea", "list", "records"],
-      "producedOutputTypes": ["textarea"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web (imagens e prompt)"]
+        "providers": [
+          "OpenAI / ChatGPT web (imagens e prompt)"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -789,14 +1226,18 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     },
     {
       "id": "analyze-documents-in-browser",
       "operator": "IA",
-      "blockTypes": ["CRIAR"],
+      "blockTypes": [
+        "CRIAR"
+      ],
       "processTypes": [
         "theme",
         "title",
@@ -811,45 +1252,61 @@
         {
           "key": "documents",
           "label": "Documentos",
-          "acceptedTypes": ["file", "files"],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         },
         {
           "key": "context",
           "label": "Contexto",
-          "acceptedTypes": ["text", "textarea", "list", "records"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "result",
           "label": "Análise dos documentos",
-          "producedTypes": ["textarea"],
           "required": true,
           "presentation": {
             "renderer": "text-long"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
           }
         }
       ],
-      "acceptedInputTypes": ["file", "files", "text", "textarea", "list", "records"],
-      "producedOutputTypes": ["textarea"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
         "supportsCancellation": true,
         "maxConcurrency": 1
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT web (documentos e prompt)"]
+        "providers": [
+          "OpenAI / ChatGPT web (documentos e prompt)"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -883,102 +1340,151 @@
             "minLength": 1
           }
         },
-        "required": ["result"]
+        "required": [
+          "result"
+        ]
       },
       "instructionUsage": "required"
     },
     {
       "id": "generate-image-in-browser",
+      "name": "Gerar imagens",
+      "description": "Gera uma ou mais imagens no ChatGPT e importa cada variante nova válida.",
       "operator": "IA",
-      "blockTypes": ["CRIAR"],
-      "processTypes": ["thumbnail", "assets"],
+      "promptPreview": {
+        "template": "INSTRUÇÕES DO BLOCO:\n{{BLOCK_INSTRUCTIONS}}\n\nCONTEXTO DAS ENTRADAS:\n{{CONTEXT_INPUTS}}"
+      },
+      "blockTypes": [
+        "CRIAR"
+      ],
+      "processTypes": [
+        "thumbnail",
+        "assets"
+      ],
       "inputPorts": [
         {
           "key": "prompt",
           "label": "Prompt da imagem",
-          "acceptedTypes": [
-            "text",
-            "textarea",
-            "number",
-            "boolean",
-            "list",
-            "records",
-            "select",
-            "multiselect",
-            "datetime",
-            "url",
-            "thumbnail_layout"
-          ],
           "required": true,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
+        },
+        {
+          "key": "prompts",
+          "label": "Prompts de imagem",
+          "description": "Lista ordenada de prompts; o núcleo distribui um prompt por unidade de trabalho.",
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "many",
+            "representation": "inline"
+          }
         },
         {
           "key": "references",
           "label": "Imagens de referência",
-          "acceptedTypes": ["image", "file", "files"],
           "required": false,
-          "multiple": true
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact"
+          }
         }
       ],
       "outputPorts": [
         {
           "key": "image",
           "label": "Imagem gerada",
-          "producedTypes": ["image"],
           "required": true,
           "presentation": {
             "renderer": "image-gallery"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "one",
+            "representation": "artifact"
           }
         },
         {
           "key": "images",
           "label": "Imagens geradas",
-          "producedTypes": ["files"],
           "required": false,
           "presentation": {
-            "renderer": "image-gallery",
-            "itemType": "image",
-            "acceptedMimeTypes": ["image/*"]
+            "renderer": "image-gallery"
+          },
+          "shape": {
+            "kind": "content",
+            "family": "image",
+            "cardinality": "many",
+            "representation": "artifact",
+            "formats": {
+              "mimeTypes": [
+                "image/*"
+              ]
+            }
           }
         },
         {
           "key": "description",
           "label": "Descrição da geração",
-          "producedTypes": ["textarea"],
-          "required": false
+          "required": false,
+          "shape": {
+            "kind": "content",
+            "family": "text",
+            "cardinality": "one",
+            "representation": "inline"
+          }
         }
       ],
-      "acceptedInputTypes": [
-        "text",
-        "textarea",
-        "number",
-        "boolean",
-        "list",
-        "records",
-        "select",
-        "multiselect",
-        "datetime",
-        "url",
-        "thumbnail_layout",
-        "image",
-        "file",
-        "files"
+      "itemActions": [
+        {
+          "action": "regenerate",
+          "label": "Regenerar"
+        },
+        {
+          "action": "replace",
+          "label": "Substituir"
+        },
+        {
+          "action": "select",
+          "label": "Selecionar"
+        },
+        {
+          "action": "download",
+          "label": "Baixar"
+        }
       ],
-      "producedOutputTypes": ["image", "files", "textarea"],
       "execution": {
         "mode": "immediate",
         "defaultTimeoutMs": 1800000,
         "supportsCancellation": true,
-        "maxConcurrency": 1
+        "maxConcurrency": 1,
+        "itemOrchestration": {
+          "inputPort": "prompts",
+          "outputPort": "images",
+          "mode": "sequential"
+        }
       },
-      "sideEffects": ["external_write", "subprocess"],
+      "sideEffects": [
+        "external_write",
+        "subprocess"
+      ],
       "cost": {
         "model": "unknown",
         "estimateSupported": false
       },
       "dataPolicy": {
         "sendsDataToThirdParties": true,
-        "providers": ["OpenAI / ChatGPT Images"]
+        "providers": [
+          "OpenAI / ChatGPT Images"
+        ]
       },
       "blockConfigSchema": {
         "type": "object",
@@ -994,11 +1500,13 @@
           },
           "accountProfile": {
             "type": "string",
+            "title": "Perfil da conta",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$",
             "default": "default"
           },
           "startMinimized": {
             "type": "boolean",
+            "title": "Iniciar minimizado",
             "default": true
           }
         }
@@ -1020,9 +1528,12 @@
             "type": "string"
           }
         },
-        "required": ["image"]
+        "required": [
+          "image"
+        ]
       },
       "instructionUsage": "required"
     }
-  ]
+  ],
+  "repository": "https://github.com/andremjr/plugins-contentflow"
 }

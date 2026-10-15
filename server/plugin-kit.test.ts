@@ -21,9 +21,9 @@ function answers(template: Answers["template"]): Answers {
     input: {
       key: file ? "source" : "content",
       label: file ? "Arquivo" : "Texto",
-      type: file ? "file" : "textarea",
+      type: file ? "image" : "text",
     },
-    output: { key: "result", label: "Resultado", type: file ? "file" : "textarea" },
+    output: { key: "result", label: "Resultado", type: file ? "image" : "text" },
     permissions: file ? ["filesystem:read", "filesystem:write"] : hosted ? ["network"] : [],
     networkHosts: hosted ? ["api.example.com"] : [],
     secretKeys: hosted ? ["API_TOKEN"] : [],
@@ -38,7 +38,10 @@ test("o gerador cria e valida os três templates oficiais", async () => {
     for (const template of ["text-transform", "hosted-api", "file-artifact"] as const) {
       const directory = await createPlugin(path.join(temporary, template), answers(template));
       const validated = validatePluginDirectory(directory);
-      assert.equal(validated.manifest.apiVersion, "1");
+      assert.equal(validated.manifest.apiVersion, "2");
+      const readme = await readFile(path.join(directory, "README.md"), "utf8");
+      assert.match(readme, /API pública v2/);
+      assert.doesNotMatch(readme, /API pública v1/);
       await contractCommand(directory);
     }
   } finally {
