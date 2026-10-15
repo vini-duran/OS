@@ -168,6 +168,7 @@ test("configuração electron-builder para macOS estende base e cumpre requisito
     "alvo deve ser dir arm64",
   );
   assert.equal(macConfig.mac.identity, "-", "assinatura deve ser ad-hoc (identity: '-')");
+  assert.equal(macConfig.mac.minimumSystemVersion, "13.5", "mínimo deve cobrir o Node26 ARM64 incluído");
   assert.equal(macConfig.mac.notarize, false, "notarização deve ser false sem regras inventadas");
 
   assert.equal(macConfig.win, undefined, "configuração win não deve estar ativa no mac");

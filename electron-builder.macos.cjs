@@ -28,6 +28,7 @@ const macosConfig = {
       },
     ],
     category: "public.app-category.productivity",
+    minimumSystemVersion: "13.5",
     identity: "-",
     hardenedRuntime: false,
     gatekeeperAssess: false,
