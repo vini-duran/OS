@@ -1,3 +1,7 @@
+A montagem com npm11.19 registra ainda allowScripts somente para as versoes fixadas better-sqlite3@13.0.3, electron@41.10.7 e esbuild@0.28.2, necessarias para compilar/carregar as dependencias e obter o Electron. Nao ha aprovacao global de scripts ou mudanca de versoes.
+
+> **Ajuste de montagem —15/10/2026:** a instalacao limpa no macOS revelou que o binding Windows do keyring estava declarado como obrigatorio. Foi movido para optionalDependencies e o lock atualizado, mantendo versao/integridade de todos os pacotes. O manifesto do pacote fixa a revisao apos esse ajuste. Nenhum codigo de runtime, perfis, cofre ou migracao mudou; o registro da etapa de fonte abaixo permanece historico para sua basee18928f.
+
 # Candidata do Core1.3.7 da equipe — fonte consolidada
 
 **15/10/2026: fonte candidata em branch, sem App novo, tag, release ou instalacao.** Proxima etapa: empacotar ARM64 a partir desta arvore limpa, identificar o commit e encaminhar o pacote ao orquestrador do MacBook Air M1 para atualizacao/aceite. Verificacoes locais de configuracao/origem nao substituem o aceite no destino.

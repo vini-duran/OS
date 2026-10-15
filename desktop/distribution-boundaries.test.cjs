@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const repositoryRoot = path.resolve(__dirname, "..");
 const packageJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+const packageLockJson = JSON.parse(readFileSync(path.join(repositoryRoot, "package-lock.json"), "utf8"));
 const desktopMain = readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const desktopPreload = readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
 
@@ -82,4 +83,49 @@ test("pendências humanas atualizam badge e notificações pelo preload isolado"
   assert.match(desktopPreload, /humanTasks:\s*Object\.freeze/);
   assert.match(desktopPreload, /ipcRenderer\.send\(HUMAN_TASKS_UPDATE_CHANNEL/);
   assert.doesNotMatch(desktopPreload, /contextBridge\.exposeInMainWorld\([^)]*ipcRenderer/s);
+});
+
+test("dependências de produção não forçam pacotes restritos a um único sistema desktop suportado", () => {
+  const rootLockPackage = packageLockJson.packages?.[""] ?? {};
+  assert.deepEqual(
+    packageJson.dependencies,
+    rootLockPackage.dependencies,
+    "Dependências de produção no package.json e no package-lock.json devem ser idênticas",
+  );
+  assert.deepEqual(
+    packageJson.optionalDependencies,
+    rootLockPackage.optionalDependencies,
+    "Dependências opcionais no package.json e no package-lock.json devem ser idênticas",
+  );
+
+  const supportedDesktopPlatforms = ["win32", "darwin"];
+
+  for (const depName of Object.keys(packageJson.dependencies ?? {})) {
+    const lockEntry = packageLockJson.packages?.[`node_modules/${depName}`];
+    if (!lockEntry || !Array.isArray(lockEntry.os) || lockEntry.os.length === 0) {
+      continue;
+    }
+
+    const restrictsSupportedDesktop = supportedDesktopPlatforms.some(
+      (platform) =>
+        lockEntry.os.includes(platform) &&
+        !supportedDesktopPlatforms.every((target) => lockEntry.os.includes(target)),
+    );
+
+    assert.equal(
+      restrictsSupportedDesktop,
+      false,
+      `Dependência direta de produção "${depName}" é restrita a uma única plataforma desktop (${lockEntry.os.join(", ")}) e deve ser opcional`,
+    );
+  }
+
+  for (const depName of Object.keys(packageJson.optionalDependencies ?? {})) {
+    const lockEntry = packageLockJson.packages?.[`node_modules/${depName}`];
+    assert.ok(lockEntry, `Pacote opcional "${depName}" deve existir no package-lock.json`);
+    assert.equal(
+      lockEntry.optional,
+      true,
+      `Pacote opcional "${depName}" deve estar marcado com "optional: true" no lockfile`,
+    );
+  }
 });
